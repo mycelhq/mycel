@@ -120,6 +120,19 @@ export class PostgresStore implements Store {
     return r.rows[0] ? this.rowToTask(r.rows[0]) : undefined;
   }
 
+  async listTasks(filter: { status?: TaskStatus; wedge?: string; limit?: number } = {}): Promise<Task[]> {
+    const where: string[] = [];
+    const vals: unknown[] = [];
+    if (filter.status) { vals.push(filter.status); where.push(`status=$${vals.length}`); }
+    if (filter.wedge) { vals.push(filter.wedge); where.push(`wedge=$${vals.length}`); }
+    vals.push(filter.limit ?? 100);
+    const sql =
+      `SELECT * FROM tasks ${where.length ? "WHERE " + where.join(" AND ") : ""} ` +
+      `ORDER BY created_at DESC LIMIT $${vals.length}`;
+    const r = await this.pool.query(sql, vals);
+    return r.rows.map((row: any) => this.rowToTask(row));
+  }
+
   async setStatus(id: string, status: TaskStatus, error?: string): Promise<void> {
     if (error !== undefined) {
       await this.pool.query(
@@ -238,6 +251,13 @@ export class PostgresStore implements Store {
       [id, status],
     );
     return r.rows[0] ? this.rowToApproval(r.rows[0]) : undefined;
+  }
+
+  async listApprovals(status?: Approval["status"]): Promise<Approval[]> {
+    const r = status
+      ? await this.pool.query(`SELECT * FROM approvals WHERE status=$1 ORDER BY expires_at`, [status])
+      : await this.pool.query(`SELECT * FROM approvals ORDER BY expires_at`);
+    return r.rows.map((row: any) => this.rowToApproval(row));
   }
 
   async addArtifact(a: {

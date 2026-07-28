@@ -5,6 +5,8 @@
 // surface is sandbox-facing and authed separately (gate token / proxy nonce) — the sandbox does
 // NOT hold the founder key, so the API-key middleware must not cover it.
 import { randomUUID } from "node:crypto";
+import { existsSync, readdirSync } from "node:fs";
+import { join } from "node:path";
 import { Hono } from "hono";
 import { streamSSE } from "hono/streaming";
 import { requireApiKey, safeEqual } from "./auth";
@@ -16,8 +18,10 @@ import { subscribe } from "./bus";
 import { markCancelled } from "./cancel";
 import { loadConfig } from "./config";
 import type {
+  Approval,
   Constraints,
   ConnectionKind,
+  ConnectionOwner,
   CreateTaskInput,
   KnowledgeItem,
   Risk,
@@ -29,9 +33,10 @@ import { getDomainStore } from "./domain";
 import { emitEvent } from "./events";
 import { runTask } from "./orchestrator";
 import { getGrant } from "./proxygrants";
+import { setSecret } from "./secrets";
 import type { Store } from "./store";
 import { traceLlmCall } from "./tracing";
-import { loadWedge } from "./wedge";
+import { loadWedge, wedgesDir } from "./wedge";
 
 const TERMINAL: ReadonlySet<TaskStatus> = new Set<TaskStatus>([
   "succeeded",
@@ -121,6 +126,38 @@ export function createServer(store: Store): Hono {
     // fire-and-forget in-process orchestration (a durable engine slots in here later)
     void runTask(store, task.id).catch((err) => console.error("[mycel] runTask error:", err));
     return c.json(task, 201);
+  });
+
+  // GET /v1/tasks — list for the operator portal (newest first; ?status= ?wedge= ?limit=)
+  app.get("/v1/tasks", async (c) => {
+    const status = c.req.query("status") as TaskStatus | undefined;
+    const wedge = c.req.query("wedge");
+    const limit = c.req.query("limit") ? Number(c.req.query("limit")) : undefined;
+    return c.json(await store.listTasks({ status, wedge, limit }));
+  });
+
+  // GET /v1/approvals — the approvals queue (?status=pending)
+  app.get("/v1/approvals", async (c) => {
+    const status = c.req.query("status") as Approval["status"] | undefined;
+    return c.json(await store.listApprovals(status || undefined));
+  });
+
+  // GET /v1/meta — what the portal needs to render itself: version, wedges, Langfuse deep-link base.
+  app.get("/v1/meta", async (c) => {
+    const cfg = loadConfig();
+    let wedges: string[] = [];
+    try {
+      wedges = readdirSync(wedgesDir()).filter((d) => existsSync(join(wedgesDir(), d, "wedge.json")));
+    } catch {
+      /* no wedges dir */
+    }
+    return c.json({
+      version: "v0.1",
+      wedges,
+      langfuse_url: cfg.langfuse?.baseUrl ?? null,
+      store: process.env.MYCEL_DATABASE_URL ? "postgres" : "memory",
+      sandbox: cfg.sandboxBackend,
+    });
   });
 
   // GET /v1/tasks/:id
@@ -309,18 +346,38 @@ export function createServer(store: Store): Hono {
   app.post("/v1/connections", async (c) => {
     const b = (await c.req.json().catch(() => ({}))) as Record<string, unknown>;
     if (!b.kind || !b.name) return c.json({ error: "kind and name are required" }, 400);
+    // Owner: founder-level by default; pass { owner: { kind:"client", id } } or client_id to scope
+    // a connection to a specific client (their mailbox/calendar the founder operates).
+    const clientId = typeof b.client_id === "string" ? b.client_id : undefined;
+    const owner = (b.owner as ConnectionOwner | undefined) ??
+      (clientId ? { kind: "client", id: clientId } : { kind: "founder", id: "founder" });
     const conn = await domain.createConnection({
       kind: b.kind as ConnectionKind,
       name: String(b.name),
+      owner,
       config: (b.config as Record<string, unknown>) ?? {},
       secret_ref: typeof b.secret_ref === "string" ? b.secret_ref : undefined,
     });
     return c.json(conn, 201);
   });
-  app.get("/v1/connections", async (c) => c.json(await domain.listConnections()));
+  app.get("/v1/connections", async (c) => {
+    const clientId = c.req.query("client_id");
+    const all = await domain.listConnections();
+    return c.json(clientId ? all.filter((x) => x.owner.kind === "client" && x.owner.id === clientId) : all);
+  });
   app.get("/v1/connections/:id", async (c) => {
     const conn = await domain.getConnection(c.req.param("id"));
     return conn ? c.json(conn) : c.json({ error: "not found" }, 404);
+  });
+  // Store a connection's secret in the vault (a client's OAuth token, a provider key). The value
+  // is never returned; the connection then resolves it server-side at action time.
+  app.post("/v1/connections/:id/secret", async (c) => {
+    const conn = await domain.getConnection(c.req.param("id"));
+    if (!conn) return c.json({ error: "not found" }, 404);
+    const b = (await c.req.json().catch(() => ({}))) as { value?: string };
+    if (typeof b.value !== "string" || !b.value) return c.json({ error: "value is required" }, 400);
+    setSecret(conn.id, b.value);
+    return c.json({ ok: true });
   });
 
   app.post("/v1/channels", async (c) => {

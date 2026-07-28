@@ -6,19 +6,12 @@
 // calendar are structured stubs — wire the provider call and they light up without touching the
 // security model.
 import type { Connection, ConnectionKind } from "./contract";
+import { resolveSecret } from "./secrets";
 
 export interface ActionResult {
   ok: boolean;
   detail?: string;
   data?: unknown;
-}
-
-/** Resolve a connection's secret. Only "env:NAME" is supported today (a vault ref slots in here). */
-export function resolveSecret(secret_ref?: string): string | undefined {
-  if (!secret_ref) return undefined;
-  const m = /^env:(.+)$/.exec(secret_ref);
-  if (m) return process.env[m[1]];
-  return undefined;
 }
 
 /** A short, human-readable preview of what will happen — shown on the approval card. */
@@ -42,7 +35,7 @@ export async function executeAction(
   capability: string,
   payload: Record<string, unknown>,
 ): Promise<ActionResult> {
-  const secret = resolveSecret(conn.secret_ref);
+  const secret = resolveSecret(conn.secret_ref, conn.id);
   try {
     switch (conn.kind as ConnectionKind) {
       case "email":

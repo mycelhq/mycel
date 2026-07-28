@@ -77,7 +77,21 @@ export async function runOpenCodeTask(
     ...(wedge?.manifest.connections ?? []),
     ...(Array.isArray(task.input?.connections) ? (task.input.connections as string[]) : []),
   ]);
-  const connectionIds = allConns.filter((c) => wantedConns.has(c.name) || wantedConns.has(c.id)).map((c) => c.id);
+  // Founder-owned connections the wedge/task named, PLUS every connection owned by the client this
+  // task serves (the founder acts on their behalf — their mailbox, their calendar).
+  const inputClient = task.input?.client as { id?: string } | undefined;
+  const clientId =
+    (typeof task.input?.client_id === "string" ? task.input.client_id : undefined) ??
+    inputClient?.id ??
+    (task.actor.kind === "user" ? task.actor.id : undefined);
+  const connectionIds = allConns
+    .filter(
+      (c) =>
+        wantedConns.has(c.name) ||
+        wantedConns.has(c.id) ||
+        (c.owner.kind === "client" && c.owner.id === clientId),
+    )
+    .map((c) => c.id);
   let threadId: string | undefined;
   if (typeof task.input?.thread_id === "string") {
     threadId = task.input.thread_id;

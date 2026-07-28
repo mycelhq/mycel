@@ -15,6 +15,8 @@ import type {
 export interface Store {
   createTask(t: Task): Promise<Task>;
   getTask(id: string): Promise<Task | undefined>;
+  /** Most-recent-first list for the operator portal. */
+  listTasks(filter?: { status?: TaskStatus; wedge?: string; limit?: number }): Promise<Task[]>;
   /** Set status; on a failure/terminal state, pass the reason so it's persisted on the task. */
   setStatus(id: string, status: TaskStatus, error?: string): Promise<void>;
   addCost(id: string, delta: number): Promise<void>;
@@ -29,6 +31,8 @@ export interface Store {
   }): Promise<Approval>;
   getApproval(id: string): Promise<Approval | undefined>;
   setApproval(id: string, status: Approval["status"]): Promise<Approval | undefined>;
+  /** The approvals queue for the portal (optionally filtered by status, e.g. "pending"). */
+  listApprovals(status?: Approval["status"]): Promise<Approval[]>;
   addArtifact(a: {
     task_id: string;
     name: string;
@@ -66,6 +70,14 @@ export class InMemoryStore implements Store {
 
   async getTask(id: string): Promise<Task | undefined> {
     return this.tasks.get(id);
+  }
+
+  async listTasks(filter: { status?: TaskStatus; wedge?: string; limit?: number } = {}): Promise<Task[]> {
+    let all = [...this.tasks.values()];
+    if (filter.status) all = all.filter((t) => t.status === filter.status);
+    if (filter.wedge) all = all.filter((t) => t.wedge === filter.wedge);
+    all.sort((a, b) => (a.created_at < b.created_at ? 1 : -1)); // newest first
+    return all.slice(0, filter.limit ?? 100);
   }
 
   async setStatus(id: string, status: TaskStatus, error?: string): Promise<void> {
@@ -137,6 +149,12 @@ export class InMemoryStore implements Store {
     const a = this.approvals.get(id);
     if (a) a.status = status;
     return a;
+  }
+
+  async listApprovals(status?: Approval["status"]): Promise<Approval[]> {
+    let all = [...this.approvals.values()];
+    if (status) all = all.filter((a) => a.status === status);
+    return all;
   }
 
   async addArtifact(a: {

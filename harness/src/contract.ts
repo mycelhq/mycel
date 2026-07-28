@@ -98,13 +98,21 @@ export interface CreateTaskInput {
 
 /** An external capability with server-held secrets. The secret is referenced, never returned. */
 export type ConnectionKind = "email" | "sms" | "whatsapp" | "stripe" | "calendar" | "webhook" | "custom";
+/** Who a connection belongs to. Founder-owned (his Stripe, his outreach domain) is shared across
+ *  jobs; client-owned (a client's Gmail/calendar the founder operates on their behalf) is scoped
+ *  to that client and only offered to tasks serving them. */
+export interface ConnectionOwner {
+  kind: "founder" | "client";
+  id: string; // "founder" for founder-level, or the client id
+}
 export interface Connection {
   id: string;
   kind: ConnectionKind;
   name: string;
+  owner: ConnectionOwner;
   /** Non-secret settings (from address, api base url, account id, …). Safe to return. */
   config: Record<string, unknown>;
-  /** How the harness resolves the real secret — an env var name (env:NAME). Never returned. */
+  /** How the harness resolves the real secret — `env:NAME` or `vault:KEY`. Never returned. */
   secret_ref?: string;
   created_at: string;
 }
