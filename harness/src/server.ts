@@ -5,6 +5,7 @@ import { Hono } from "hono";
 import { streamSSE } from "hono/streaming";
 import { awaitApproval, resolveApproval } from "./approvals";
 import { subscribe } from "./bus";
+import { markCancelled } from "./cancel";
 import { loadConfig } from "./config";
 import type { CreateTaskInput, Risk, Task, TaskEvent } from "./contract";
 import { runTask } from "./orchestrator";
@@ -41,22 +42,22 @@ export function createServer(store: Store): Hono {
       created_at: now,
       updated_at: now,
     };
-    store.createTask(task);
-    // fire-and-forget in-process orchestration (Inngest slots in here later)
+    await store.createTask(task);
+    // fire-and-forget in-process orchestration (a durable engine slots in here later)
     void runTask(store, task.id).catch((err) => console.error("[mycel] runTask error:", err));
     return c.json(task, 201);
   });
 
   // GET /v1/tasks/:id
-  app.get("/v1/tasks/:id", (c) => {
-    const t = store.getTask(c.req.param("id"));
+  app.get("/v1/tasks/:id", async (c) => {
+    const t = await store.getTask(c.req.param("id"));
     return t ? c.json(t) : c.json({ error: "not found" }, 404);
   });
 
   // GET /v1/tasks/:id/events — SSE with Last-Event-ID replay
-  app.get("/v1/tasks/:id/events", (c) => {
+  app.get("/v1/tasks/:id/events", async (c) => {
     const taskId = c.req.param("id");
-    if (!store.getTask(taskId)) return c.json({ error: "not found" }, 404);
+    if (!(await store.getTask(taskId))) return c.json({ error: "not found" }, 404);
     const lastId = Number(c.req.header("Last-Event-ID") ?? c.req.query("lastEventId") ?? 0);
 
     return streamSSE(c, async (stream) => {
@@ -76,11 +77,11 @@ export function createServer(store: Store): Hono {
       });
 
       // replay persisted events first
-      for (const ev of store.eventsAfter(taskId, lastId)) {
+      for (const ev of await store.eventsAfter(taskId, lastId)) {
         await stream.writeSSE({ id: String(ev.id), event: ev.type, data: JSON.stringify(ev) });
         lastSent = ev.id;
       }
-      const all = store.eventsAfter(taskId, 0);
+      const all = await store.eventsAfter(taskId, 0);
       if (all.at(-1)?.type === "task.finished") {
         unsub();
         return;
@@ -102,23 +103,25 @@ export function createServer(store: Store): Hono {
     });
   });
 
-  app.post("/v1/tasks/:id/cancel", (c) => {
-    const t = store.getTask(c.req.param("id"));
+  app.post("/v1/tasks/:id/cancel", async (c) => {
+    const t = await store.getTask(c.req.param("id"));
     if (!t) return c.json({ error: "not found" }, 404);
-    store.setStatus(t.id, "cancelled");
-    return c.json(store.getTask(t.id));
+    markCancelled(t.id);
+    await store.setStatus(t.id, "cancelled");
+    return c.json(await store.getTask(t.id));
   });
 
-  const decide = (decision: "approved" | "rejected") => (c: import("hono").Context) => {
-    const id = c.req.param("id");
-    if (!id) return c.json({ error: "not found" }, 404);
-    const a = store.getApproval(id);
-    if (!a) return c.json({ error: "not found" }, 404);
-    if (a.status !== "pending") return c.json({ error: `already ${a.status}` }, 409);
-    store.setApproval(id, decision);
-    resolveApproval(id, decision);
-    return c.json({ ok: true, decision });
-  };
+  const decide =
+    (decision: "approved" | "rejected") => async (c: import("hono").Context) => {
+      const id = c.req.param("id");
+      if (!id) return c.json({ error: "not found" }, 404);
+      const a = await store.getApproval(id);
+      if (!a) return c.json({ error: "not found" }, 404);
+      if (a.status !== "pending") return c.json({ error: `already ${a.status}` }, 409);
+      await store.setApproval(id, decision);
+      resolveApproval(id, decision);
+      return c.json({ ok: true, decision });
+    };
   app.post("/v1/approvals/:id/approve", decide("approved"));
   app.post("/v1/approvals/:id/reject", decide("rejected"));
 
@@ -133,7 +136,7 @@ export function createServer(store: Store): Hono {
       risk?: Risk;
       preview?: Record<string, unknown>;
     };
-    if (!body.task_id || !store.getTask(body.task_id)) return c.json({ allow: false, decision: "unknown_task" }, 404);
+    if (!body.task_id || !(await store.getTask(body.task_id))) return c.json({ allow: false, decision: "unknown_task" }, 404);
     const { decision } = await awaitApproval(store, body.task_id, {
       action: body.action ?? "action",
       risk: body.risk ?? "medium",
@@ -142,8 +145,8 @@ export function createServer(store: Store): Hono {
     return c.json({ allow: decision === "approved", decision });
   });
 
-  app.get("/v1/artifacts/:id", (c) => {
-    const a = store.getArtifact(c.req.param("id"));
+  app.get("/v1/artifacts/:id", async (c) => {
+    const a = await store.getArtifact(c.req.param("id"));
     if (!a) return c.json({ error: "not found" }, 404);
     return new Response(a.content, { headers: { "content-type": a.content_type } });
   });

@@ -57,6 +57,7 @@ Deploy the **service** (`Dockerfile`) to Fly/Render with `MYCEL_SANDBOX=daytona`
 
 - ✅ Task API + SSE (Last-Event-ID replay), orchestration, cost/runtime kill, sandbox
   abstraction (local/docker/daytona), OpenCode REST+SSE client, config-driven model,
-  action-level approval gating, local + Langfuse tracing, wedge grounding.
-- Next: proxy-mode model routing (provider keys stay server-side), Postgres store + durable
-  engine, artifact upload to S3.
+  action-level approval gating, local + Langfuse tracing, wedge grounding, configurable store
+  (in-memory or Postgres via `MYCEL_DATABASE_URL`).
+- Next: proxy-mode model routing (provider keys stay server-side), durable engine, artifact
+  upload to S3.

@@ -1,5 +1,6 @@
-// Storage behind an interface so Postgres/SQLite swap in without touching the runtime.
-// v0.1 ships an in-memory implementation: zero external services, runs instantly.
+// Persistence behind an async interface, so the backend is swappable:
+//   InMemoryStore  — zero setup, the default (tasks vanish on restart)
+//   PostgresStore  — durable, selected when MYCEL_DATABASE_URL is set (see store.pg.ts)
 import { randomUUID } from "node:crypto";
 import type {
   Approval,
@@ -12,28 +13,28 @@ import type {
 } from "./contract";
 
 export interface Store {
-  createTask(t: Task): Task;
-  getTask(id: string): Task | undefined;
-  setStatus(id: string, status: TaskStatus): void;
-  addCost(id: string, delta: number): void;
-  appendEvent(taskId: string, type: EventType, data?: Record<string, unknown>): TaskEvent;
-  eventsAfter(taskId: string, afterId: number): TaskEvent[];
+  createTask(t: Task): Promise<Task>;
+  getTask(id: string): Promise<Task | undefined>;
+  setStatus(id: string, status: TaskStatus): Promise<void>;
+  addCost(id: string, delta: number): Promise<void>;
+  appendEvent(taskId: string, type: EventType, data?: Record<string, unknown>): Promise<TaskEvent>;
+  eventsAfter(taskId: string, afterId: number): Promise<TaskEvent[]>;
   createApproval(a: {
     task_id: string;
     action: string;
     risk: Risk;
     preview: Record<string, unknown>;
     ttlMs?: number;
-  }): Approval;
-  getApproval(id: string): Approval | undefined;
-  setApproval(id: string, status: Approval["status"]): Approval | undefined;
+  }): Promise<Approval>;
+  getApproval(id: string): Promise<Approval | undefined>;
+  setApproval(id: string, status: Approval["status"]): Promise<Approval | undefined>;
   addArtifact(a: {
     task_id: string;
     name: string;
     content_type: string;
     content: string;
-  }): Artifact;
-  getArtifact(id: string): Artifact | undefined;
+  }): Promise<Artifact>;
+  getArtifact(id: string): Promise<Artifact | undefined>;
 }
 
 export class InMemoryStore implements Store {
@@ -43,18 +44,18 @@ export class InMemoryStore implements Store {
   private approvals = new Map<string, Approval>();
   private artifacts = new Map<string, Artifact>();
 
-  createTask(t: Task): Task {
+  async createTask(t: Task): Promise<Task> {
     this.tasks.set(t.id, t);
     this.events.set(t.id, []);
     this.counters.set(t.id, 0);
     return t;
   }
 
-  getTask(id: string) {
+  async getTask(id: string): Promise<Task | undefined> {
     return this.tasks.get(id);
   }
 
-  setStatus(id: string, status: TaskStatus) {
+  async setStatus(id: string, status: TaskStatus): Promise<void> {
     const t = this.tasks.get(id);
     if (t) {
       t.status = status;
@@ -62,7 +63,7 @@ export class InMemoryStore implements Store {
     }
   }
 
-  addCost(id: string, delta: number) {
+  async addCost(id: string, delta: number): Promise<void> {
     const t = this.tasks.get(id);
     if (t) {
       t.cost_usd = Math.round((t.cost_usd + delta) * 1e6) / 1e6;
@@ -70,7 +71,11 @@ export class InMemoryStore implements Store {
     }
   }
 
-  appendEvent(taskId: string, type: EventType, data: Record<string, unknown> = {}): TaskEvent {
+  async appendEvent(
+    taskId: string,
+    type: EventType,
+    data: Record<string, unknown> = {},
+  ): Promise<TaskEvent> {
     const seq = (this.counters.get(taskId) ?? 0) + 1;
     this.counters.set(taskId, seq);
     const ev: TaskEvent = {
@@ -86,17 +91,17 @@ export class InMemoryStore implements Store {
     return ev;
   }
 
-  eventsAfter(taskId: string, afterId: number): TaskEvent[] {
+  async eventsAfter(taskId: string, afterId: number): Promise<TaskEvent[]> {
     return (this.events.get(taskId) ?? []).filter((e) => e.id > afterId);
   }
 
-  createApproval(a: {
+  async createApproval(a: {
     task_id: string;
     action: string;
     risk: Risk;
     preview: Record<string, unknown>;
     ttlMs?: number;
-  }): Approval {
+  }): Promise<Approval> {
     const approval: Approval = {
       approval_id: randomUUID(),
       task_id: a.task_id,
@@ -110,22 +115,22 @@ export class InMemoryStore implements Store {
     return approval;
   }
 
-  getApproval(id: string) {
+  async getApproval(id: string): Promise<Approval | undefined> {
     return this.approvals.get(id);
   }
 
-  setApproval(id: string, status: Approval["status"]) {
+  async setApproval(id: string, status: Approval["status"]): Promise<Approval | undefined> {
     const a = this.approvals.get(id);
     if (a) a.status = status;
     return a;
   }
 
-  addArtifact(a: {
+  async addArtifact(a: {
     task_id: string;
     name: string;
     content_type: string;
     content: string;
-  }): Artifact {
+  }): Promise<Artifact> {
     const art: Artifact = {
       id: randomUUID(),
       task_id: a.task_id,
@@ -138,7 +143,18 @@ export class InMemoryStore implements Store {
     return art;
   }
 
-  getArtifact(id: string) {
+  async getArtifact(id: string): Promise<Artifact | undefined> {
     return this.artifacts.get(id);
   }
+}
+
+// Backend selection: Postgres when MYCEL_DATABASE_URL is set, else in-memory.
+export async function createStore(): Promise<{ store: Store; backend: string }> {
+  const url = process.env.MYCEL_DATABASE_URL;
+  if (url) {
+    const { PostgresStore } = await import("./store.pg");
+    const store = await PostgresStore.connect(url);
+    return { store, backend: "postgres" };
+  }
+  return { store: new InMemoryStore(), backend: "memory" };
 }

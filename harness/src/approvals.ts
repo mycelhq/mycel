@@ -25,14 +25,14 @@ export async function awaitApproval(
   taskId: string,
   req: { action: string; risk: Risk; preview: Record<string, unknown>; ttlMs?: number },
 ): Promise<{ approvalId: string; decision: ApprovalDecision }> {
-  const approval = store.createApproval({
+  const approval = await store.createApproval({
     task_id: taskId,
     action: req.action,
     risk: req.risk,
     preview: req.preview,
     ttlMs: req.ttlMs,
   });
-  store.setStatus(taskId, "awaiting_approval");
+  await store.setStatus(taskId, "awaiting_approval");
   await emitEvent(store, taskId, "approval.requested", {
     approval_id: approval.approval_id,
     action: req.action,
@@ -54,8 +54,8 @@ export async function awaitApproval(
     (ttl as { unref?: () => void }).unref?.();
   });
 
-  store.setApproval(approval.approval_id, decision);
-  store.setStatus(taskId, "running");
+  await store.setApproval(approval.approval_id, decision);
+  await store.setStatus(taskId, "running");
   await emitEvent(store, taskId, "approval.resolved", {
     approval_id: approval.approval_id,
     decision,

@@ -10,7 +10,7 @@ export async function emitEvent(
   type: EventType,
   data: Record<string, unknown> = {},
 ): Promise<void> {
-  const ev = store.appendEvent(taskId, type, data);
+  const ev = await store.appendEvent(taskId, type, data);
   publish(taskId, ev);
   const observer = await getObserver();
   void observer.onEvent(taskId, ev);
