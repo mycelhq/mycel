@@ -4,6 +4,7 @@ import { randomUUID } from "node:crypto";
 import { Hono } from "hono";
 import { streamSSE } from "hono/streaming";
 import { awaitApproval, resolveApproval } from "./approvals";
+import { getArtifactBackend } from "./artifacts";
 import { subscribe } from "./bus";
 import { markCancelled } from "./cancel";
 import { loadConfig } from "./config";
@@ -148,7 +149,9 @@ export function createServer(store: Store): Hono {
   app.get("/v1/artifacts/:id", async (c) => {
     const a = await store.getArtifact(c.req.param("id"));
     if (!a) return c.json({ error: "not found" }, 404);
-    return new Response(a.content, { headers: { "content-type": a.content_type } });
+    let content = a.content;
+    if (!content) content = (await getArtifactBackend().then((b) => b.get(a.id))) ?? "";
+    return new Response(content, { headers: { "content-type": a.content_type } });
   });
 
   return app;

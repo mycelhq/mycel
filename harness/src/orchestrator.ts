@@ -2,6 +2,7 @@
 // limits, persist + stream + trace events, tear the sandbox down. Approval suspend/resume lives
 // in approvals.ts (driven by the OpenCode plugin gate). v0.1 runs in-process; a durable engine
 // slots in at the same seams.
+import { getArtifactBackend } from "./artifacts";
 import { isCancelled } from "./cancel";
 import type { EventType } from "./contract";
 import { emitEvent } from "./events";
@@ -45,12 +46,14 @@ export async function runTask(store: Store, taskId: string): Promise<void> {
     const { text } = await runOpenCodeTask(task, sandbox, { emit, onCost, shouldAbort });
 
     await emit("output.validated", { ok: true });
+    const backend = await getArtifactBackend();
     const art = await store.addArtifact({
       task_id: taskId,
       name: "result.txt",
       content_type: "text/plain",
-      content: text,
+      content: backend.inline ? text : "",
     });
+    if (!backend.inline) await backend.put(art.id, text);
     await emit("artifact.created", {
       artifact_id: art.id,
       name: art.name,
