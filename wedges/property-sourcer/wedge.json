@@ -1,0 +1,28 @@
+{
+  "wedge": "property-sourcer",
+  "title": "UK BTL Property Sourcer",
+  "model": "anthropic/claude-opus-4-8",
+  "task_types": {
+    "source_property": {
+      "description": "Given a buyer's brief and a candidate listing, decide if it's a deal and produce a sourcing report with the numbers.",
+      "output_schema": {
+        "type": "object",
+        "properties": {
+          "verdict": { "type": "string", "enum": ["pursue", "pass", "needs_info"] },
+          "headline": { "type": "string" },
+          "price_gbp": { "type": "number" },
+          "gross_yield_pct": { "type": "number" },
+          "net_yield_pct": { "type": "number" },
+          "risks": { "type": "array", "items": { "type": "string" } },
+          "next_steps": { "type": "array", "items": { "type": "string" } }
+        },
+        "required": ["verdict", "headline", "gross_yield_pct", "net_yield_pct", "risks"]
+      }
+    }
+  },
+  "tools": ["web_search"],
+  "connections": ["sourcing-inbox"],
+  "approvals": [{ "action": "send", "risk": "high", "required": true }],
+  "skills": ["source-a-deal"],
+  "knowledge": ["sourcing-criteria.md", "example-report.md"]
+}
