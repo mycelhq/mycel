@@ -1,10 +1,12 @@
 import { serve } from "@hono/node-server";
 import { API_KEY_GENERATED, loadConfig } from "./config";
+import { getIdentityStore } from "./identity";
 import { recoverTasks } from "./recovery";
 import { createServer } from "./server";
 import { createStore } from "./store";
 
 const { store, backend } = await createStore();
+const identity = getIdentityStore(); // bootstrap the default org/project/owner
 const recovered = await recoverTasks(store);
 const app = createServer(store);
 const cfg = loadConfig();
@@ -20,7 +22,14 @@ if (API_KEY_GENERATED) {
   console.log(
     `\n  ⚠  No MYCEL_API_KEY set — generated an ephemeral key for this run:\n` +
       `     ${cfg.apiKey}\n` +
-      `     Send it as 'Authorization: Bearer <key>' on /v1 calls. Set MYCEL_API_KEY to keep it stable.\n`,
+      `     Send it as 'Authorization: Bearer <key>' on /v1 calls (products). Set MYCEL_API_KEY to keep it stable.`,
+  );
+}
+if (identity.generatedPassword) {
+  console.log(
+    `\n  ⚠  No MYCEL_OWNER_PASSWORD set — generated an owner login for the portal:\n` +
+      `     ${identity.ownerEmail}  /  ${identity.generatedPassword}\n` +
+      `     Set MYCEL_OWNER_EMAIL / MYCEL_OWNER_PASSWORD to keep it stable.\n`,
   );
 }
 

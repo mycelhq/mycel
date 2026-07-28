@@ -1,13 +1,19 @@
-// Auth for the public /v1 surface. One founder API key (Bearer), required on every public
-// endpoint. Constant-time comparison so a timing side-channel can't recover the key.
+// Auth for the public /v1 surface. Two accepted credentials, both as `Authorization: Bearer`:
+//   - a product API key (machine, server-to-server) → resolves to a Project
+//   - a member session token (human, from the portal login) → resolves to an Org member
+// Constant-time comparison so a timing side-channel can't recover a secret.
 //
-// Topology note: in the recommended setup the browser never holds this key — the product's
-// server-side proxy routes present it, and add their own per-end-user auth/tenancy on top. The
-// kernel is single-tenant-per-key; per-tenant scoping is the product's job. (Task-scoped tokens
-// for direct-to-browser setups are a future addition.)
+// Topology note: in the recommended setup the browser never holds a product key — the product's
+// proxy presents it; the portal presents the member's session token. The kernel is the trust root.
 import { timingSafeEqual } from "node:crypto";
 import type { Context, Next } from "hono";
-import { loadConfig } from "./config";
+import { type AuthScope, getIdentityStore } from "./identity";
+
+declare module "hono" {
+  interface ContextVariableMap {
+    scope: AuthScope;
+  }
+}
 
 export function safeEqual(a: string, b: string): boolean {
   const ba = Buffer.from(a);
@@ -22,11 +28,19 @@ function bearer(c: Context): string {
   return m?.[1]?.trim() ?? c.req.header("x-mycel-api-key") ?? "";
 }
 
-/** Hono middleware: require the founder API key on the public API. */
+/** Resolve a presented credential to an auth scope (project key or member session), or null. */
+export function resolveAuth(token: string): AuthScope | null {
+  if (!token) return null;
+  const id = getIdentityStore();
+  // Member tokens are prefixed, so we don't waste a lookup — but either resolver is safe.
+  if (token.startsWith("msess_")) return id.resolveSession(token) ?? null;
+  return id.resolveApiKey(token) ?? id.resolveSession(token) ?? null;
+}
+
+/** Hono middleware: require a valid product key or member session on the public API. */
 export async function requireApiKey(c: Context, next: Next): Promise<Response | void> {
-  const presented = bearer(c);
-  if (!presented || !safeEqual(presented, loadConfig().apiKey)) {
-    return c.json({ error: "unauthorized" }, 401);
-  }
+  const scope = resolveAuth(bearer(c));
+  if (!scope) return c.json({ error: "unauthorized" }, 401);
+  c.set("scope", scope);
   await next();
 }

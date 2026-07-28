@@ -31,6 +31,7 @@ import type {
 } from "./contract";
 import { getDomainStore } from "./domain";
 import { emitEvent } from "./events";
+import { getIdentityStore } from "./identity";
 import { runTask } from "./orchestrator";
 import { getGrant } from "./proxygrants";
 import { setSecret } from "./secrets";
@@ -72,10 +73,33 @@ export function createServer(store: Store): Hono {
 
   app.get("/health", (c) => c.json({ ok: true, service: "mycel-harness", version: "v0.1" }));
 
-  // Everything under /v1 EXCEPT /v1/internal/* requires the founder API key.
+  // Member login (portal). No auth — it IS the auth. Returns a session token the portal forwards.
+  app.post("/v1/auth/login", async (c) => {
+    const b = (await c.req.json().catch(() => ({}))) as { email?: string; password?: string };
+    if (!b.email || !b.password) return c.json({ error: "email and password required" }, 400);
+    const r = getIdentityStore().login(b.email, b.password);
+    if (!r) return c.json({ error: "invalid credentials" }, 401);
+    return c.json({ token: r.session.token, member: r.member, projects: r.projects, expires_at: r.session.expires_at });
+  });
+
+  // Everything under /v1 EXCEPT /v1/internal/* and the login endpoint requires a credential.
   app.use("/v1/*", async (c, next) => {
-    if (c.req.path.startsWith("/v1/internal/")) return next();
+    if (c.req.path.startsWith("/v1/internal/") || c.req.path === "/v1/auth/login") return next();
     return requireApiKey(c, next);
+  });
+
+  // Who am I — the portal renders itself from this (member, role, projects).
+  app.get("/v1/me", async (c) => {
+    const scope = c.get("scope");
+    const id = getIdentityStore();
+    const member = scope?.member_id ? id.getMember(scope.member_id) : undefined;
+    return c.json({
+      auth: scope?.kind ?? "unknown",
+      role: scope?.role ?? (scope?.kind === "key" ? "service" : undefined),
+      member,
+      org_id: scope?.org_id,
+      projects: scope ? id.listProjects(scope.org_id) : [],
+    });
   });
 
   // POST /v1/tasks — create + kick off a task
