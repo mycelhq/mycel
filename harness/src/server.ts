@@ -9,11 +9,23 @@ import { Hono } from "hono";
 import { streamSSE } from "hono/streaming";
 import { requireApiKey, safeEqual } from "./auth";
 import { awaitApproval, failWaitersForTask, resolveApproval } from "./approvals";
+import { actionPreview, executeAction } from "./actions";
+import { getActionGrant } from "./actiongrants";
 import { getArtifactBackend } from "./artifacts";
 import { subscribe } from "./bus";
 import { markCancelled } from "./cancel";
 import { loadConfig } from "./config";
-import type { Constraints, CreateTaskInput, Risk, Task, TaskEvent, TaskStatus } from "./contract";
+import type {
+  Constraints,
+  ConnectionKind,
+  CreateTaskInput,
+  Risk,
+  Task,
+  TaskEvent,
+  TaskStatus,
+} from "./contract";
+import { getDomainStore } from "./domain";
+import { emitEvent } from "./events";
 import { runTask } from "./orchestrator";
 import { getGrant } from "./proxygrants";
 import type { Store } from "./store";
@@ -50,6 +62,7 @@ const idempotency = new Map<string, string>();
 
 export function createServer(store: Store): Hono {
   const app = new Hono();
+  const domain = getDomainStore();
 
   app.get("/health", (c) => c.json({ ok: true, service: "mycel-harness", version: "v0.1" }));
 
@@ -285,6 +298,184 @@ export function createServer(store: Store): Hono {
     let content = a.content;
     if (!content) content = (await getArtifactBackend().then((b) => b.get(a.id))) ?? "";
     return new Response(content, { headers: { "content-type": a.content_type } });
+  });
+
+  // ── The service surface: connections / channels / clients / threads ──
+  // Secrets are never returned: connections expose config + a secret_ref, never the secret.
+
+  app.post("/v1/connections", async (c) => {
+    const b = (await c.req.json().catch(() => ({}))) as Record<string, unknown>;
+    if (!b.kind || !b.name) return c.json({ error: "kind and name are required" }, 400);
+    const conn = await domain.createConnection({
+      kind: b.kind as ConnectionKind,
+      name: String(b.name),
+      config: (b.config as Record<string, unknown>) ?? {},
+      secret_ref: typeof b.secret_ref === "string" ? b.secret_ref : undefined,
+    });
+    return c.json(conn, 201);
+  });
+  app.get("/v1/connections", async (c) => c.json(await domain.listConnections()));
+  app.get("/v1/connections/:id", async (c) => {
+    const conn = await domain.getConnection(c.req.param("id"));
+    return conn ? c.json(conn) : c.json({ error: "not found" }, 404);
+  });
+
+  app.post("/v1/channels", async (c) => {
+    const b = (await c.req.json().catch(() => ({}))) as Record<string, unknown>;
+    const conn = b.connection_id ? await domain.getConnection(String(b.connection_id)) : undefined;
+    if (!conn) return c.json({ error: "unknown connection_id" }, 400);
+    if (!b.address || !b.wedge || !b.task_type) {
+      return c.json({ error: "address, wedge and task_type are required" }, 400);
+    }
+    if (!loadWedge(String(b.wedge))) return c.json({ error: `unknown wedge: ${b.wedge}` }, 400);
+    const ch = await domain.createChannel({
+      connection_id: conn.id,
+      kind: conn.kind,
+      address: String(b.address),
+      wedge: String(b.wedge),
+      task_type: String(b.task_type),
+    });
+    return c.json(ch, 201);
+  });
+  app.get("/v1/channels", async (c) => c.json(await domain.listChannels()));
+
+  app.post("/v1/clients", async (c) => {
+    const b = (await c.req.json().catch(() => ({}))) as Record<string, unknown>;
+    const client = await domain.createClient({
+      display_name: typeof b.display_name === "string" ? b.display_name : undefined,
+      handles: Array.isArray(b.handles) ? (b.handles as string[]) : [],
+      metadata: (b.metadata as Record<string, unknown>) ?? {},
+    });
+    return c.json(client, 201);
+  });
+  app.get("/v1/clients", async (c) => c.json(await domain.listClients()));
+  app.get("/v1/clients/:id", async (c) => {
+    const client = await domain.getClient(c.req.param("id"));
+    if (!client) return c.json({ error: "not found" }, 404);
+    const threads = await domain.listThreadsForClient(client.id);
+    return c.json({ ...client, threads });
+  });
+
+  app.get("/v1/threads/:id", async (c) => {
+    const thread = await domain.getThread(c.req.param("id"));
+    if (!thread) return c.json({ error: "not found" }, 404);
+    return c.json({ ...thread, messages: await domain.listMessages(thread.id) });
+  });
+
+  // Inbound webhook: a message arrives on a channel. Resolve the client, append to the thread,
+  // and spawn the task that handles it. The product proxies its provider's webhook (Postmark/
+  // Twilio/…) here after verifying the provider signature — hence it sits behind the API key.
+  app.post("/v1/channels/:id/inbound", async (c) => {
+    const channel = await domain.getChannel(c.req.param("id"));
+    if (!channel) return c.json({ error: "unknown channel" }, 404);
+    const b = (await c.req.json().catch(() => ({}))) as {
+      from?: { handle?: string; name?: string };
+      body?: string;
+      subject?: string;
+    };
+    const handle = b.from?.handle ?? "anonymous";
+    let client = await domain.findClientByHandle(handle);
+    if (!client) {
+      client = await domain.createClient({
+        display_name: b.from?.name,
+        handles: [handle],
+        metadata: {},
+      });
+    }
+    const thread = await domain.findOrCreateThread(client.id, channel.id, b.subject);
+    await domain.addMessage({
+      thread_id: thread.id,
+      direction: "inbound",
+      author: client.id,
+      body: b.body ?? "",
+    });
+    const history = await domain.listMessages(thread.id);
+
+    const cfg = loadConfig();
+    const now = new Date().toISOString();
+    const task: Task = {
+      id: randomUUID(),
+      wedge: channel.wedge,
+      task_type: channel.task_type,
+      actor: { kind: "user", id: client.id },
+      input: {
+        message: b.body ?? "",
+        subject: b.subject,
+        thread_id: thread.id, // links the run's action grant to this conversation
+        client: { id: client.id, display_name: client.display_name, handles: client.handles },
+        history: history.map((m) => ({ direction: m.direction, body: m.body })),
+      },
+      constraints: clampConstraints({}, cfg.maxCostCeilingUsd, cfg.maxRuntimeCeilingS),
+      tools: [],
+      output_schema: loadWedge(channel.wedge)?.manifest.task_types?.[channel.task_type]?.output_schema,
+      status: "queued",
+      cost_usd: 0,
+      created_at: now,
+      updated_at: now,
+    };
+    await store.createTask(task);
+    void runTask(store, task.id).catch((err) => console.error("[mycel] runTask error:", err));
+    return c.json({ task_id: task.id, thread_id: thread.id, client_id: client.id }, 201);
+  });
+
+  // Internal: the action proxy — the generalization of the LLM proxy to real-world side effects.
+  // The sandbox calls this with its action nonce; the harness resolves the connection (whose
+  // secret it holds), runs the HUMAN APPROVAL GATE, executes, records the outbound message, and
+  // traces it. Connection secrets never enter the sandbox; every action passes a human.
+  app.post("/v1/internal/actions/:capability", async (c) => {
+    const nonce = (c.req.header("authorization") ?? "").replace(/^Bearer\s+/i, "");
+    const grant = getActionGrant(nonce);
+    if (!grant) return c.json({ ok: false, error: "invalid action token" }, 401);
+    const capability = c.req.param("capability");
+    const payload = (await c.req.json().catch(() => ({}))) as Record<string, unknown>;
+
+    // Pick the connection: an explicit id (must be in the grant), else the first granted
+    // connection whose kind matches the capability name.
+    const allowed = grant.connectionIds;
+    let connId = typeof payload.connection_id === "string" ? payload.connection_id : undefined;
+    if (connId && !allowed.includes(connId)) return c.json({ ok: false, error: "connection not granted" }, 403);
+    if (!connId) {
+      for (const id of allowed) {
+        const conn = await domain.getConnection(id);
+        if (conn && capability.toLowerCase().includes(conn.kind)) {
+          connId = id;
+          break;
+        }
+      }
+    }
+    const conn = connId ? await domain.getConnection(connId) : undefined;
+    if (!conn) return c.json({ ok: false, error: "no granted connection for this action" }, 400);
+
+    // HUMAN APPROVAL GATE — suspends the task, surfaces a preview, waits for approve/reject.
+    const preview = actionPreview(conn, capability, payload);
+    const { decision } = await awaitApproval(store, grant.task_id, {
+      action: `${conn.kind}:${capability}`,
+      risk: "high",
+      preview,
+    });
+    if (decision !== "approved") {
+      return c.json({ ok: false, decision, error: `action ${decision}` }, 200);
+    }
+
+    const result = await executeAction(conn, capability, payload);
+
+    // Record the outbound message on the conversation + surface the outcome on the task timeline.
+    if (grant.threadId) {
+      await domain.addMessage({
+        thread_id: grant.threadId,
+        direction: "outbound",
+        author: "agent",
+        body: typeof payload.body === "string" ? payload.body : JSON.stringify(payload),
+        status: result.ok ? "sent" : "failed",
+        task_id: grant.task_id,
+      });
+    }
+    await emitEvent(store, grant.task_id, "tool.result", {
+      tool: `${conn.kind}:${capability}`,
+      ok: result.ok,
+      detail: result.detail,
+    });
+    return c.json({ ok: result.ok, detail: result.detail, data: result.data });
   });
 
   return app;

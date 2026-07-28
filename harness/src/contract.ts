@@ -91,3 +91,63 @@ export interface CreateTaskInput {
   tools?: string[];
   output_schema?: unknown;
 }
+
+// ── The service surface: who the work is for, where it comes from/goes, and the external
+//    capabilities the agent may use. Secrets live behind Connections and never enter the sandbox;
+//    every outward action passes the human approval gate. ──
+
+/** An external capability with server-held secrets. The secret is referenced, never returned. */
+export type ConnectionKind = "email" | "sms" | "whatsapp" | "stripe" | "calendar" | "webhook" | "custom";
+export interface Connection {
+  id: string;
+  kind: ConnectionKind;
+  name: string;
+  /** Non-secret settings (from address, api base url, account id, …). Safe to return. */
+  config: Record<string, unknown>;
+  /** How the harness resolves the real secret — an env var name (env:NAME). Never returned. */
+  secret_ref?: string;
+  created_at: string;
+}
+
+/** A conversation surface bound to a connection; inbound here spawns a task of the given type. */
+export interface Channel {
+  id: string;
+  connection_id: string;
+  kind: ConnectionKind;
+  address: string; // support@acme.com, a phone number, a widget id
+  wedge: string;
+  task_type: string;
+  created_at: string;
+}
+
+/** The customer/contact the work is for. Identity handles let inbound resolve to one client. */
+export interface Client {
+  id: string;
+  display_name?: string;
+  handles: string[]; // normalized emails/phones/ids used to match inbound
+  metadata: Record<string, unknown>;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface Thread {
+  id: string;
+  client_id: string;
+  channel_id: string;
+  subject?: string;
+  status: "open" | "closed";
+  created_at: string;
+  updated_at: string;
+}
+
+export type MessageDirection = "inbound" | "outbound";
+export interface Message {
+  id: string;
+  thread_id: string;
+  direction: MessageDirection;
+  author: string; // client id, "agent", or "system"
+  body: string;
+  status?: "draft" | "sent" | "failed";
+  task_id?: string; // the task that produced an outbound message
+  created_at: string;
+}

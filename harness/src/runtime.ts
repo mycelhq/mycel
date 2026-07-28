@@ -3,8 +3,10 @@
 // the agent. A proven OpenCode harness flow
 //
 import { randomBytes } from "node:crypto";
+import { registerActionGrant, revokeActionGrant } from "./actiongrants";
 import { loadConfig } from "./config";
-import type { EventType, Task } from "./contract";
+import type { Connection, EventType, Task } from "./contract";
+import { getDomainStore } from "./domain";
 import {
   buildOpencodeConfig,
   OpenCodeClient,
@@ -67,12 +69,33 @@ export async function runOpenCodeTask(
     promptModel = model;
   }
 
+  // Resolve which connections this run may act through, and mint an action token. The sandbox
+  // gets the token, never a connection secret; every action still passes the human approval gate.
+  const domain = getDomainStore();
+  const allConns = await domain.listConnections();
+  const wantedConns = new Set<string>([
+    ...(wedge?.manifest.connections ?? []),
+    ...(Array.isArray(task.input?.connections) ? (task.input.connections as string[]) : []),
+  ]);
+  const connectionIds = allConns.filter((c) => wantedConns.has(c.name) || wantedConns.has(c.id)).map((c) => c.id);
+  let threadId: string | undefined;
+  if (typeof task.input?.thread_id === "string") {
+    threadId = task.input.thread_id;
+    const thread = await domain.getThread(threadId);
+    if (thread) {
+      const channel = (await domain.listChannels()).find((ch) => ch.id === thread.channel_id);
+      if (channel && !connectionIds.includes(channel.connection_id)) connectionIds.push(channel.connection_id);
+    }
+  }
+  const actionNonce = registerActionGrant({ task_id: task.id, connectionIds, threadId });
+  const grantedConns = allConns.filter((c) => connectionIds.includes(c.id));
+
   // 1. Write opencode.json + AGENTS.md, then GROUND the agent: mount the wedge's skills +
   //    knowledge and any per-task documents into the sandbox so it can fulfill the service.
   await ctx.emit("step.started", { step: "configure_sandbox" });
   await sandbox.writeFile("~/.config/opencode/opencode.json", JSON.stringify(config, null, 2));
   await sandbox.writeFile("~/.config/opencode/mycel-plugin.ts", MYCEL_PLUGIN_CODE);
-  await sandbox.writeFile("AGENTS.md", buildAgentsMd(task, wedge));
+  await sandbox.writeFile("AGENTS.md", buildAgentsMd(task, wedge, grantedConns));
 
   for (const k of wedge?.knowledge ?? []) {
     await sandbox.writeFile(`knowledge/${k.name}`, k.content);
@@ -104,6 +127,9 @@ export async function runOpenCodeTask(
     MYCEL_GATE_TOKEN: cfg.gateToken,
     MYCEL_TASK_ID: task.id,
     MYCEL_GATE_PATTERNS: buildGatePatterns(task, wedge),
+    // Action proxy: wedge tools POST here with this token to send/charge/book through a connection.
+    MYCEL_ACTIONS_URL: `${cfg.publicUrl}/v1/internal/actions`,
+    MYCEL_ACTION_TOKEN: actionNonce,
   })
     .map(([k, v]) => `${k}=${shellQuote(v)}`)
     .join(" ");
@@ -118,6 +144,7 @@ export async function runOpenCodeTask(
     await oc.waitReady(60000, ctx.shouldAbort);
   } catch (e) {
     if (nonce) revokeGrant(nonce);
+    revokeActionGrant(actionNonce);
     const reason = String((e as Error)?.message ?? e);
     if (reason.startsWith("aborted:")) throw e;
     const log = (await sandbox.readFile("/tmp/opencode.log").catch(() => null)) ?? "";
@@ -209,6 +236,7 @@ export async function runOpenCodeTask(
   } finally {
     if (abortWatch) clearInterval(abortWatch);
     if (nonce) revokeGrant(nonce);
+    revokeActionGrant(actionNonce);
   }
 
   // 6. Prefer the streamed final text; fall back to an artifact the agent wrote.
@@ -233,7 +261,7 @@ function buildPrompt(task: Task, wedge: LoadedWedge | null): string {
     .join("\n");
 }
 
-function buildAgentsMd(task: Task, wedge: LoadedWedge | null): string {
+function buildAgentsMd(task: Task, wedge: LoadedWedge | null, connections: Connection[] = []): string {
   const parts: string[] = [];
   parts.push(`# ${wedge?.manifest.title ?? `Mycel agent — ${task.wedge}`}`);
   parts.push("");
@@ -243,6 +271,20 @@ function buildAgentsMd(task: Task, wedge: LoadedWedge | null): string {
       `policies, examples) and ./inputs/ (documents for this specific task) before acting. ` +
       `Be concise. Write deliverables to ./output/.`,
   );
+  if (connections.length) {
+    parts.push("");
+    parts.push(`## Taking real-world actions`);
+    parts.push(
+      `To send/charge/book, POST to the action proxy — never handle credentials yourself:\n` +
+        "```bash\n" +
+        `curl -s "$MYCEL_ACTIONS_URL/<capability>" \\\n` +
+        `  -H "authorization: Bearer $MYCEL_ACTION_TOKEN" -H "content-type: application/json" \\\n` +
+        `  -d '{"connection_id":"<id>","to":"...","subject":"...","body":"..."}'\n` +
+        "```\n" +
+        `Every action pauses for human approval before it happens. Available connections:`,
+    );
+    for (const c of connections) parts.push(`- **${c.name}** (${c.kind}) — id \`${c.id}\``);
+  }
   if (wedge?.skills.length) {
     parts.push("");
     parts.push(`## Procedures`);

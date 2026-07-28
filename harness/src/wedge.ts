@@ -28,6 +28,8 @@ export interface WedgeManifest {
   task_types?: Record<string, WedgeTaskType>;
   tools?: string[];
   approvals?: WedgeApproval[];
+  /** Connection names/ids this wedge's agent may act through (via the action proxy). */
+  connections?: string[];
   /** Skill filenames under skills/ (with or without .md). Omit to load all. */
   skills?: string[];
   /** Knowledge filenames under knowledge/. Omit to load all. */
