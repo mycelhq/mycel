@@ -94,8 +94,15 @@ POST /v1/approvals/:id/approve       → resolve approval         → {ok, decis
 POST /v1/approvals/:id/reject        → resolve approval         → {ok, decision}
 GET  /v1/artifacts/:id              → fetch/download an artifact
 ```
-Auth: founder **API key** (server-to-server) or short-lived **task-scoped JWT** (browser;
-scoped to one task's events + its approvals; never carries the kernel key).
+Auth (v0.1): founder **API key** as `Authorization: Bearer <key>`, required on every public
+endpoint. In the recommended topology the browser never holds it — your product's server-side
+proxy adds it and layers on per-user auth/tenancy. Short-lived **task-scoped JWTs** (for direct
+browser→kernel embeds) are on the roadmap, not yet implemented.
+
+The service surface (`/v1/connections`, `/v1/channels`, `/v1/clients`, `/v1/threads`,
+`/v1/channels/:id/inbound`) and the action proxy (`/v1/internal/actions/:capability`) are
+documented in [INTEGRATION.md](./INTEGRATION.md), which also states what v0.1 does and does not
+yet enforce.
 
 ## 5. Wedge config — how a wedge is defined (the ~20% the founder writes)
 

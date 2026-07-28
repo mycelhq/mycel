@@ -1,5 +1,11 @@
 # Mycel — System Architecture (v2, full platform)
 
+> **This is the north-star design, not a description of what ships today.** It names the full
+> target system (Inngest durable resume, task-scoped JWTs, RBAC, per-wedge tenant isolation,
+> vault-backed secrets, self-improvement loop). For what v0.1 actually enforces vs. defers, see
+> the "Security model & honest limitations" section in [INTEGRATION.md](./INTEGRATION.md). Where
+> this doc and the code disagree, the code (and that section) is the truth.
+
 > The kernel for AI-native services businesses. Mycel is two planes: a **local Studio**
 > where a founder chats-and-builds skills and agents, and a **cloud Runtime** where those
 > agents execute real work at scale across channels, under supervision, and improve
