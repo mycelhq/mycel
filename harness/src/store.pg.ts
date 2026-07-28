@@ -252,4 +252,11 @@ export class PostgresStore implements Store {
       created_at: new Date(row.created_at).toISOString(),
     };
   }
+
+  async listUnfinished(): Promise<Task[]> {
+    const r = await this.pool.query(
+      `SELECT * FROM tasks WHERE status NOT IN ('succeeded','failed','rejected','expired','cancelled')`,
+    );
+    return r.rows.map((row: any) => this.rowToTask(row));
+  }
 }

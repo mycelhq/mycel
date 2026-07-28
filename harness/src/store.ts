@@ -35,7 +35,17 @@ export interface Store {
     content: string;
   }): Promise<Artifact>;
   getArtifact(id: string): Promise<Artifact | undefined>;
+  /** Non-terminal tasks (queued/provisioning/running/awaiting_approval/validating). */
+  listUnfinished(): Promise<Task[]>;
 }
+
+const TERMINAL = new Set<TaskStatus>([
+  "succeeded",
+  "failed",
+  "rejected",
+  "expired",
+  "cancelled",
+]);
 
 export class InMemoryStore implements Store {
   private tasks = new Map<string, Task>();
@@ -145,6 +155,10 @@ export class InMemoryStore implements Store {
 
   async getArtifact(id: string): Promise<Artifact | undefined> {
     return this.artifacts.get(id);
+  }
+
+  async listUnfinished(): Promise<Task[]> {
+    return [...this.tasks.values()].filter((t) => !TERMINAL.has(t.status));
   }
 }
 
