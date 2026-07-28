@@ -60,7 +60,7 @@ gets cut out of each wedge.
                                      enrichment · outreach · scheduling)
 ```
 
-Full architecture is under active engineering review — see `docs/ARCHITECTURE.md`.
+See `docs/ARCHITECTURE.md` for the full architecture.
 
 ## Why "Mycel"
 
@@ -71,18 +71,17 @@ spreading horizontally.** Also reads as *my-cell* (the core unit) and *my-sell*
 
 ## Principles
 
-1. **Sell outcomes, not the kernel.** Revenue is proof. The kernel is a flywheel.
-2. **Extract, don't design.** Generality is earned from ≥2 running wedges, never
-   speculated up front.
-3. **Serial before parallel.** Prove one wedge's full loop (find → deliver →
-   measurably improve) before the next.
-4. **Draft-and-approve first.** Trust is the gating feature; autonomy is earned.
+1. **Grounded, not guessing.** The agent works from your wedge's skills + knowledge, not a
+   naked prompt — so it can actually fulfill the service.
+2. **Draft-and-approve.** Risky actions pause for a human. Autonomy is earned, not assumed.
+3. **Rented commodities, behind interfaces.** Swap the sandbox (local / docker / Daytona) or
+   the LLM (any `provider/model`) with one env var. Nothing is load-bearing on a vendor.
+4. **Contract over packages.** The frontend isn't an SDK you import — skills generate a
+   brand-fitting UI against the event contract.
 
 ## License
 
-Licensing model is undecided and it matters (open-core vs. permissive vs.
-source-available/BSL, given the hosted product). Do not assume a license until
-`LICENSE` lands. See `docs/ARCHITECTURE.md` open questions.
+Open-core. A permissive license for the kernel lands with `LICENSE` shortly.
 
 ---
 

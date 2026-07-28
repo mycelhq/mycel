@@ -53,10 +53,10 @@ Build the sandbox image once: `docker build -t mycel/sandbox:latest docker/sandb
 Deploy the **service** (`Dockerfile`) to Fly/Render with `MYCEL_SANDBOX=daytona` + `DAYTONA_API_KEY`
 + provider key. Same image runs local (`docker`) and cloud (`daytona`) sandboxes.
 
-## Status / next
+## Roadmap
 
-- ✅ Task API + SSE (Last-Event-ID replay), in-process orchestration, cost/runtime kill,
-  sandbox abstraction (local/docker/daytona), OpenCode REST+SSE client, config-driven model.
-- ⭘ Next: OpenCode plugin for **action-level approval gating** (`approval-gate`),
-  proxy-mode model routing (keys stay server-side), Postgres store + Inngest durable engine,
-  artifact upload to S3. Seams are already in place (`orchestrator.ts`, `store.ts`).
+- ✅ Task API + SSE (Last-Event-ID replay), orchestration, cost/runtime kill, sandbox
+  abstraction (local/docker/daytona), OpenCode REST+SSE client, config-driven model,
+  action-level approval gating, local + Langfuse tracing, wedge grounding.
+- Next: proxy-mode model routing (provider keys stay server-side), Postgres store + durable
+  engine, artifact upload to S3.
