@@ -1,0 +1,37 @@
+{
+  "wedge": "enrollment-operator",
+  "title": "AI Enrollment Operator",
+  "model": "anthropic/claude-opus-4-8",
+  "task_types": {
+    "reply_to_lead": {
+      "description": "Read an inbound parent/student message for a tutoring center, qualify the lead, and draft a warm, on-brand reply that answers their question and proposes a free trial class. Do not send anything — produce a draft for human approval.",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "message": { "type": "string" },
+          "channel": { "type": "string", "enum": ["whatsapp", "instagram", "email", "web"] },
+          "lead_name": { "type": "string" }
+        },
+        "required": ["message"]
+      },
+      "output_schema": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "intent": { "type": "string" },
+          "qualified": { "type": "boolean" },
+          "missing_info": { "type": "array", "items": { "type": "string" } },
+          "draft_reply": { "type": "string" },
+          "proposes_trial": { "type": "boolean" }
+        },
+        "required": ["intent", "qualified", "draft_reply", "proposes_trial"]
+      }
+    }
+  },
+  "tools": [],
+  "approvals": [
+    { "action": "send_message", "risk": "medium", "required": true }
+  ],
+  "skills": ["reply-to-lead"],
+  "knowledge": ["playbook.md", "pricing.md"]
+}
