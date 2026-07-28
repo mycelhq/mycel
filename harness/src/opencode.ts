@@ -34,10 +34,66 @@ export function providerEnvVar(providerId: string): string {
   }
 }
 
-// Native mode: the provider key is exported into the opencode server env. 's default
-// is proxy mode (keys stay server-side behind a signed token) — add that as a hardening step
-// (a signed-token model proxy).
-export function buildOpencodeConfig(model: string): OpencodeConfig {
+// The OpenAI-compatible base URL for a provider. Anthropic/Google aren't OpenAI-compatible —
+// route those through a LiteLLM proxy via MYCEL_LLM_UPSTREAM.
+export function openaiCompatibleBase(providerId: string): string | null {
+  switch (providerId) {
+    case "openai":
+      return "https://api.openai.com/v1";
+    case "openrouter":
+      return "https://openrouter.ai/api/v1";
+    case "groq":
+      return "https://api.groq.com/openai/v1";
+    case "deepseek":
+      return "https://api.deepseek.com/v1";
+    case "together":
+      return "https://api.together.xyz/v1";
+    case "mistral":
+      return "https://api.mistral.ai/v1";
+    default:
+      return null;
+  }
+}
+
+// Headless: allow by default (no interactive prompt to hang on), hard-deny catastrophes.
+// Action-level approval is added via the Mycel opencode plugin.
+const PERMISSION = {
+  "*": "allow",
+  bash: {
+    "rm -rf /": "deny",
+    "rm -rf /*": "deny",
+    "mkfs*": "deny",
+    ":(){ :|:& };:": "deny",
+  },
+};
+
+// Native mode exports the provider key into the opencode server env. Proxy mode (when `proxy`
+// is passed) points opencode at the harness proxy with an opaque nonce — the real key never
+// enters the sandbox.
+export function buildOpencodeConfig(
+  model: string,
+  proxy?: { proxyBaseUrl: string; nonce: string; modelId: string },
+): OpencodeConfig {
+  if (proxy) {
+    const config: Record<string, unknown> = {
+      $schema: "https://opencode.ai/config.json",
+      instructions: ["AGENTS.md"],
+      plugin: ["./mycel-plugin.ts"],
+      model: `mycel/${proxy.modelId}`,
+      provider: {
+        mycel: {
+          npm: "@ai-sdk/openai-compatible",
+          options: { baseURL: proxy.proxyBaseUrl, apiKey: proxy.nonce },
+          models: { [proxy.modelId]: { name: proxy.modelId, id: proxy.modelId } },
+        },
+      },
+      permission: PERMISSION,
+      share: "disabled",
+      autoupdate: false,
+    };
+    return { config, providerEnv: {} }; // no real key in the sandbox
+  }
+
   const { providerId } = splitModel(model);
   const envVar = providerEnvVar(providerId);
   const providerEnv: Record<string, string> = {};
@@ -49,17 +105,7 @@ export function buildOpencodeConfig(model: string): OpencodeConfig {
     instructions: ["AGENTS.md"],
     plugin: ["./mycel-plugin.ts"],
     model,
-    // Headless: allow by default (no interactive prompt to hang on), hard-deny catastrophes.
-    // Action-level approval is added via a Mycel opencode plugin (the Mycel plugin pattern).
-    permission: {
-      "*": "allow",
-      bash: {
-        "rm -rf /": "deny",
-        "rm -rf /*": "deny",
-        "mkfs*": "deny",
-        ":(){ :|:& };:": "deny",
-      },
-    },
+    permission: PERMISSION,
     share: "disabled",
     autoupdate: false,
   };

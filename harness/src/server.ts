@@ -10,7 +10,9 @@ import { markCancelled } from "./cancel";
 import { loadConfig } from "./config";
 import type { CreateTaskInput, Risk, Task, TaskEvent } from "./contract";
 import { runTask } from "./orchestrator";
+import { getGrant } from "./proxygrants";
 import type { Store } from "./store";
+import { traceLlmCall } from "./tracing";
 
 export function createServer(store: Store): Hono {
   const app = new Hono();
@@ -144,6 +146,34 @@ export function createServer(store: Store): Hono {
       preview: body.preview ?? {},
     });
     return c.json({ allow: decision === "approved", decision });
+  });
+
+  // Internal: proxy-mode model routing. The sandbox calls this with an opaque nonce; the harness
+  // looks up the real key, forwards to the OpenAI-compatible upstream, streams the response back,
+  // and traces the call. The provider key never enters the sandbox.
+  app.post("/v1/internal/llm/:path{.+}", async (c) => {
+    const nonce = (c.req.header("authorization") ?? "").replace(/^Bearer\s+/i, "");
+    const grant = getGrant(nonce);
+    if (!grant) return c.json({ error: "invalid proxy token" }, 401);
+    const path = c.req.param("path");
+    const body = await c.req.text();
+    const upstream = `${grant.base_url.replace(/\/+$/, "")}/${path}`;
+    const started = Date.now();
+    try {
+      const res = await fetch(upstream, {
+        method: "POST",
+        headers: { "content-type": "application/json", authorization: `Bearer ${grant.api_key}` },
+        body,
+      });
+      traceLlmCall({ task_id: grant.task_id, model: grant.model, path, status: res.status, ms: Date.now() - started });
+      return new Response(res.body, {
+        status: res.status,
+        headers: { "content-type": res.headers.get("content-type") ?? "application/json" },
+      });
+    } catch (e) {
+      traceLlmCall({ task_id: grant.task_id, model: grant.model, path, status: 502, ms: Date.now() - started });
+      return c.json({ error: "upstream error", detail: String(e) }, 502);
+    }
   });
 
   app.get("/v1/artifacts/:id", async (c) => {

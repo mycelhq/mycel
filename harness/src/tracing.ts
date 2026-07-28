@@ -99,6 +99,26 @@ class MultiObserver implements Observer {
   }
 }
 
+// Every model call routed through proxy mode is logged here (the "everything is traced" goal).
+export function traceLlmCall(entry: {
+  task_id: string;
+  model: string;
+  path: string;
+  status: number;
+  ms: number;
+}): void {
+  const cfg = loadConfig();
+  try {
+    mkdirSync(cfg.logsDir, { recursive: true });
+    appendFileSync(
+      join(cfg.logsDir, "llm.jsonl"),
+      JSON.stringify({ ...entry, ts: new Date().toISOString() }) + "\n",
+    );
+  } catch {
+    /* tracing must never break a call */
+  }
+}
+
 let cached: Observer | null = null;
 
 export async function getObserver(): Promise<Observer> {

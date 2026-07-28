@@ -32,6 +32,8 @@ export interface MycelConfig {
   gateToken: string;
   /** URL the sandbox uses to reach this harness (localhost / host.docker.internal / public). */
   publicUrl: string;
+  /** Proxy mode: route model calls through the harness so provider keys never enter the sandbox. */
+  proxyMode: boolean;
 }
 
 export function loadConfig(): MycelConfig {
@@ -59,5 +61,6 @@ export function loadConfig(): MycelConfig {
     langfuse,
     gateToken: GATE_TOKEN,
     publicUrl: process.env.MYCEL_PUBLIC_URL ?? `http://127.0.0.1:${process.env.PORT ?? 4000}`,
+    proxyMode: process.env.MYCEL_PROXY_MODE === "1",
   };
 }

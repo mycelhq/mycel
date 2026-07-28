@@ -5,8 +5,15 @@
 import { randomBytes } from "node:crypto";
 import { loadConfig } from "./config";
 import type { EventType, Task } from "./contract";
-import { buildOpencodeConfig, OpenCodeClient } from "./opencode";
+import {
+  buildOpencodeConfig,
+  OpenCodeClient,
+  openaiCompatibleBase,
+  providerEnvVar,
+  splitModel,
+} from "./opencode";
 import { buildGatePatterns, MYCEL_PLUGIN_CODE } from "./plugin";
+import { registerGrant, revokeGrant } from "./proxygrants";
 import type { Sandbox } from "./sandbox";
 import { loadWedge, type LoadedWedge } from "./wedge";
 
@@ -28,7 +35,37 @@ export async function runOpenCodeTask(
     typeof task.input?.model === "string"
       ? task.input.model
       : (wedge?.manifest.model ?? cfg.model);
-  const { config, providerEnv } = buildOpencodeConfig(model);
+
+  let config: Record<string, unknown>;
+  let providerEnv: Record<string, string>;
+  let promptModel: string;
+  let nonce: string | undefined;
+
+  if (cfg.proxyMode) {
+    // Route model calls through the harness proxy — the real key never enters the sandbox.
+    const { providerId, modelId } = splitModel(model);
+    const base = process.env.MYCEL_LLM_UPSTREAM ?? openaiCompatibleBase(providerId);
+    if (!base) {
+      throw new Error(
+        `proxy mode: no OpenAI-compatible upstream for "${providerId}" — set MYCEL_LLM_UPSTREAM (e.g. a LiteLLM proxy)`,
+      );
+    }
+    const realKey = process.env[providerEnvVar(providerId)] ?? "";
+    nonce = registerGrant({ base_url: base, api_key: realKey, model: modelId, task_id: task.id });
+    const built = buildOpencodeConfig(model, {
+      proxyBaseUrl: `${cfg.publicUrl}/v1/internal/llm`,
+      nonce,
+      modelId,
+    });
+    config = built.config;
+    providerEnv = built.providerEnv;
+    promptModel = `mycel/${modelId}`;
+  } else {
+    const built = buildOpencodeConfig(model);
+    config = built.config;
+    providerEnv = built.providerEnv;
+    promptModel = model;
+  }
 
   // 1. Write opencode.json + AGENTS.md, then GROUND the agent: mount the wedge's skills +
   //    knowledge and any per-task documents into the sandbox so it can fulfill the service.
@@ -79,7 +116,7 @@ export async function runOpenCodeTask(
 
   // 4. Create a session, send the task prompt (returns fast; OpenCode runs async).
   const sessionId = await oc.createSession(`mycel-${task.id}`);
-  await oc.sendPrompt(sessionId, buildPrompt(task, wedge), model);
+  await oc.sendPrompt(sessionId, buildPrompt(task, wedge), promptModel);
 
   // 5. Stream OpenCode events -> Mycel contract events, until completion / idle.
   const abort = new AbortController();
@@ -142,6 +179,7 @@ export async function runOpenCodeTask(
     }
   } finally {
     clearInterval(abortWatch);
+    if (nonce) revokeGrant(nonce);
   }
 
   // 6. Prefer the streamed final text; fall back to an artifact the agent wrote.
