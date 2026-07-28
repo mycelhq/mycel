@@ -19,6 +19,7 @@ import type {
   Constraints,
   ConnectionKind,
   CreateTaskInput,
+  KnowledgeItem,
   Risk,
   Task,
   TaskEvent,
@@ -214,7 +215,9 @@ export function createServer(store: Store): Hono {
       if (!a) return c.json({ error: "not found" }, 404);
       // Atomic decide: only the first transition off "pending" wins (no approve/reject TOCTOU).
       if (a.status !== "pending") return c.json({ error: `already ${a.status}` }, 409);
-      const settled = resolveApproval(id, decision); // resolves the waiter, which persists status
+      // Approve-with-edit: the human may correct the action before it happens ({ edited: {...} }).
+      const body = (await c.req.json().catch(() => ({}))) as { edited?: Record<string, unknown> };
+      const settled = resolveApproval(id, decision, body.edited); // resolves waiter, persists status
       if (!settled) {
         // No live waiter (already expired/settled) — reflect the terminal state, don't override.
         const fresh = await store.getApproval(id);
@@ -362,6 +365,93 @@ export function createServer(store: Store): Hono {
     return c.json({ ...thread, messages: await domain.listMessages(thread.id) });
   });
 
+  // ── Wedge config + living knowledge ──
+  // The definition (wedge.json + skills) is authored/versioned on disk; knowledge is DATA the
+  // founder edits at runtime (uploads, corrections) — no redeploy. At task time the runtime merges
+  // disk knowledge + these live items so the agent is grounded in the latest.
+
+  app.get("/v1/wedges/:wedge", async (c) => {
+    const slug = c.req.param("wedge");
+    const w = loadWedge(slug);
+    if (!w) return c.json({ error: "unknown wedge" }, 404);
+    const live = await domain.listKnowledge(slug);
+    return c.json({
+      wedge: slug,
+      manifest: w.manifest,
+      skills: w.skills.map((s) => s.name),
+      knowledge: {
+        authored: w.knowledge.map((k) => k.name), // on disk
+        live: live.map((k) => ({ id: k.id, name: k.name, kind: k.kind, source: k.source })),
+      },
+    });
+  });
+
+  app.get("/v1/wedges/:wedge/knowledge", async (c) => c.json(await domain.listKnowledge(c.req.param("wedge"))));
+  app.post("/v1/wedges/:wedge/knowledge", async (c) => {
+    const wedge = c.req.param("wedge");
+    if (!loadWedge(wedge)) return c.json({ error: "unknown wedge" }, 404);
+    const b = (await c.req.json().catch(() => ({}))) as Record<string, unknown>;
+    if (!b.name || typeof b.content !== "string") return c.json({ error: "name and content are required" }, 400);
+    const item = await domain.createKnowledge({
+      wedge,
+      name: String(b.name),
+      content: b.content,
+      kind: (b.kind as KnowledgeItem["kind"]) ?? "document",
+      source: (b.source as KnowledgeItem["source"]) ?? "uploaded",
+      metadata: (b.metadata as Record<string, unknown>) ?? {},
+    });
+    return c.json(item, 201);
+  });
+  app.get("/v1/knowledge/:id", async (c) => {
+    const k = await domain.getKnowledge(c.req.param("id"));
+    return k ? c.json(k) : c.json({ error: "not found" }, 404);
+  });
+  app.put("/v1/knowledge/:id", async (c) => {
+    const b = (await c.req.json().catch(() => ({}))) as Record<string, unknown>;
+    const k = await domain.updateKnowledge(c.req.param("id"), {
+      name: typeof b.name === "string" ? b.name : undefined,
+      content: typeof b.content === "string" ? b.content : undefined,
+      metadata: (b.metadata as Record<string, unknown>) ?? undefined,
+    });
+    return k ? c.json(k) : c.json({ error: "not found" }, 404);
+  });
+  app.delete("/v1/knowledge/:id", async (c) => {
+    return c.json({ ok: await domain.deleteKnowledge(c.req.param("id")) });
+  });
+
+  // Feedback: rate a finished task and, when given, turn a correction into a grounding example.
+  // This is the moat — the wedge gets better from being used, not from being re-authored.
+  app.post("/v1/tasks/:id/feedback", async (c) => {
+    const task = await store.getTask(c.req.param("id"));
+    if (!task) return c.json({ error: "not found" }, 404);
+    const b = (await c.req.json().catch(() => ({}))) as {
+      rating?: "good" | "bad";
+      correction?: string;
+      note?: string;
+    };
+    let knowledgeId: string | undefined;
+    if (b.correction) {
+      const item = await domain.createKnowledge({
+        wedge: task.wedge,
+        name: `feedback-${new Date().toISOString().slice(0, 19)}.md`,
+        content:
+          `# Feedback on a "${task.task_type}" task\n\n` +
+          (b.note ? `Note: ${b.note}\n\n` : "") +
+          `## What good looks like here\n\n${b.correction}\n`,
+        kind: "example",
+        source: "feedback",
+        metadata: { task_id: task.id, rating: b.rating },
+      });
+      knowledgeId = item.id;
+    }
+    await emitEvent(store, task.id, "feedback.recorded", {
+      rating: b.rating,
+      has_correction: !!b.correction,
+      knowledge_id: knowledgeId,
+    });
+    return c.json({ ok: true, knowledge_id: knowledgeId });
+  });
+
   // Inbound webhook: a message arrives on a channel. Resolve the client, append to the thread,
   // and spawn the task that handles it. The product proxies its provider's webhook (Postmark/
   // Twilio/…) here after verifying the provider signature — hence it sits behind the API key.
@@ -448,7 +538,7 @@ export function createServer(store: Store): Hono {
 
     // HUMAN APPROVAL GATE — suspends the task, surfaces a preview, waits for approve/reject.
     const preview = actionPreview(conn, capability, payload);
-    const { decision } = await awaitApproval(store, grant.task_id, {
+    const { decision, edited } = await awaitApproval(store, grant.task_id, {
       action: `${conn.kind}:${capability}`,
       risk: "high",
       preview,
@@ -457,7 +547,28 @@ export function createServer(store: Store): Hono {
       return c.json({ ok: false, decision, error: `action ${decision}` }, 200);
     }
 
-    const result = await executeAction(conn, capability, payload);
+    // If the human corrected the action, act on the correction AND capture it as learning — this
+    // is the feedback loop: the edited output becomes a grounding example for next time.
+    const finalPayload = edited ? { ...payload, ...edited } : payload;
+    if (edited) {
+      const task = await store.getTask(grant.task_id);
+      if (task) {
+        await domain.createKnowledge({
+          wedge: task.wedge,
+          name: `correction-${new Date().toISOString().slice(0, 19)}.md`,
+          content:
+            `# Human correction (${conn.kind}:${capability})\n\n` +
+            `The agent proposed, then a human edited before sending. Prefer the corrected form.\n\n` +
+            `## Proposed\n\n${JSON.stringify(payload, null, 2)}\n\n## Corrected (do it this way)\n\n${JSON.stringify(finalPayload, null, 2)}\n`,
+          kind: "correction",
+          source: "feedback",
+          metadata: { task_id: grant.task_id, capability },
+        });
+        await emitEvent(store, grant.task_id, "feedback.recorded", { kind: "correction", capability });
+      }
+    }
+
+    const result = await executeAction(conn, capability, finalPayload);
 
     // Record the outbound message on the conversation + surface the outcome on the task timeline.
     if (grant.threadId) {
@@ -465,7 +576,7 @@ export function createServer(store: Store): Hono {
         thread_id: grant.threadId,
         direction: "outbound",
         author: "agent",
-        body: typeof payload.body === "string" ? payload.body : JSON.stringify(payload),
+        body: typeof finalPayload.body === "string" ? finalPayload.body : JSON.stringify(finalPayload),
         status: result.ok ? "sent" : "failed",
         task_id: grant.task_id,
       });

@@ -7,30 +7,42 @@ import type { ApprovalDecision, Risk } from "./contract";
 import { emitEvent } from "./events";
 import type { Store } from "./store";
 
+/** The outcome of an approval — plus, when the human edits the action before approving, the
+ *  corrected payload. That edit is the highest-signal feedback in the system. */
+export interface ApprovalOutcome {
+  decision: ApprovalDecision;
+  edited?: Record<string, unknown>;
+}
+
 interface Waiter {
   taskId: string;
-  resolve: (d: ApprovalDecision) => void;
+  resolve: (o: ApprovalOutcome) => void;
 }
 const waiters = new Map<string, Waiter>();
 // taskId -> its pending approval ids, so a cancel can settle them (no dangling waiter/timer).
 const byTask = new Map<string, Set<string>>();
 
-/** Resume a suspended task. Called by POST /v1/approvals/:id/approve|reject. */
-export function resolveApproval(id: string, decision: "approved" | "rejected"): boolean {
-  return settle(id, decision);
+/** Resume a suspended task. Called by POST /v1/approvals/:id/approve|reject. `edited` carries a
+ *  human correction to the action (approve-with-edit). */
+export function resolveApproval(
+  id: string,
+  decision: "approved" | "rejected",
+  edited?: Record<string, unknown>,
+): boolean {
+  return settle(id, { decision, edited });
 }
 
 /** Settle any pending approvals for a task (used when the task is cancelled while suspended). */
 export function failWaitersForTask(taskId: string, decision: ApprovalDecision): void {
-  for (const id of [...(byTask.get(taskId) ?? [])]) settle(id, decision);
+  for (const id of [...(byTask.get(taskId) ?? [])]) settle(id, { decision });
 }
 
-function settle(id: string, decision: ApprovalDecision): boolean {
+function settle(id: string, outcome: ApprovalOutcome): boolean {
   const w = waiters.get(id);
   if (!w) return false;
   waiters.delete(id);
   byTask.get(w.taskId)?.delete(id);
-  w.resolve(decision);
+  w.resolve(outcome);
   return true;
 }
 
@@ -39,7 +51,7 @@ export async function awaitApproval(
   store: Store,
   taskId: string,
   req: { action: string; risk: Risk; preview: Record<string, unknown>; ttlMs?: number },
-): Promise<{ approvalId: string; decision: ApprovalDecision }> {
+): Promise<{ approvalId: string; decision: ApprovalDecision; edited?: Record<string, unknown> }> {
   const approval = await store.createApproval({
     task_id: taskId,
     action: req.action,
@@ -55,15 +67,16 @@ export async function awaitApproval(
     preview: req.preview,
   });
 
-  const decision = await new Promise<ApprovalDecision>((resolve) => {
+  const outcome = await new Promise<ApprovalOutcome>((resolve) => {
     waiters.set(approval.approval_id, { taskId, resolve });
     (byTask.get(taskId) ?? byTask.set(taskId, new Set()).get(taskId)!).add(approval.approval_id);
     const ttl = setTimeout(
-      () => settle(approval.approval_id, "expired"),
+      () => settle(approval.approval_id, { decision: "expired" }),
       req.ttlMs ?? 5 * 60 * 1000,
     );
     (ttl as { unref?: () => void }).unref?.();
   });
+  const decision = outcome.decision;
 
   await store.setApproval(approval.approval_id, decision);
 
@@ -83,5 +96,5 @@ export async function awaitApproval(
       markAbort(taskId, decision);
     }
   }
-  return { approvalId: approval.approval_id, decision };
+  return { approvalId: approval.approval_id, decision, edited: outcome.edited };
 }

@@ -5,7 +5,7 @@
 // v0.1 ships an in-memory reference implementation (zero setup). Postgres backing mirrors the
 // task tables and is the next step; the task engine itself is already durable (store.pg.ts).
 import { randomUUID } from "node:crypto";
-import type { Channel, Client, Connection, Message, Thread } from "./contract";
+import type { Channel, Client, Connection, KnowledgeItem, Message, Thread } from "./contract";
 
 export interface DomainStore {
   // connections (secrets referenced, never stored in the clear here)
@@ -31,6 +31,13 @@ export interface DomainStore {
   listThreadsForClient(clientId: string): Promise<Thread[]>;
   addMessage(m: Omit<Message, "id" | "created_at">): Promise<Message>;
   listMessages(threadId: string): Promise<Message[]>;
+
+  // living knowledge (per wedge)
+  createKnowledge(k: Omit<KnowledgeItem, "id" | "created_at" | "updated_at">): Promise<KnowledgeItem>;
+  getKnowledge(id: string): Promise<KnowledgeItem | undefined>;
+  listKnowledge(wedge: string): Promise<KnowledgeItem[]>;
+  updateKnowledge(id: string, patch: Partial<Pick<KnowledgeItem, "name" | "content" | "metadata">>): Promise<KnowledgeItem | undefined>;
+  deleteKnowledge(id: string): Promise<boolean>;
 }
 
 const now = () => new Date().toISOString();
@@ -117,6 +124,34 @@ export class InMemoryDomainStore implements DomainStore {
   }
   async listMessages(threadId: string): Promise<Message[]> {
     return this.messages.get(threadId) ?? [];
+  }
+
+  private knowledge = new Map<string, KnowledgeItem>();
+  async createKnowledge(k: Omit<KnowledgeItem, "id" | "created_at" | "updated_at">): Promise<KnowledgeItem> {
+    const item: KnowledgeItem = { ...k, id: randomUUID(), created_at: now(), updated_at: now() };
+    this.knowledge.set(item.id, item);
+    return item;
+  }
+  async getKnowledge(id: string): Promise<KnowledgeItem | undefined> {
+    return this.knowledge.get(id);
+  }
+  async listKnowledge(wedge: string): Promise<KnowledgeItem[]> {
+    return [...this.knowledge.values()].filter((k) => k.wedge === wedge);
+  }
+  async updateKnowledge(
+    id: string,
+    patch: Partial<Pick<KnowledgeItem, "name" | "content" | "metadata">>,
+  ): Promise<KnowledgeItem | undefined> {
+    const k = this.knowledge.get(id);
+    if (!k) return undefined;
+    if (patch.name !== undefined) k.name = patch.name;
+    if (patch.content !== undefined) k.content = patch.content;
+    if (patch.metadata !== undefined) k.metadata = patch.metadata;
+    k.updated_at = now();
+    return k;
+  }
+  async deleteKnowledge(id: string): Promise<boolean> {
+    return this.knowledge.delete(id);
   }
 }
 

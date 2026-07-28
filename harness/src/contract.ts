@@ -140,6 +140,21 @@ export interface Thread {
   updated_at: string;
 }
 
+/** A piece of living domain knowledge that grounds a wedge's agent. Data, not code — created/
+ *  edited at runtime (uploads, corrections) without a redeploy; merged with the wedge's on-disk
+ *  knowledge/ at task time. This is where quality accretes as the service is used. */
+export interface KnowledgeItem {
+  id: string;
+  wedge: string;
+  name: string; // filename-like: "pricing.md", "example-reply-04.md"
+  content: string;
+  kind: "document" | "fact" | "example" | "correction";
+  source: "authored" | "uploaded" | "feedback";
+  metadata: Record<string, unknown>;
+  created_at: string;
+  updated_at: string;
+}
+
 export type MessageDirection = "inbound" | "outbound";
 export interface Message {
   id: string;

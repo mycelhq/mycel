@@ -97,8 +97,15 @@ export async function runOpenCodeTask(
   await sandbox.writeFile("~/.config/opencode/mycel-plugin.ts", MYCEL_PLUGIN_CODE);
   await sandbox.writeFile("AGENTS.md", buildAgentsMd(task, wedge, grantedConns));
 
-  for (const k of wedge?.knowledge ?? []) {
-    await sandbox.writeFile(`knowledge/${k.name}`, k.content);
+  // Ground the agent in the LATEST knowledge: on-disk (authored) + live (uploaded/feedback),
+  // with live items overriding same-named disk files. This is how runtime edits + corrections
+  // take effect without a redeploy.
+  const liveKnowledge = await domain.listKnowledge(task.wedge);
+  const knowledgeByName = new Map<string, string>();
+  for (const k of wedge?.knowledge ?? []) knowledgeByName.set(k.name, k.content);
+  for (const k of liveKnowledge) knowledgeByName.set(k.name, k.content);
+  for (const [name, content] of knowledgeByName) {
+    await sandbox.writeFile(`knowledge/${name}`, content);
   }
   const documents = Array.isArray(task.input?.documents) ? (task.input.documents as unknown[]) : [];
   let docCount = 0;
@@ -109,9 +116,9 @@ export async function runOpenCodeTask(
       docCount++;
     }
   }
-  if ((wedge?.knowledge.length ?? 0) || (wedge?.skills.length ?? 0) || docCount) {
+  if (knowledgeByName.size || (wedge?.skills.length ?? 0) || docCount) {
     await ctx.emit("progress", {
-      note: `grounded: ${wedge?.knowledge.length ?? 0} knowledge, ${wedge?.skills.length ?? 0} skills, ${docCount} documents`,
+      note: `grounded: ${knowledgeByName.size} knowledge (${liveKnowledge.length} live), ${wedge?.skills.length ?? 0} skills, ${docCount} documents`,
     });
   }
 
