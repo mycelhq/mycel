@@ -35,6 +35,19 @@ export interface Sandbox {
   destroy(): Promise<void>;
 }
 
+// Minimal environment for the agent process. Critically, we do NOT spread process.env — the
+// harness holds provider keys, the DB URL, the Daytona key, Langfuse keys, etc., and a
+// prompt-injected or misbehaving agent must not be able to `printenv` them out. Everything the
+// run legitimately needs (provider creds in native mode, gate token, proxy nonce) is injected
+// per-command by the runtime, not inherited here. NOTE: LocalSandbox shares the host kernel and
+// is a DEV backend, not a security boundary — use docker/daytona for real isolation.
+function minimalSandboxEnv(home: string): NodeJS.ProcessEnv {
+  const pass = ["PATH", "LANG", "LC_ALL", "TERM", "TMPDIR", "SHELL", "TZ"] as const;
+  const env: NodeJS.ProcessEnv = { HOME: home };
+  for (const k of pass) if (process.env[k]) env[k] = process.env[k];
+  return env;
+}
+
 export class LocalSandbox implements Sandbox {
   readonly id: string;
   readonly home: string;
@@ -66,7 +79,7 @@ export class LocalSandbox implements Sandbox {
     // HOME points at the sandbox so opencode reads the config we wrote.
     const child = execFile("bash", ["-lc", command], {
       cwd: this.home,
-      env: { ...process.env, HOME: this.home },
+      env: minimalSandboxEnv(this.home),
     });
     child.unref();
     this.procs.push(child);
@@ -79,7 +92,7 @@ export class LocalSandbox implements Sandbox {
         ["-lc", command],
         {
           cwd: this.home,
-          env: { ...process.env, HOME: this.home },
+          env: minimalSandboxEnv(this.home),
           timeout: timeoutMs,
           maxBuffer: 16 * 1024 * 1024,
         },
