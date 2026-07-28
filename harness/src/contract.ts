@@ -29,6 +29,8 @@ export interface Task {
   tools: string[];
   output_schema?: unknown;
   status: TaskStatus;
+  /** Set when the task reaches a non-success terminal state; the reason, persisted (not only in the event stream). */
+  error?: string;
   cost_usd: number;
   created_at: string;
   updated_at: string;

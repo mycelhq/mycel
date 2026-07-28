@@ -38,7 +38,9 @@ export class PostgresStore implements Store {
         tools jsonb NOT NULL DEFAULT '[]',
         output_schema jsonb,
         status text NOT NULL DEFAULT 'queued',
+        error text,
         cost_usd numeric NOT NULL DEFAULT 0,
+        event_seq int NOT NULL DEFAULT 0,
         created_at timestamptz NOT NULL DEFAULT now(),
         updated_at timestamptz NOT NULL DEFAULT now()
       );
@@ -68,6 +70,9 @@ export class PostgresStore implements Store {
         created_at timestamptz NOT NULL DEFAULT now()
       );
     `);
+    // Idempotent migrations for pre-existing installs.
+    await this.pool.query(`ALTER TABLE tasks ADD COLUMN IF NOT EXISTS error text;`);
+    await this.pool.query(`ALTER TABLE tasks ADD COLUMN IF NOT EXISTS event_seq int NOT NULL DEFAULT 0;`);
   }
 
   private rowToTask(r: any): Task {
@@ -81,6 +86,7 @@ export class PostgresStore implements Store {
       tools: r.tools ?? [],
       output_schema: r.output_schema ?? undefined,
       status: r.status,
+      error: r.error ?? undefined,
       cost_usd: Number(r.cost_usd),
       created_at: new Date(r.created_at).toISOString(),
       updated_at: new Date(r.updated_at).toISOString(),
@@ -114,8 +120,15 @@ export class PostgresStore implements Store {
     return r.rows[0] ? this.rowToTask(r.rows[0]) : undefined;
   }
 
-  async setStatus(id: string, status: TaskStatus): Promise<void> {
-    await this.pool.query(`UPDATE tasks SET status=$2, updated_at=now() WHERE id=$1`, [id, status]);
+  async setStatus(id: string, status: TaskStatus, error?: string): Promise<void> {
+    if (error !== undefined) {
+      await this.pool.query(
+        `UPDATE tasks SET status=$2, error=$3, updated_at=now() WHERE id=$1`,
+        [id, status, error],
+      );
+    } else {
+      await this.pool.query(`UPDATE tasks SET status=$2, updated_at=now() WHERE id=$1`, [id, status]);
+    }
   }
 
   async addCost(id: string, delta: number): Promise<void> {
@@ -130,21 +143,30 @@ export class PostgresStore implements Store {
     type: EventType,
     data: Record<string, unknown> = {},
   ): Promise<TaskEvent> {
-    const r = await this.pool.query(
-      `INSERT INTO events (task_id, seq, type, data)
-       VALUES ($1, (SELECT COALESCE(MAX(seq),0)+1 FROM events WHERE task_id=$1), $2, $3)
-       RETURNING seq, ts`,
-      [taskId, type, JSON.stringify(data)],
-    );
-    const row = r.rows[0];
-    return {
-      id: row.seq,
-      task_id: taskId,
-      seq: row.seq,
-      type,
-      ts: new Date(row.ts).toISOString(),
-      data,
-    };
+    // Atomic per-task sequence: bump a counter on the task row (which takes a row lock, so
+    // concurrent appends serialize) and use the returned value as seq. No MAX()+1 race, no
+    // duplicate-seq PK violation, no dropped event.
+    const client = await this.pool.connect();
+    try {
+      await client.query("BEGIN");
+      const s = await client.query(
+        `UPDATE tasks SET event_seq = event_seq + 1 WHERE id=$1 RETURNING event_seq`,
+        [taskId],
+      );
+      if (!s.rows[0]) throw new Error(`appendEvent: unknown task ${taskId}`);
+      const seq: number = s.rows[0].event_seq;
+      const r = await client.query(
+        `INSERT INTO events (task_id, seq, type, data) VALUES ($1,$2,$3,$4) RETURNING ts`,
+        [taskId, seq, type, JSON.stringify(data)],
+      );
+      await client.query("COMMIT");
+      return { id: seq, task_id: taskId, seq, type, ts: new Date(r.rows[0].ts).toISOString(), data };
+    } catch (e) {
+      await client.query("ROLLBACK").catch(() => {});
+      throw e;
+    } finally {
+      client.release();
+    }
   }
 
   async eventsAfter(taskId: string, afterId: number): Promise<TaskEvent[]> {
@@ -258,5 +280,9 @@ export class PostgresStore implements Store {
       `SELECT * FROM tasks WHERE status NOT IN ('succeeded','failed','rejected','expired','cancelled')`,
     );
     return r.rows.map((row: any) => this.rowToTask(row));
+  }
+
+  async close(): Promise<void> {
+    await this.pool.end();
   }
 }

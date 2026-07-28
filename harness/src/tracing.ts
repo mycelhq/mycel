@@ -3,10 +3,25 @@
 //   - Langfuse (opt-in): full trace + timeline per task, self-hosted or cloud.
 // Langfuse is dynamically imported so the harness has no hard dependency on it —
 // `npm i langfuse` and set the keys to turn it on.
-import { appendFileSync, mkdirSync } from "node:fs";
+import { mkdirSync } from "node:fs";
+import { appendFile } from "node:fs/promises";
 import { join } from "node:path";
 import { loadConfig, type LangfuseConfig } from "./config";
 import type { Task, TaskEvent } from "./contract";
+
+// Non-blocking JSONL appends, serialized per file so lines never interleave and the event loop is
+// never blocked on disk (important while streaming token.delta events).
+const chains = new Map<string, Promise<void>>();
+function appendLine(path: string, line: string): void {
+  const prev = chains.get(path) ?? Promise.resolve();
+  const next = prev
+    .catch(() => {})
+    .then(() => appendFile(path, line))
+    .catch(() => {
+      /* logging must never break a task */
+    });
+  chains.set(path, next);
+}
 
 export interface Observer {
   onTaskStart(task: Task): void | Promise<void>;
@@ -20,11 +35,7 @@ class LocalLogObserver implements Observer {
   }
   onTaskStart(): void {}
   onEvent(taskId: string, ev: TaskEvent): void {
-    try {
-      appendFileSync(join(this.dir, `${taskId}.jsonl`), JSON.stringify(ev) + "\n");
-    } catch {
-      /* logging must never break a task */
-    }
+    appendLine(join(this.dir, `${taskId}.jsonl`), JSON.stringify(ev) + "\n");
   }
   onTaskEnd(): void {}
 }
@@ -107,17 +118,18 @@ export function traceLlmCall(entry: {
   status: number;
   ms: number;
 }): void {
-  const cfg = loadConfig();
-  try {
-    mkdirSync(cfg.logsDir, { recursive: true });
-    appendFileSync(
-      join(cfg.logsDir, "llm.jsonl"),
-      JSON.stringify({ ...entry, ts: new Date().toISOString() }) + "\n",
-    );
-  } catch {
-    /* tracing must never break a call */
+  const dir = loadConfig().logsDir;
+  if (!llmDirReady) {
+    try {
+      mkdirSync(dir, { recursive: true });
+    } catch {
+      /* noop */
+    }
+    llmDirReady = true;
   }
+  appendLine(join(dir, "llm.jsonl"), JSON.stringify({ ...entry, ts: new Date().toISOString() }) + "\n");
 }
+let llmDirReady = false;
 
 let cached: Observer | null = null;
 

@@ -13,5 +13,8 @@ export async function emitEvent(
   const ev = await store.appendEvent(taskId, type, data);
   publish(taskId, ev);
   const observer = await getObserver();
-  void observer.onEvent(taskId, ev);
+  // Tracing must never take down a task — swallow, don't leave an unhandled rejection.
+  void Promise.resolve(observer.onEvent(taskId, ev)).catch((e) =>
+    console.error("[mycel] observer.onEvent error:", e),
+  );
 }

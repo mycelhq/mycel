@@ -9,6 +9,13 @@ export type SandboxBackend = "local" | "docker" | "daytona";
 // gate endpoint. Set MYCEL_GATE_TOKEN to fix it across restarts.
 const GATE_TOKEN = process.env.MYCEL_GATE_TOKEN ?? randomBytes(16).toString("hex");
 
+// The founder API key that guards the public /v1 surface. Set MYCEL_API_KEY in prod (and in the
+// product's server env so its proxy routes can present it). If unset we generate an ephemeral
+// one per boot and print it — the API is NEVER unauthenticated, even in dev.
+const API_KEY_ENV = process.env.MYCEL_API_KEY;
+const API_KEY = API_KEY_ENV ?? `msk_${randomBytes(24).toString("base64url")}`;
+export const API_KEY_GENERATED = !API_KEY_ENV;
+
 export interface LangfuseConfig {
   secretKey: string;
   publicKey: string;
@@ -30,10 +37,17 @@ export interface MycelConfig {
   langfuse?: LangfuseConfig;
   /** Shared secret the sandbox plugin presents to /v1/internal/gate. */
   gateToken: string;
+  /** Founder API key required (Bearer) on the public /v1 surface. */
+  apiKey: string;
   /** URL the sandbox uses to reach this harness (localhost / host.docker.internal / public). */
   publicUrl: string;
   /** Proxy mode: route model calls through the harness so provider keys never enter the sandbox. */
   proxyMode: boolean;
+  /** Hard server-side ceilings; client-supplied constraints are clamped to these. */
+  maxCostCeilingUsd: number;
+  maxRuntimeCeilingS: number;
+  /** Cap on max_tokens the sandbox may request through the LLM proxy. */
+  maxTokensCeiling: number;
 }
 
 export function loadConfig(): MycelConfig {
@@ -60,7 +74,11 @@ export function loadConfig(): MycelConfig {
     logsDir: process.env.MYCEL_LOG_DIR ?? ".mycel/logs",
     langfuse,
     gateToken: GATE_TOKEN,
+    apiKey: API_KEY,
     publicUrl: process.env.MYCEL_PUBLIC_URL ?? `http://127.0.0.1:${process.env.PORT ?? 4000}`,
     proxyMode: process.env.MYCEL_PROXY_MODE === "1",
+    maxCostCeilingUsd: Number(process.env.MYCEL_MAX_COST_USD ?? 50),
+    maxRuntimeCeilingS: Number(process.env.MYCEL_MAX_RUNTIME_S ?? 1800),
+    maxTokensCeiling: Number(process.env.MYCEL_MAX_TOKENS ?? 8192),
   };
 }

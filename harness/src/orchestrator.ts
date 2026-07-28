@@ -3,13 +3,14 @@
 // in approvals.ts (driven by the OpenCode plugin gate). v0.1 runs in-process; a durable engine
 // slots in at the same seams.
 import { getArtifactBackend } from "./artifacts";
-import { isCancelled } from "./cancel";
-import type { EventType } from "./contract";
+import { abortReason, clearAbort } from "./cancel";
+import type { EventType, TaskStatus } from "./contract";
 import { emitEvent } from "./events";
-import { createSandbox } from "./sandbox";
+import { createSandbox, type Sandbox } from "./sandbox";
 import { runOpenCodeTask } from "./runtime";
 import type { Store } from "./store";
 import { getObserver } from "./tracing";
+import { validateOutput } from "./validate";
 
 export async function runTask(store: Store, taskId: string): Promise<void> {
   const task = await store.getTask(taskId);
@@ -26,26 +27,40 @@ export async function runTask(store: Store, taskId: string): Promise<void> {
 
   const onCost = (usd: number) => {
     accruedCost += usd;
-    void store.addCost(taskId, usd);
-    void emit("cost.charged", { cost_usd: Number(usd.toFixed(6)), reason: "model" });
+    // Fire-and-forget, but never leave an unhandled rejection (a pg blip must not crash the process).
+    void store.addCost(taskId, usd).catch((e) => console.error("[mycel] addCost error:", e));
+    void Promise.resolve(emit("cost.charged", { cost_usd: Number(usd.toFixed(6)), reason: "model" })).catch(
+      (e) => console.error("[mycel] cost event error:", e),
+    );
   };
 
-  // Synchronous, store-independent — safe to call on hot paths inside the run loop.
+  // Synchronous, store-independent — safe to call on hot paths inside the run loop. The abort
+  // registry carries user cancels AND approval outcomes (rejected/expired), so they end the run.
   const shouldAbort = (): string | null => {
-    if (isCancelled(taskId)) return "cancelled";
+    const r = abortReason(taskId);
+    if (r) return r;
     if (Date.now() > deadline) return "max_runtime_exceeded";
     if (accruedCost > task.constraints.max_cost_usd) return "max_cost_exceeded";
     return null;
   };
 
-  const sandbox = await createSandbox();
+  let sandbox: Sandbox | undefined;
   try {
+    // Provisioning is inside the try: a sandbox that fails to start must fail the task, not
+    // strand it in `queued` with an SSE stream hanging forever.
+    await store.setStatus(taskId, "provisioning");
+    sandbox = await createSandbox();
     await store.setStatus(taskId, "running");
     await emit("task.created", { wedge: task.wedge, task_type: task.task_type });
 
     const { text } = await runOpenCodeTask(task, sandbox, { emit, onCost, shouldAbort });
 
-    await emit("output.validated", { ok: true });
+    // Honest validation against the wedge/task output_schema — not a hardcoded ok:true.
+    const schema = task.output_schema;
+    const v = validateOutput(text, schema);
+    await emit("output.validated", { ok: v.ok, errors: v.errors });
+    if (!v.ok) throw new Error(`output failed validation: ${v.errors.join("; ")}`);
+
     const backend = await getArtifactBackend();
     const art = await store.addArtifact({
       task_id: taskId,
@@ -64,16 +79,22 @@ export async function runTask(store: Store, taskId: string): Promise<void> {
     await emit("task.finished", { status: "succeeded" });
   } catch (e) {
     const reason = String((e as Error)?.message ?? e);
-    const status = reason.includes("cancelled")
-      ? "cancelled"
-      : reason.includes("max_runtime")
-        ? "expired"
-        : "failed";
-    await store.setStatus(taskId, status);
+    const status = terminalStatusFor(reason);
+    await store.setStatus(taskId, status, reason);
     await emit("task.finished", { status, error: reason });
   } finally {
-    await sandbox.destroy();
+    clearAbort(taskId);
+    if (sandbox) await sandbox.destroy();
     const final = await store.getTask(taskId);
     await observer.onTaskEnd(taskId, final?.status ?? "unknown");
   }
+}
+
+/** Map an abort/error reason to the terminal status the contract defines. */
+function terminalStatusFor(reason: string): TaskStatus {
+  if (reason.includes("cancelled")) return "cancelled";
+  if (reason.includes("rejected")) return "rejected";
+  if (reason.includes("expired")) return "expired";
+  if (reason.includes("max_runtime")) return "expired";
+  return "failed";
 }

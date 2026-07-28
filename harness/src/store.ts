@@ -15,7 +15,8 @@ import type {
 export interface Store {
   createTask(t: Task): Promise<Task>;
   getTask(id: string): Promise<Task | undefined>;
-  setStatus(id: string, status: TaskStatus): Promise<void>;
+  /** Set status; on a failure/terminal state, pass the reason so it's persisted on the task. */
+  setStatus(id: string, status: TaskStatus, error?: string): Promise<void>;
   addCost(id: string, delta: number): Promise<void>;
   appendEvent(taskId: string, type: EventType, data?: Record<string, unknown>): Promise<TaskEvent>;
   eventsAfter(taskId: string, afterId: number): Promise<TaskEvent[]>;
@@ -37,6 +38,8 @@ export interface Store {
   getArtifact(id: string): Promise<Artifact | undefined>;
   /** Non-terminal tasks (queued/provisioning/running/awaiting_approval/validating). */
   listUnfinished(): Promise<Task[]>;
+  /** Release resources (e.g. the pg pool) on graceful shutdown. Optional. */
+  close?(): Promise<void>;
 }
 
 const TERMINAL = new Set<TaskStatus>([
@@ -65,10 +68,11 @@ export class InMemoryStore implements Store {
     return this.tasks.get(id);
   }
 
-  async setStatus(id: string, status: TaskStatus): Promise<void> {
+  async setStatus(id: string, status: TaskStatus, error?: string): Promise<void> {
     const t = this.tasks.get(id);
     if (t) {
       t.status = status;
+      if (error !== undefined) t.error = error;
       t.updated_at = new Date().toISOString();
     }
   }

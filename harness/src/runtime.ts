@@ -110,75 +110,104 @@ export async function runOpenCodeTask(
   await sandbox.spawn(`${envInline} opencode serve --port ${cfg.opencodePort} > /tmp/opencode.log 2>&1`);
 
   // 3. Reach the server (preview link in Daytona; localhost locally) and wait until ready.
+  //    Setup is abortable (cancel works during boot) and surfaces the real startup failure —
+  //    the opencode log — instead of a bare "did not become ready".
   const { url, token } = await sandbox.previewUrl(cfg.opencodePort);
   const oc = new OpenCodeClient(url, { username: "opencode", password }, token);
-  await oc.waitReady();
+  try {
+    await oc.waitReady(60000, ctx.shouldAbort);
+  } catch (e) {
+    if (nonce) revokeGrant(nonce);
+    const reason = String((e as Error)?.message ?? e);
+    if (reason.startsWith("aborted:")) throw e;
+    const log = (await sandbox.readFile("/tmp/opencode.log").catch(() => null)) ?? "";
+    throw new Error(`opencode failed to start${log ? `: ${log.trim().slice(-800)}` : " (no log)"}`);
+  }
 
-  // 4. Create a session, send the task prompt (returns fast; OpenCode runs async).
-  const sessionId = await oc.createSession(`mycel-${task.id}`);
-  await oc.sendPrompt(sessionId, buildPrompt(task, wedge), promptModel);
-
-  // 5. Stream OpenCode events -> Mycel contract events, until completion / idle.
+  // 4 + 5. Session + stream, under one finally that always revokes the proxy grant and clears
+  // the abort watcher — even if session setup throws.
   const abort = new AbortController();
-  const abortWatch = setInterval(() => {
-    if (ctx.shouldAbort()) abort.abort();
-  }, 1000);
-  (abortWatch as { unref?: () => void }).unref?.();
-
+  let abortWatch: ReturnType<typeof setInterval> | undefined;
   let finalText = "";
   let done = false;
   try {
-    for await (const ev of oc.events(abort.signal)) {
-      const reason = ctx.shouldAbort();
-      if (reason) {
-        await oc.abort(sessionId);
-        throw new Error(`aborted: ${reason}`);
-      }
-      const sid: unknown = ev.properties?.sessionID ?? ev.properties?.part?.sessionID;
-      if (typeof sid === "string" && sid !== sessionId) continue;
+    if (ctx.shouldAbort()) throw new Error(`aborted: ${ctx.shouldAbort()}`);
+    const sessionId = await oc.createSession(`mycel-${task.id}`);
+    await oc.sendPrompt(sessionId, buildPrompt(task, wedge), promptModel);
 
-      switch (ev.type) {
-        case "message.part.delta": {
-          const d: unknown = ev.properties?.delta;
-          if (typeof d === "string" && d) await ctx.emit("token.delta", { text: d });
-          break;
+    abortWatch = setInterval(() => {
+      if (ctx.shouldAbort()) abort.abort();
+    }, 1000);
+    (abortWatch as { unref?: () => void }).unref?.();
+
+    try {
+      for await (const ev of oc.events(abort.signal)) {
+        const reason = ctx.shouldAbort();
+        if (reason) {
+          await oc.abort(sessionId);
+          throw new Error(`aborted: ${reason}`);
         }
-        case "message.part.updated": {
-          const part = ev.properties?.part;
-          const kind: unknown = part?.type;
-          if (kind === "tool" || kind === "tool-invocation") {
-            const name = part.toolName ?? part.tool ?? "tool";
-            if (part.result !== undefined) await ctx.emit("tool.result", { tool: name, ok: !part.error });
-            else await ctx.emit("tool.called", { tool: name, args: part.invocation?.input ?? part.args });
-          } else if (kind === "text" && typeof part.text === "string") {
-            finalText = part.text;
-          } else if (kind === "reasoning") {
-            await ctx.emit("progress", { note: "reasoning" });
+        const sid: unknown = ev.properties?.sessionID ?? ev.properties?.part?.sessionID;
+        if (typeof sid === "string" && sid !== sessionId) continue;
+
+        switch (ev.type) {
+          case "message.part.delta": {
+            const d: unknown = ev.properties?.delta;
+            if (typeof d === "string" && d) await ctx.emit("token.delta", { text: d });
+            break;
           }
-          break;
+          case "message.part.updated": {
+            const part = ev.properties?.part;
+            const kind: unknown = part?.type;
+            if (kind === "tool" || kind === "tool-invocation") {
+              const name = part.toolName ?? part.tool ?? "tool";
+              if (part.result !== undefined) await ctx.emit("tool.result", { tool: name, ok: !part.error });
+              else await ctx.emit("tool.called", { tool: name, args: part.invocation?.input ?? part.args });
+            } else if (kind === "text" && typeof part.text === "string") {
+              finalText = part.text;
+            } else if (kind === "reasoning") {
+              await ctx.emit("progress", { note: "reasoning" });
+            }
+            break;
+          }
+          case "message.info": {
+            const usage = ev.properties?.info?.usage ?? ev.properties?.usage;
+            if (usage) ctx.onCost(estimateCost(model, usage));
+            break;
+          }
+          case "message.completed":
+          case "session.completed":
+          case "session.idle": {
+            done = true;
+            break;
+          }
+          case "session.error": {
+            throw new Error(`opencode session error: ${JSON.stringify(ev.properties)}`);
+          }
         }
-        case "message.info": {
-          const usage = ev.properties?.info?.usage ?? ev.properties?.usage;
-          if (usage) ctx.onCost(estimateCost(model, usage));
+        if (done) {
+          await oc.abort(sessionId);
           break;
-        }
-        case "message.completed":
-        case "session.completed":
-        case "session.idle": {
-          done = true;
-          break;
-        }
-        case "session.error": {
-          throw new Error(`opencode session error: ${JSON.stringify(ev.properties)}`);
         }
       }
-      if (done) {
-        await oc.abort(sessionId);
-        break;
-      }
+    } catch (e) {
+      // An aborted fetch surfaces as a generic AbortError — translate to the real reason so the
+      // task lands on the correct terminal status.
+      const reason = ctx.shouldAbort();
+      if (reason) throw new Error(`aborted: ${reason}`);
+      throw e;
+    }
+
+    // The stream ended without a completion signal → OpenCode died (crash, OOM, network). Do NOT
+    // report success on partial/empty output.
+    if (!done) {
+      const reason = ctx.shouldAbort();
+      if (reason) throw new Error(`aborted: ${reason}`);
+      const log = (await sandbox.readFile("/tmp/opencode.log").catch(() => null)) ?? "";
+      throw new Error(`opencode ended before completing${log ? `: ${log.trim().slice(-500)}` : ""}`);
     }
   } finally {
-    clearInterval(abortWatch);
+    if (abortWatch) clearInterval(abortWatch);
     if (nonce) revokeGrant(nonce);
   }
 

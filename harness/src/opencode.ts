@@ -133,9 +133,11 @@ export class OpenCodeClient {
     return h;
   }
 
-  async waitReady(timeoutMs = 60000): Promise<void> {
+  async waitReady(timeoutMs = 60000, shouldAbort?: () => string | null): Promise<void> {
     const deadline = Date.now() + timeoutMs;
     while (Date.now() < deadline) {
+      const reason = shouldAbort?.();
+      if (reason) throw new Error(`aborted: ${reason}`);
       try {
         const r = await fetch(`${this.baseUrl}/session`, { headers: this.headers() });
         if (r.ok) return;
