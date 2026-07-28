@@ -70,6 +70,14 @@ const idempotency = new Map<string, string>();
 export function createServer(store: Store): Hono {
   const app = new Hono();
   const domain = getDomainStore();
+  const identity = getIdentityStore();
+
+  // ── tenancy helpers ── every read filters by the caller's accessible projects; every write
+  // stamps the resolved project; every by-id fetch checks membership. One place, used everywhere.
+  const accessible = (c: import("hono").Context) => identity.accessibleProjectIds(c.get("scope"));
+  const writeProjectId = (c: import("hono").Context) =>
+    identity.resolveWriteProject(c.get("scope"), c.req.header("x-mycel-project"));
+  const inScope = (set: Set<string>, pid?: string) => !!pid && set.has(pid);
 
   app.get("/health", (c) => c.json({ ok: true, service: "mycel-harness", version: "v0.1" }));
 
@@ -102,6 +110,27 @@ export function createServer(store: Store): Hono {
     });
   });
 
+  // Projects (tenants). A member sees their org's projects; a project key sees its own.
+  app.get("/v1/projects", async (c) => {
+    const scope = c.get("scope");
+    if (scope.kind === "key") {
+      const p = scope.project_id ? identity.getProject(scope.project_id) : undefined;
+      return c.json(p ? [p] : []);
+    }
+    return c.json(identity.listProjects(scope.org_id));
+  });
+  // Create a project (+ its product API key). Owner/admin members only.
+  app.post("/v1/projects", async (c) => {
+    const scope = c.get("scope");
+    if (scope.kind !== "member" || !["owner", "admin"].includes(scope.role ?? "")) {
+      return c.json({ error: "only an owner/admin member can create projects" }, 403);
+    }
+    const b = (await c.req.json().catch(() => ({}))) as { name?: string; wedges?: string[] };
+    if (!b.name) return c.json({ error: "name is required" }, 400);
+    const { project, apiKey } = identity.createProject(scope.org_id, b.name, Array.isArray(b.wedges) ? b.wedges : []);
+    return c.json({ project, api_key: apiKey }, 201);
+  });
+
   // POST /v1/tasks — create + kick off a task
   app.post("/v1/tasks", async (c) => {
     if (rateLimited(c.req.header("authorization") ?? "anon")) {
@@ -121,6 +150,13 @@ export function createServer(store: Store): Hono {
       return c.json({ error: `unknown task_type "${body.task_type}" for wedge "${body.wedge}"` }, 400);
     }
 
+    // Tenancy: land the task in a project the caller owns, and only if that project runs this wedge.
+    const projectId = writeProjectId(c);
+    if (!projectId) return c.json({ error: "specify a project (X-Mycel-Project header)" }, 400);
+    if (!identity.projectAllowsWedge(projectId, body.wedge)) {
+      return c.json({ error: `wedge "${body.wedge}" is not enabled for this project` }, 403);
+    }
+
     const idem = c.req.header("idempotency-key");
     if (idem && idempotency.has(idem)) {
       const existing = await store.getTask(idempotency.get(idem)!);
@@ -132,6 +168,7 @@ export function createServer(store: Store): Hono {
     const now = new Date().toISOString();
     const task: Task = {
       id: randomUUID(),
+      project_id: projectId,
       wedge: body.wedge,
       task_type: body.task_type,
       actor: body.actor ?? { kind: "user", id: "anon" },
@@ -157,13 +194,22 @@ export function createServer(store: Store): Hono {
     const status = c.req.query("status") as TaskStatus | undefined;
     const wedge = c.req.query("wedge");
     const limit = c.req.query("limit") ? Number(c.req.query("limit")) : undefined;
-    return c.json(await store.listTasks({ status, wedge, limit }));
+    const set = accessible(c);
+    const tasks = await store.listTasks({ status, wedge, limit: (limit ?? 100) * 4 });
+    return c.json(tasks.filter((t) => inScope(set, t.project_id)).slice(0, limit ?? 100));
   });
 
-  // GET /v1/approvals — the approvals queue (?status=pending)
+  // GET /v1/approvals — the approvals queue (?status=pending), scoped to the caller's projects.
   app.get("/v1/approvals", async (c) => {
     const status = c.req.query("status") as Approval["status"] | undefined;
-    return c.json(await store.listApprovals(status || undefined));
+    const set = accessible(c);
+    const aps = await store.listApprovals(status || undefined);
+    const out: Approval[] = [];
+    for (const a of aps) {
+      const t = await store.getTask(a.task_id);
+      if (t && inScope(set, t.project_id)) out.push(a);
+    }
+    return c.json(out);
   });
 
   // GET /v1/meta — what the portal needs to render itself: version, wedges, Langfuse deep-link base.
@@ -187,13 +233,15 @@ export function createServer(store: Store): Hono {
   // GET /v1/tasks/:id
   app.get("/v1/tasks/:id", async (c) => {
     const t = await store.getTask(c.req.param("id"));
-    return t ? c.json(t) : c.json({ error: "not found" }, 404);
+    if (!t || !inScope(accessible(c), t.project_id)) return c.json({ error: "not found" }, 404);
+    return c.json(t);
   });
 
   // GET /v1/tasks/:id/events — SSE with Last-Event-ID replay
   app.get("/v1/tasks/:id/events", async (c) => {
     const taskId = c.req.param("id");
-    if (!(await store.getTask(taskId))) return c.json({ error: "not found" }, 404);
+    const guard = await store.getTask(taskId);
+    if (!guard || !inScope(accessible(c), guard.project_id)) return c.json({ error: "not found" }, 404);
     const raw = c.req.header("Last-Event-ID") ?? c.req.query("lastEventId") ?? "0";
     const parsed = Number(raw);
     const lastId = Number.isFinite(parsed) ? parsed : 0; // malformed header must not skip replay
@@ -261,7 +309,7 @@ export function createServer(store: Store): Hono {
 
   app.post("/v1/tasks/:id/cancel", async (c) => {
     const t = await store.getTask(c.req.param("id"));
-    if (!t) return c.json({ error: "not found" }, 404);
+    if (!t || !inScope(accessible(c), t.project_id)) return c.json({ error: "not found" }, 404);
     markCancelled(t.id);
     // Wake any pending approval so a task suspended on the gate ends promptly (no dangling waiter).
     failWaitersForTask(t.id, "rejected");
@@ -274,6 +322,9 @@ export function createServer(store: Store): Hono {
       if (!id) return c.json({ error: "not found" }, 404);
       const a = await store.getApproval(id);
       if (!a) return c.json({ error: "not found" }, 404);
+      // Tenancy: the approval's task must belong to a project the caller owns.
+      const at = await store.getTask(a.task_id);
+      if (!at || !inScope(accessible(c), at.project_id)) return c.json({ error: "not found" }, 404);
       // Atomic decide: only the first transition off "pending" wins (no approve/reject TOCTOU).
       if (a.status !== "pending") return c.json({ error: `already ${a.status}` }, 409);
       // Approve-with-edit: the human may correct the action before it happens ({ edited: {...} }).
@@ -359,6 +410,8 @@ export function createServer(store: Store): Hono {
   app.get("/v1/artifacts/:id", async (c) => {
     const a = await store.getArtifact(c.req.param("id"));
     if (!a) return c.json({ error: "not found" }, 404);
+    const at = await store.getTask(a.task_id);
+    if (!at || !inScope(accessible(c), at.project_id)) return c.json({ error: "not found" }, 404);
     let content = a.content;
     if (!content) content = (await getArtifactBackend().then((b) => b.get(a.id))) ?? "";
     return new Response(content, { headers: { "content-type": a.content_type } });
@@ -370,12 +423,15 @@ export function createServer(store: Store): Hono {
   app.post("/v1/connections", async (c) => {
     const b = (await c.req.json().catch(() => ({}))) as Record<string, unknown>;
     if (!b.kind || !b.name) return c.json({ error: "kind and name are required" }, 400);
+    const projectId = writeProjectId(c);
+    if (!projectId) return c.json({ error: "specify a project (X-Mycel-Project header)" }, 400);
     // Owner: founder-level by default; pass { owner: { kind:"client", id } } or client_id to scope
     // a connection to a specific client (their mailbox/calendar the founder operates).
     const clientId = typeof b.client_id === "string" ? b.client_id : undefined;
     const owner = (b.owner as ConnectionOwner | undefined) ??
       (clientId ? { kind: "client", id: clientId } : { kind: "founder", id: "founder" });
     const conn = await domain.createConnection({
+      project_id: projectId,
       kind: b.kind as ConnectionKind,
       name: String(b.name),
       owner,
@@ -385,19 +441,21 @@ export function createServer(store: Store): Hono {
     return c.json(conn, 201);
   });
   app.get("/v1/connections", async (c) => {
+    const set = accessible(c);
     const clientId = c.req.query("client_id");
-    const all = await domain.listConnections();
+    const all = (await domain.listConnections()).filter((x) => inScope(set, x.project_id));
     return c.json(clientId ? all.filter((x) => x.owner.kind === "client" && x.owner.id === clientId) : all);
   });
   app.get("/v1/connections/:id", async (c) => {
     const conn = await domain.getConnection(c.req.param("id"));
-    return conn ? c.json(conn) : c.json({ error: "not found" }, 404);
+    if (!conn || !inScope(accessible(c), conn.project_id)) return c.json({ error: "not found" }, 404);
+    return c.json(conn);
   });
   // Store a connection's secret in the vault (a client's OAuth token, a provider key). The value
   // is never returned; the connection then resolves it server-side at action time.
   app.post("/v1/connections/:id/secret", async (c) => {
     const conn = await domain.getConnection(c.req.param("id"));
-    if (!conn) return c.json({ error: "not found" }, 404);
+    if (!conn || !inScope(accessible(c), conn.project_id)) return c.json({ error: "not found" }, 404);
     const b = (await c.req.json().catch(() => ({}))) as { value?: string };
     if (typeof b.value !== "string" || !b.value) return c.json({ error: "value is required" }, 400);
     setSecret(conn.id, b.value);
@@ -406,13 +464,16 @@ export function createServer(store: Store): Hono {
 
   app.post("/v1/channels", async (c) => {
     const b = (await c.req.json().catch(() => ({}))) as Record<string, unknown>;
+    const projectId = writeProjectId(c);
+    if (!projectId) return c.json({ error: "specify a project (X-Mycel-Project header)" }, 400);
     const conn = b.connection_id ? await domain.getConnection(String(b.connection_id)) : undefined;
-    if (!conn) return c.json({ error: "unknown connection_id" }, 400);
+    if (!conn || !inScope(accessible(c), conn.project_id)) return c.json({ error: "unknown connection_id" }, 400);
     if (!b.address || !b.wedge || !b.task_type) {
       return c.json({ error: "address, wedge and task_type are required" }, 400);
     }
     if (!loadWedge(String(b.wedge))) return c.json({ error: `unknown wedge: ${b.wedge}` }, 400);
     const ch = await domain.createChannel({
+      project_id: projectId,
       connection_id: conn.id,
       kind: conn.kind,
       address: String(b.address),
@@ -421,28 +482,37 @@ export function createServer(store: Store): Hono {
     });
     return c.json(ch, 201);
   });
-  app.get("/v1/channels", async (c) => c.json(await domain.listChannels()));
+  app.get("/v1/channels", async (c) => {
+    const set = accessible(c);
+    return c.json((await domain.listChannels()).filter((ch) => inScope(set, ch.project_id)));
+  });
 
   app.post("/v1/clients", async (c) => {
     const b = (await c.req.json().catch(() => ({}))) as Record<string, unknown>;
+    const projectId = writeProjectId(c);
+    if (!projectId) return c.json({ error: "specify a project (X-Mycel-Project header)" }, 400);
     const client = await domain.createClient({
+      project_id: projectId,
       display_name: typeof b.display_name === "string" ? b.display_name : undefined,
       handles: Array.isArray(b.handles) ? (b.handles as string[]) : [],
       metadata: (b.metadata as Record<string, unknown>) ?? {},
     });
     return c.json(client, 201);
   });
-  app.get("/v1/clients", async (c) => c.json(await domain.listClients()));
+  app.get("/v1/clients", async (c) => {
+    const set = accessible(c);
+    return c.json((await domain.listClients()).filter((cl) => inScope(set, cl.project_id)));
+  });
   app.get("/v1/clients/:id", async (c) => {
     const client = await domain.getClient(c.req.param("id"));
-    if (!client) return c.json({ error: "not found" }, 404);
+    if (!client || !inScope(accessible(c), client.project_id)) return c.json({ error: "not found" }, 404);
     const threads = await domain.listThreadsForClient(client.id);
     return c.json({ ...client, threads });
   });
 
   app.get("/v1/threads/:id", async (c) => {
     const thread = await domain.getThread(c.req.param("id"));
-    if (!thread) return c.json({ error: "not found" }, 404);
+    if (!thread || !inScope(accessible(c), thread.project_id)) return c.json({ error: "not found" }, 404);
     return c.json({ ...thread, messages: await domain.listMessages(thread.id) });
   });
 
@@ -455,7 +525,8 @@ export function createServer(store: Store): Hono {
     const slug = c.req.param("wedge");
     const w = loadWedge(slug);
     if (!w) return c.json({ error: "unknown wedge" }, 404);
-    const live = await domain.listKnowledge(slug);
+    const set = accessible(c);
+    const live = (await domain.listKnowledge(slug)).filter((k) => inScope(set, k.project_id));
     return c.json({
       wedge: slug,
       manifest: w.manifest,
@@ -467,13 +538,19 @@ export function createServer(store: Store): Hono {
     });
   });
 
-  app.get("/v1/wedges/:wedge/knowledge", async (c) => c.json(await domain.listKnowledge(c.req.param("wedge"))));
+  app.get("/v1/wedges/:wedge/knowledge", async (c) => {
+    const set = accessible(c);
+    return c.json((await domain.listKnowledge(c.req.param("wedge"))).filter((k) => inScope(set, k.project_id)));
+  });
   app.post("/v1/wedges/:wedge/knowledge", async (c) => {
     const wedge = c.req.param("wedge");
     if (!loadWedge(wedge)) return c.json({ error: "unknown wedge" }, 404);
+    const projectId = writeProjectId(c);
+    if (!projectId) return c.json({ error: "specify a project (X-Mycel-Project header)" }, 400);
     const b = (await c.req.json().catch(() => ({}))) as Record<string, unknown>;
     if (!b.name || typeof b.content !== "string") return c.json({ error: "name and content are required" }, 400);
     const item = await domain.createKnowledge({
+      project_id: projectId,
       wedge,
       name: String(b.name),
       content: b.content,
@@ -485,9 +562,12 @@ export function createServer(store: Store): Hono {
   });
   app.get("/v1/knowledge/:id", async (c) => {
     const k = await domain.getKnowledge(c.req.param("id"));
-    return k ? c.json(k) : c.json({ error: "not found" }, 404);
+    if (!k || !inScope(accessible(c), k.project_id)) return c.json({ error: "not found" }, 404);
+    return c.json(k);
   });
   app.put("/v1/knowledge/:id", async (c) => {
+    const existing = await domain.getKnowledge(c.req.param("id"));
+    if (!existing || !inScope(accessible(c), existing.project_id)) return c.json({ error: "not found" }, 404);
     const b = (await c.req.json().catch(() => ({}))) as Record<string, unknown>;
     const k = await domain.updateKnowledge(c.req.param("id"), {
       name: typeof b.name === "string" ? b.name : undefined,
@@ -497,6 +577,8 @@ export function createServer(store: Store): Hono {
     return k ? c.json(k) : c.json({ error: "not found" }, 404);
   });
   app.delete("/v1/knowledge/:id", async (c) => {
+    const existing = await domain.getKnowledge(c.req.param("id"));
+    if (!existing || !inScope(accessible(c), existing.project_id)) return c.json({ error: "not found" }, 404);
     return c.json({ ok: await domain.deleteKnowledge(c.req.param("id")) });
   });
 
@@ -504,7 +586,7 @@ export function createServer(store: Store): Hono {
   // This is the moat — the wedge gets better from being used, not from being re-authored.
   app.post("/v1/tasks/:id/feedback", async (c) => {
     const task = await store.getTask(c.req.param("id"));
-    if (!task) return c.json({ error: "not found" }, 404);
+    if (!task || !inScope(accessible(c), task.project_id)) return c.json({ error: "not found" }, 404);
     const b = (await c.req.json().catch(() => ({}))) as {
       rating?: "good" | "bad";
       correction?: string;
@@ -513,6 +595,7 @@ export function createServer(store: Store): Hono {
     let knowledgeId: string | undefined;
     if (b.correction) {
       const item = await domain.createKnowledge({
+        project_id: task.project_id,
         wedge: task.wedge,
         name: `feedback-${new Date().toISOString().slice(0, 19)}.md`,
         content:
@@ -538,7 +621,8 @@ export function createServer(store: Store): Hono {
   // Twilio/…) here after verifying the provider signature — hence it sits behind the API key.
   app.post("/v1/channels/:id/inbound", async (c) => {
     const channel = await domain.getChannel(c.req.param("id"));
-    if (!channel) return c.json({ error: "unknown channel" }, 404);
+    if (!channel || !inScope(accessible(c), channel.project_id)) return c.json({ error: "unknown channel" }, 404);
+    const pid = channel.project_id;
     const b = (await c.req.json().catch(() => ({}))) as {
       from?: { handle?: string; name?: string };
       body?: string;
@@ -546,14 +630,15 @@ export function createServer(store: Store): Hono {
     };
     const handle = b.from?.handle ?? "anonymous";
     let client = await domain.findClientByHandle(handle);
-    if (!client) {
+    if (!client || client.project_id !== pid) {
       client = await domain.createClient({
+        project_id: pid,
         display_name: b.from?.name,
         handles: [handle],
         metadata: {},
       });
     }
-    const thread = await domain.findOrCreateThread(client.id, channel.id, b.subject);
+    const thread = await domain.findOrCreateThread(client.id, channel.id, pid, b.subject);
     await domain.addMessage({
       thread_id: thread.id,
       direction: "inbound",
@@ -566,6 +651,7 @@ export function createServer(store: Store): Hono {
     const now = new Date().toISOString();
     const task: Task = {
       id: randomUUID(),
+      project_id: pid,
       wedge: channel.wedge,
       task_type: channel.task_type,
       actor: { kind: "user", id: client.id },

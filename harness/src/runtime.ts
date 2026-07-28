@@ -72,7 +72,10 @@ export async function runOpenCodeTask(
   // Resolve which connections this run may act through, and mint an action token. The sandbox
   // gets the token, never a connection secret; every action still passes the human approval gate.
   const domain = getDomainStore();
-  const allConns = await domain.listConnections();
+  // Only this task's project's connections are grantable — never another tenant's.
+  const allConns = (await domain.listConnections()).filter(
+    (c) => !task.project_id || c.project_id === task.project_id,
+  );
   const wantedConns = new Set<string>([
     ...(wedge?.manifest.connections ?? []),
     ...(Array.isArray(task.input?.connections) ? (task.input.connections as string[]) : []),

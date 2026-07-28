@@ -21,6 +21,8 @@ export interface Constraints {
 
 export interface Task {
   id: string;
+  /** The project (tenant) this task belongs to. Reads are filtered by the caller's projects. */
+  project_id?: string;
   wedge: string;
   task_type: string;
   actor: { kind: "user" | "business" | "system"; id: string };
@@ -107,6 +109,7 @@ export interface ConnectionOwner {
 }
 export interface Connection {
   id: string;
+  project_id?: string;
   kind: ConnectionKind;
   name: string;
   owner: ConnectionOwner;
@@ -120,6 +123,7 @@ export interface Connection {
 /** A conversation surface bound to a connection; inbound here spawns a task of the given type. */
 export interface Channel {
   id: string;
+  project_id?: string;
   connection_id: string;
   kind: ConnectionKind;
   address: string; // support@acme.com, a phone number, a widget id
@@ -131,6 +135,7 @@ export interface Channel {
 /** The customer/contact the work is for. Identity handles let inbound resolve to one client. */
 export interface Client {
   id: string;
+  project_id?: string;
   display_name?: string;
   handles: string[]; // normalized emails/phones/ids used to match inbound
   metadata: Record<string, unknown>;
@@ -140,6 +145,7 @@ export interface Client {
 
 export interface Thread {
   id: string;
+  project_id?: string;
   client_id: string;
   channel_id: string;
   subject?: string;
@@ -153,6 +159,7 @@ export interface Thread {
  *  knowledge/ at task time. This is where quality accretes as the service is used. */
 export interface KnowledgeItem {
   id: string;
+  project_id?: string;
   wedge: string;
   name: string; // filename-like: "pricing.md", "example-reply-04.md"
   content: string;

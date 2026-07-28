@@ -141,6 +141,55 @@ class IdentityStore {
   listProjects(orgId: string): Project[] {
     return [...this.projects.values()].filter((p) => p.org_id === orgId);
   }
+  getProject(id: string): Project | undefined {
+    return this.projects.get(id);
+  }
+
+  /** The set of project ids a scope may read. Key → its one project; member → all in its org. */
+  accessibleProjectIds(scope: AuthScope): Set<string> {
+    if (scope.kind === "key" && scope.project_id) return new Set([scope.project_id]);
+    return new Set(this.listProjects(scope.org_id).map((p) => p.id));
+  }
+
+  /** The project a write lands in. Key → fixed. Member → the requested one (if in org), else the
+   *  org's sole project, else undefined (the caller must then 400 asking which project). */
+  resolveWriteProject(scope: AuthScope, requested?: string): string | undefined {
+    if (scope.kind === "key") return scope.project_id;
+    const inOrg = this.listProjects(scope.org_id);
+    if (requested && inOrg.some((p) => p.id === requested)) return requested;
+    if (inOrg.length === 1) return inOrg[0].id;
+    return undefined;
+  }
+
+  /** A project may run a wedge if its allowlist is empty (all) or contains the slug. */
+  projectAllowsWedge(projectId: string, wedge: string): boolean {
+    const p = this.projects.get(projectId);
+    if (!p) return false;
+    return p.wedges.length === 0 || p.wedges.includes(wedge);
+  }
+
+  /** Create a project (+ its own product API key) in an org. */
+  createProject(orgId: string, name: string, wedges: string[] = []): { project: Project; apiKey: string } {
+    const project: Project = { id: randomUUID(), org_id: orgId, name, wedges, created_at: new Date().toISOString() };
+    this.projects.set(project.id, project);
+    const apiKey = `msk_${randomBytes(24).toString("base64url")}`;
+    this.apiKeys.set(apiKey, { project_id: project.id, org_id: orgId });
+    return { project, apiKey };
+  }
+
+  /** Create a fresh org with an owner member (used to add tenants; also lets tests prove isolation). */
+  createOrgWithOwner(orgName: string, email: string, password: string): { org: Org; project: Project; apiKey: string } {
+    const org: Org = { id: randomUUID(), name: orgName, created_at: new Date().toISOString() };
+    this.orgs.set(org.id, org);
+    const { project, apiKey } = this.createProject(org.id, "default");
+    const { salt, hash } = hashPassword(password);
+    const member: StoredMember = {
+      id: randomUUID(), org_id: org.id, email: email.toLowerCase(), role: "owner",
+      created_at: new Date().toISOString(), salt, hash,
+    };
+    this.members.set(member.id, member);
+    return { org, project, apiKey };
+  }
   private publicMember(m: StoredMember): Member {
     const { salt: _s, hash: _h, ...pub } = m;
     return pub;

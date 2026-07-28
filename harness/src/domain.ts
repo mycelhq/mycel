@@ -27,7 +27,7 @@ export interface DomainStore {
   // threads + messages
   createThread(t: Omit<Thread, "id" | "created_at" | "updated_at">): Promise<Thread>;
   getThread(id: string): Promise<Thread | undefined>;
-  findOrCreateThread(clientId: string, channelId: string, subject?: string): Promise<Thread>;
+  findOrCreateThread(clientId: string, channelId: string, projectId?: string, subject?: string): Promise<Thread>;
   listThreadsForClient(clientId: string): Promise<Thread[]>;
   addMessage(m: Omit<Message, "id" | "created_at">): Promise<Message>;
   listMessages(threadId: string): Promise<Message[]>;
@@ -105,12 +105,12 @@ export class InMemoryDomainStore implements DomainStore {
   async getThread(id: string): Promise<Thread | undefined> {
     return this.threads.get(id);
   }
-  async findOrCreateThread(clientId: string, channelId: string, subject?: string): Promise<Thread> {
+  async findOrCreateThread(clientId: string, channelId: string, projectId?: string, subject?: string): Promise<Thread> {
     const existing = [...this.threads.values()].find(
       (t) => t.client_id === clientId && t.channel_id === channelId && t.status === "open",
     );
     if (existing) return existing;
-    return this.createThread({ client_id: clientId, channel_id: channelId, subject, status: "open" });
+    return this.createThread({ project_id: projectId, client_id: clientId, channel_id: channelId, subject, status: "open" });
   }
   async listThreadsForClient(clientId: string): Promise<Thread[]> {
     return [...this.threads.values()].filter((t) => t.client_id === clientId);
