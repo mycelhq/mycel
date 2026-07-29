@@ -1,8 +1,9 @@
 import { serve } from "@hono/node-server";
 import { API_KEY_GENERATED, loadConfig } from "./config";
-import { closeDomainStore, initDomainStore } from "./domain";
+import { closeDomainStore, getDomainStore, initDomainStore } from "./domain";
 import { getIdentityStore, initIdentityStore } from "./identity";
 import { recoverTasks } from "./recovery";
+import { startScheduler } from "./scheduler";
 import { createServer } from "./server";
 import { createStore } from "./store";
 
@@ -16,6 +17,7 @@ const cfg = loadConfig();
 const port = Number(process.env.PORT ?? 4000);
 
 const server = serve({ fetch: app.fetch, port });
+const scheduler = startScheduler(store, getDomainStore());
 console.log(
   `mycel-harness v0.1 on http://localhost:${port}  ` +
     `[sandbox=${cfg.sandboxBackend} store=${backend} model=${cfg.model}]` +
@@ -44,6 +46,7 @@ async function shutdown(signal: string): Promise<void> {
   shuttingDown = true;
   console.log(`\n[mycel] ${signal} — shutting down…`);
   server.close();
+  scheduler.stop();
   try {
     await store.close?.();
     await closeDomainStore();

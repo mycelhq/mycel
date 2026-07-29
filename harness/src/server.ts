@@ -22,6 +22,7 @@ import type {
   Constraints,
   ConnectionKind,
   ConnectionOwner,
+  Cadence,
   CreateTaskInput,
   KnowledgeItem,
   Risk,
@@ -32,6 +33,7 @@ import type {
 import { getDomainStore } from "./domain";
 import { emitEvent } from "./events";
 import { getIdentityStore } from "./identity";
+import { fireSchedule, firstRun } from "./scheduler";
 import { runTask } from "./orchestrator";
 import { getGrant } from "./proxygrants";
 import { setSecret } from "./secrets";
@@ -516,6 +518,76 @@ export function createServer(store: Store): Hono {
     return c.json({ ...thread, messages: await domain.listMessages(thread.id) });
   });
 
+  // ── Schedules: recurring work (the operational spine) ──
+  app.get("/v1/schedules", async (c) => {
+    const set = accessible(c);
+    return c.json((await domain.listSchedules()).filter((s) => inScope(set, s.project_id)));
+  });
+  app.post("/v1/schedules", async (c) => {
+    const projectId = writeProjectId(c);
+    if (!projectId) return c.json({ error: "specify a project (X-Mycel-Project header)" }, 400);
+    const b = (await c.req.json().catch(() => ({}))) as Record<string, unknown>;
+    if (!b.name || !b.wedge || !b.task_type || !b.cadence) {
+      return c.json({ error: "name, wedge, task_type and cadence are required" }, 400);
+    }
+    const wedge = loadWedge(String(b.wedge));
+    if (!wedge) return c.json({ error: `unknown wedge: ${b.wedge}` }, 400);
+    const types = wedge.manifest.task_types;
+    if (types && Object.keys(types).length && !types[String(b.task_type)]) {
+      return c.json({ error: `unknown task_type "${b.task_type}" for wedge "${b.wedge}"` }, 400);
+    }
+    if (!identity.projectAllowsWedge(projectId, String(b.wedge))) {
+      return c.json({ error: `wedge "${b.wedge}" is not enabled for this project` }, 403);
+    }
+    const cadence = b.cadence as Cadence;
+    if (!validCadence(cadence)) return c.json({ error: "invalid cadence" }, 400);
+    const s = await domain.createSchedule({
+      project_id: projectId,
+      name: String(b.name),
+      wedge: String(b.wedge),
+      task_type: String(b.task_type),
+      input: (b.input as Record<string, unknown>) ?? {},
+      cadence,
+      enabled: b.enabled === undefined ? true : !!b.enabled,
+      next_run_at: firstRun(cadence),
+    });
+    return c.json(s, 201);
+  });
+  app.get("/v1/schedules/:id", async (c) => {
+    const s = await domain.getSchedule(c.req.param("id"));
+    if (!s || !inScope(accessible(c), s.project_id)) return c.json({ error: "not found" }, 404);
+    return c.json(s);
+  });
+  // Pause/resume or retarget a schedule.
+  app.put("/v1/schedules/:id", async (c) => {
+    const existing = await domain.getSchedule(c.req.param("id"));
+    if (!existing || !inScope(accessible(c), existing.project_id)) return c.json({ error: "not found" }, 404);
+    const b = (await c.req.json().catch(() => ({}))) as Record<string, unknown>;
+    if (b.cadence && !validCadence(b.cadence as Cadence)) return c.json({ error: "invalid cadence" }, 400);
+    const s = await domain.updateSchedule(existing.id, {
+      enabled: typeof b.enabled === "boolean" ? b.enabled : undefined,
+      name: typeof b.name === "string" ? b.name : undefined,
+      input: (b.input as Record<string, unknown>) ?? undefined,
+      cadence: (b.cadence as Cadence) ?? undefined,
+      // changing the cadence re-bases the next run
+      next_run_at: b.cadence ? firstRun(b.cadence as Cadence) : undefined,
+    });
+    return c.json(s);
+  });
+  app.delete("/v1/schedules/:id", async (c) => {
+    const existing = await domain.getSchedule(c.req.param("id"));
+    if (!existing || !inScope(accessible(c), existing.project_id)) return c.json({ error: "not found" }, 404);
+    return c.json({ ok: await domain.deleteSchedule(existing.id) });
+  });
+  // Fire now (without disturbing the cadence) — the "test my schedule" button.
+  app.post("/v1/schedules/:id/run", async (c) => {
+    const s = await domain.getSchedule(c.req.param("id"));
+    if (!s || !inScope(accessible(c), s.project_id)) return c.json({ error: "not found" }, 404);
+    const task = await fireSchedule(store, domain, s);
+    await domain.updateSchedule(s.id, { last_run_at: new Date().toISOString(), last_task_id: task.id });
+    return c.json({ ok: true, task_id: task.id }, 201);
+  });
+
   // ── Wedge config + living knowledge ──
   // The definition (wedge.json + skills) is authored/versioned on disk; knowledge is DATA the
   // founder edits at runtime (uploads, corrections) — no redeploy. At task time the runtime merges
@@ -757,6 +829,15 @@ export function createServer(store: Store): Hono {
   });
 
   return app;
+}
+
+/** Reject malformed cadences at the boundary rather than letting the tick loop trip over them. */
+function validCadence(c: Cadence | undefined): boolean {
+  if (!c || typeof c !== "object") return false;
+  if (c.kind === "every") return Number.isFinite(c.seconds) && c.seconds >= 1;
+  if (c.kind === "daily") return c.hour >= 0 && c.hour <= 23 && c.minute >= 0 && c.minute <= 59;
+  if (c.kind === "monthly") return c.day >= 1 && c.day <= 31 && c.hour >= 0 && c.hour <= 23 && c.minute >= 0 && c.minute <= 59;
+  return false;
 }
 
 /** Clamp client-supplied constraints to server ceilings so a caller can't set max_cost_usd: 1e6. */

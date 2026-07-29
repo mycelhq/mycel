@@ -170,6 +170,32 @@ export interface KnowledgeItem {
   updated_at: string;
 }
 
+/** A recurring job that spawns a task on a cadence. This is what lets a wedge *run an operation*
+ *  (daily sync, month-end close, a weekly client report) instead of only answering requests.
+ *  Deliberately not a cron parser: three explicit cadences cover the real cases and are testable.
+ *  (Cron strings can be added later behind the same `cadence` field.) */
+export type Cadence =
+  | { kind: "every"; seconds: number }
+  | { kind: "daily"; hour: number; minute: number }
+  | { kind: "monthly"; day: number; hour: number; minute: number };
+
+export interface Schedule {
+  id: string;
+  project_id?: string;
+  name: string;
+  wedge: string;
+  task_type: string;
+  /** Task input template. Each run creates a task with this input (plus `scheduled_at`). */
+  input: Record<string, unknown>;
+  cadence: Cadence;
+  enabled: boolean;
+  /** UTC ISO timestamp of the next due run. */
+  next_run_at: string;
+  last_run_at?: string;
+  last_task_id?: string;
+  created_at: string;
+}
+
 export type MessageDirection = "inbound" | "outbound";
 export interface Message {
   id: string;

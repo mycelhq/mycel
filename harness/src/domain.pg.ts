@@ -3,7 +3,7 @@
 // parsed by node-pg. Selected automatically when MYCEL_DATABASE_URL is set.
 import { randomUUID } from "node:crypto";
 import pg from "pg";
-import type { Channel, Client, Connection, ConnectionKind, ConnectionOwner, KnowledgeItem, Message, Thread } from "./contract";
+import type { Cadence, Channel, Client, Connection, ConnectionKind, ConnectionOwner, KnowledgeItem, Message, Schedule, Thread } from "./contract";
 import { normalizeHandle, type DomainStore } from "./domain";
 
 const { Pool } = pg;
@@ -84,6 +84,21 @@ export class PostgresDomainStore implements DomainStore {
         updated_at timestamptz NOT NULL DEFAULT now()
       );
       CREATE INDEX IF NOT EXISTS knowledge_wedge_idx ON knowledge (wedge);
+      CREATE TABLE IF NOT EXISTS schedules (
+        id uuid PRIMARY KEY,
+        project_id text,
+        name text NOT NULL,
+        wedge text NOT NULL,
+        task_type text NOT NULL,
+        input jsonb NOT NULL DEFAULT '{}',
+        cadence jsonb NOT NULL,
+        enabled boolean NOT NULL DEFAULT true,
+        next_run_at timestamptz NOT NULL,
+        last_run_at timestamptz,
+        last_task_id uuid,
+        created_at timestamptz NOT NULL DEFAULT now()
+      );
+      CREATE INDEX IF NOT EXISTS schedules_due_idx ON schedules (enabled, next_run_at);
     `);
   }
 
@@ -205,6 +220,69 @@ export class PostgresDomainStore implements DomainStore {
       id: row.id, thread_id: row.thread_id, direction: row.direction, author: row.author, body: row.body,
       status: row.status ?? undefined, task_id: row.task_id ?? undefined, created_at: iso(row.created_at),
     }));
+  }
+
+  // ── schedules ──
+  private toSched = (r: any): Schedule => ({
+    id: r.id, project_id: r.project_id ?? undefined, name: r.name, wedge: r.wedge,
+    task_type: r.task_type, input: r.input ?? {}, cadence: r.cadence as Cadence,
+    enabled: r.enabled, next_run_at: iso(r.next_run_at),
+    last_run_at: r.last_run_at ? iso(r.last_run_at) : undefined,
+    last_task_id: r.last_task_id ?? undefined, created_at: iso(r.created_at),
+  });
+  async createSchedule(s: Omit<Schedule, "id" | "created_at">): Promise<Schedule> {
+    const r = await this.pool.query(
+      `INSERT INTO schedules (id, project_id, name, wedge, task_type, input, cadence, enabled, next_run_at)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9) RETURNING *`,
+      [randomUUID(), s.project_id ?? null, s.name, s.wedge, s.task_type, JSON.stringify(s.input ?? {}), JSON.stringify(s.cadence), s.enabled, s.next_run_at],
+    );
+    return this.toSched(r.rows[0]);
+  }
+  async getSchedule(id: string): Promise<Schedule | undefined> {
+    const r = await this.pool.query(`SELECT * FROM schedules WHERE id=$1`, [id]);
+    return r.rows[0] ? this.toSched(r.rows[0]) : undefined;
+  }
+  async listSchedules(): Promise<Schedule[]> {
+    const r = await this.pool.query(`SELECT * FROM schedules ORDER BY created_at`);
+    return r.rows.map(this.toSched);
+  }
+  async listDueSchedules(nowIso: string): Promise<Schedule[]> {
+    const r = await this.pool.query(
+      `SELECT * FROM schedules WHERE enabled AND next_run_at <= $1 ORDER BY next_run_at`,
+      [nowIso],
+    );
+    return r.rows.map(this.toSched);
+  }
+  async updateSchedule(
+    id: string,
+    patch: Partial<Pick<Schedule, "enabled" | "next_run_at" | "last_run_at" | "last_task_id" | "input" | "cadence" | "name">>,
+  ): Promise<Schedule | undefined> {
+    const r = await this.pool.query(
+      `UPDATE schedules SET
+         enabled      = COALESCE($2, enabled),
+         next_run_at  = COALESCE($3::timestamptz, next_run_at),
+         last_run_at  = COALESCE($4::timestamptz, last_run_at),
+         last_task_id = COALESCE($5::uuid, last_task_id),
+         input        = COALESCE($6::jsonb, input),
+         cadence      = COALESCE($7::jsonb, cadence),
+         name         = COALESCE($8, name)
+       WHERE id=$1 RETURNING *`,
+      [
+        id,
+        patch.enabled ?? null,
+        patch.next_run_at ?? null,
+        patch.last_run_at ?? null,
+        patch.last_task_id ?? null,
+        patch.input ? JSON.stringify(patch.input) : null,
+        patch.cadence ? JSON.stringify(patch.cadence) : null,
+        patch.name ?? null,
+      ],
+    );
+    return r.rows[0] ? this.toSched(r.rows[0]) : undefined;
+  }
+  async deleteSchedule(id: string): Promise<boolean> {
+    const r = await this.pool.query(`DELETE FROM schedules WHERE id=$1`, [id]);
+    return (r.rowCount ?? 0) > 0;
   }
 
   // ── knowledge ──

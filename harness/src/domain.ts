@@ -5,7 +5,7 @@
 // v0.1 ships an in-memory reference implementation (zero setup). Postgres backing mirrors the
 // task tables and is the next step; the task engine itself is already durable (store.pg.ts).
 import { randomUUID } from "node:crypto";
-import type { Channel, Client, Connection, KnowledgeItem, Message, Thread } from "./contract";
+import type { Channel, Client, Connection, KnowledgeItem, Message, Schedule, Thread } from "./contract";
 
 export interface DomainStore {
   // connections (secrets referenced, never stored in the clear here)
@@ -31,6 +31,18 @@ export interface DomainStore {
   listThreadsForClient(clientId: string): Promise<Thread[]>;
   addMessage(m: Omit<Message, "id" | "created_at">): Promise<Message>;
   listMessages(threadId: string): Promise<Message[]>;
+
+  // schedules (recurring work)
+  createSchedule(s: Omit<Schedule, "id" | "created_at">): Promise<Schedule>;
+  getSchedule(id: string): Promise<Schedule | undefined>;
+  listSchedules(): Promise<Schedule[]>;
+  /** Enabled schedules whose next_run_at is at or before `nowIso`. */
+  listDueSchedules(nowIso: string): Promise<Schedule[]>;
+  updateSchedule(
+    id: string,
+    patch: Partial<Pick<Schedule, "enabled" | "next_run_at" | "last_run_at" | "last_task_id" | "input" | "cadence" | "name">>,
+  ): Promise<Schedule | undefined>;
+  deleteSchedule(id: string): Promise<boolean>;
 
   // living knowledge (per wedge)
   createKnowledge(k: Omit<KnowledgeItem, "id" | "created_at" | "updated_at">): Promise<KnowledgeItem>;
@@ -124,6 +136,34 @@ export class InMemoryDomainStore implements DomainStore {
   }
   async listMessages(threadId: string): Promise<Message[]> {
     return this.messages.get(threadId) ?? [];
+  }
+
+  private schedules = new Map<string, Schedule>();
+  async createSchedule(s: Omit<Schedule, "id" | "created_at">): Promise<Schedule> {
+    const sched: Schedule = { ...s, id: randomUUID(), created_at: now() };
+    this.schedules.set(sched.id, sched);
+    return sched;
+  }
+  async getSchedule(id: string): Promise<Schedule | undefined> {
+    return this.schedules.get(id);
+  }
+  async listSchedules(): Promise<Schedule[]> {
+    return [...this.schedules.values()];
+  }
+  async listDueSchedules(nowIso: string): Promise<Schedule[]> {
+    return [...this.schedules.values()].filter((s) => s.enabled && s.next_run_at <= nowIso);
+  }
+  async updateSchedule(
+    id: string,
+    patch: Partial<Pick<Schedule, "enabled" | "next_run_at" | "last_run_at" | "last_task_id" | "input" | "cadence" | "name">>,
+  ): Promise<Schedule | undefined> {
+    const s = this.schedules.get(id);
+    if (!s) return undefined;
+    Object.assign(s, patch);
+    return s;
+  }
+  async deleteSchedule(id: string): Promise<boolean> {
+    return this.schedules.delete(id);
   }
 
   private knowledge = new Map<string, KnowledgeItem>();
