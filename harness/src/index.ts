@@ -1,8 +1,10 @@
 import { serve } from "@hono/node-server";
 import { API_KEY_GENERATED, loadConfig } from "./config";
+import { closeAuditStore, initAuditStore } from "./audit";
 import { closeDomainStore, getDomainStore, initDomainStore } from "./domain";
 import { getIdentityStore, initIdentityStore } from "./identity";
 import { recoverTasks } from "./recovery";
+import { closeSecretStore, initSecretStore } from "./secrets";
 import { startScheduler } from "./scheduler";
 import { createServer } from "./server";
 import { createStore } from "./store";
@@ -10,6 +12,8 @@ import { createStore } from "./store";
 const { store, backend } = await createStore();
 await initDomainStore(); // durable service surface when MYCEL_DATABASE_URL is set
 await initIdentityStore(); // durable tenants (stable default ids either way)
+await initSecretStore(); // encrypted-at-rest vault (AES-256-GCM)
+await initAuditStore(); // tamper-evident audit chain
 const identity = getIdentityStore();
 const recovered = await recoverTasks(store);
 const app = createServer(store);
@@ -50,6 +54,8 @@ async function shutdown(signal: string): Promise<void> {
   try {
     await store.close?.();
     await closeDomainStore();
+    await closeSecretStore();
+    await closeAuditStore();
   } catch (e) {
     console.error("[mycel] store close error:", e);
   }

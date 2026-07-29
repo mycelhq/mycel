@@ -124,6 +124,12 @@ What the kernel enforces today, and what it doesn't yet — so you deploy it kno
   the task timeline. Writes stay gated.
 - **Auth** on the whole public API; **input validation** and **server-side constraint ceilings**
   (a caller can't set `max_cost_usd: 1e6`); model + `max_tokens` pinned in the LLM proxy.
+- **Secrets encrypted at rest.** Vault secrets are sealed with AES-256-GCM under `MYCEL_SECRET_KEY`;
+  only ciphertext is persisted, and a bad key or tampered ciphertext fails closed. Set the key, or
+  the kernel warns that secrets won't survive a restart.
+- **Tamper-evident audit.** Approvals, executed actions and secret writes are recorded in a
+  hash-chained, append-only log per project. `GET /v1/audit/verify` recomputes the chain and reports
+  the first broken link, so an edited history is detectable rather than deniable.
 - **Crash-honest runtime:** a task that fails says why (persisted), OpenCode dying is a failure
   (not a fake success), approvals resolve on cancel/timeout, and terminal status is always last.
 

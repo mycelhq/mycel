@@ -103,8 +103,16 @@ Ask the *client or candidate* for something, wait, remind, escalate. Distinct fr
 ### 8. Binary artifacts and files
 PDFs/images in (parse, OCR), spreadsheets/PDFs out. Artifacts are text today.
 
-### 9. Audit trail
+### 9. Audit trail  ✅ shipped
 An immutable record of who changed what — a legal requirement in regulated wedges like bookkeeping.
+
+**Shipped:** a hash-chained audit log. Each entry embeds the previous entry's hash, so editing,
+deleting or reordering history breaks the chain and `GET /v1/audit/verify` reports exactly where.
+Records the consequential set only (approval granted/rejected/auto-approved/expired, the action that
+actually executed, secret writes) — never secret material. Append-only in Postgres, with the
+per-project sequence allocated under a row lock so replicas can't fork the chain. Verified against a
+real database: untampered → `ok:true`; a direct `UPDATE audit_log SET actor='attacker'` →
+`ok:false, broken_at:2`.
 
 ### Multi-instance — partially shipped
 **Shipped (the dangerous half):** the scheduler now *claims* due schedules through the store instead
@@ -116,6 +124,13 @@ concurrent replicas (`harness/test/multi-instance.test.ts`, runs in CI).
 **Still single-instance:** cancel, approval waiters, the SSE bus, proxy/action grants, policy
 counters, idempotency and read budgets are in-process. Run one replica until these are Redis-backed.
 Each already sits behind a small interface for exactly that swap.
+
+### Security posture (shipped alongside)
+- **Vault encrypted at rest** — AES-256-GCM per secret (`MYCEL_SECRET_KEY`), authenticated so
+  tampering fails closed rather than returning junk; a key id per envelope leaves room for rotation.
+  Durable in Postgres, storing only ciphertext: a stolen database dump is useless without the key
+  (verified — the plaintext appears nowhere in the database). Boots with a loud warning if the key
+  is unset, because then secrets don't survive a restart.
 
 ### Later
 Voice channels, image generation, multi-human assignment and review queues, outcomes/reporting,

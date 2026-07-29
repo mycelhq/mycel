@@ -65,7 +65,7 @@ export async function executeRead(
   capability: string,
   params: Record<string, unknown>,
 ): Promise<ReadResult> {
-  const secret = resolveSecret(conn.secret_ref, conn.id);
+  const secret = await resolveSecret(conn.secret_ref, conn.id);
   const base = String(conn.config.api_url ?? conn.config.base_url ?? conn.config.url ?? "");
   if (!base) return { ok: false, detail: `connection "${conn.name}" has no config.api_url to read from` };
 
@@ -109,7 +109,7 @@ export async function executeAction(
   capability: string,
   payload: Record<string, unknown>,
 ): Promise<ActionResult> {
-  const secret = resolveSecret(conn.secret_ref, conn.id);
+  const secret = await resolveSecret(conn.secret_ref, conn.id);
   try {
     switch (conn.kind as ConnectionKind) {
       case "email":

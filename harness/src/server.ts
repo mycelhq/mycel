@@ -9,6 +9,7 @@ import { existsSync, readdirSync } from "node:fs";
 import { join } from "node:path";
 import { Hono } from "hono";
 import { streamSSE } from "hono/streaming";
+import { audit, auditList, auditVerify } from "./audit";
 import { requireApiKey, safeEqual } from "./auth";
 import { awaitApproval, failWaitersForTask, resolveApproval } from "./approvals";
 import { actionPreview, executeAction, executeRead } from "./actions";
@@ -471,7 +472,12 @@ export function createServer(store: Store): Hono {
     if (!conn || !inScope(accessible(c), conn.project_id)) return c.json({ error: "not found" }, 404);
     const b = (await c.req.json().catch(() => ({}))) as { value?: string };
     if (typeof b.value !== "string" || !b.value) return c.json({ error: "value is required" }, 400);
-    setSecret(conn.id, b.value);
+    await setSecret(conn.id, b.value);
+    await audit({
+      project_id: conn.project_id ?? "", actor: (c.get("scope").member_id ?? "system") as string,
+      action: "secret.written", entity: "connection", entity_id: conn.id,
+      detail: { connection: conn.name, kind: conn.kind }, // never the value
+    });
     return c.json({ ok: true });
   });
 
@@ -527,6 +533,22 @@ export function createServer(store: Store): Hono {
     const thread = await domain.getThread(c.req.param("id"));
     if (!thread || !inScope(accessible(c), thread.project_id)) return c.json({ error: "not found" }, 404);
     return c.json({ ...thread, messages: await domain.listMessages(thread.id) });
+  });
+
+  // ── Audit: the tamper-evident record of consequential decisions ──
+  app.get("/v1/audit", async (c) => {
+    const scope = c.get("scope");
+    const projectId = c.req.query("project_id") ?? scope.project_id ?? [...accessible(c)][0];
+    if (!projectId || !accessible(c).has(projectId)) return c.json({ error: "not found" }, 404);
+    const limit = c.req.query("limit") ? Number(c.req.query("limit")) : undefined;
+    return c.json(await auditList(projectId, limit));
+  });
+  // Prove the chain hasn't been edited. This is the endpoint an auditor/customer actually cares about.
+  app.get("/v1/audit/verify", async (c) => {
+    const scope = c.get("scope");
+    const projectId = c.req.query("project_id") ?? scope.project_id ?? [...accessible(c)][0];
+    if (!projectId || !accessible(c).has(projectId)) return c.json({ error: "not found" }, 404);
+    return c.json(await auditVerify(projectId));
   });
 
   // ── Records: structured, queryable per-wedge state ──
@@ -1179,6 +1201,15 @@ export function createServer(store: Store): Hono {
     }
 
     const result = await executeAction(conn, capability, finalPayload);
+    const actedTask = await store.getTask(grant.task_id);
+    await audit({
+      project_id: actedTask?.project_id ?? "",
+      actor: decision === "auto_approved" ? "policy" : "member",
+      action: "action.executed",
+      entity: "connection",
+      entity_id: conn.id,
+      detail: { capability, connection: conn.name, ok: result.ok, decision, to: finalPayload.to, edited: !!edited },
+    });
 
     // Record the outbound message on the conversation + surface the outcome on the task timeline.
     if (grant.threadId) {

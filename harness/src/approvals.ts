@@ -2,6 +2,7 @@
 // then resume. Shared by the OpenCode plugin gate (server /v1/internal/gate) and the API
 // approve/reject endpoints. This is the trust primitive — the reason an AI-native service can
 // take real actions safely.
+import { audit } from "./audit";
 import { markAbort } from "./cancel";
 import type { ApprovalDecision, Risk } from "./contract";
 import { emitEvent } from "./events";
@@ -74,6 +75,11 @@ export async function awaitApproval(
   });
   if (decisionByPolicy.auto) {
     await store.setApproval(approval.approval_id, "auto_approved", decisionByPolicy.reason);
+    await audit({
+      project_id: task?.project_id ?? "", actor: "policy", action: "approval.auto_approved",
+      entity: "task", entity_id: taskId,
+      detail: { action: req.action, approval_id: approval.approval_id, reason: decisionByPolicy.reason },
+    });
     await emitEvent(store, taskId, "approval.resolved", {
       approval_id: approval.approval_id,
       action: req.action,
@@ -103,6 +109,13 @@ export async function awaitApproval(
   const decision = outcome.decision;
 
   await store.setApproval(approval.approval_id, decision);
+  await audit({
+    project_id: task?.project_id ?? "",
+    actor: decision === "expired" ? "system" : "member",
+    action: decision === "approved" ? "approval.granted" : decision === "rejected" ? "approval.rejected" : "approval.expired",
+    entity: "task", entity_id: taskId,
+    detail: { action: req.action, approval_id: approval.approval_id, edited: !!outcome.edited },
+  });
 
   // If the task already reached a terminal state (e.g. cancelled while suspended), do NOT emit
   // more events or flip it back to running — task.finished must stay last.
