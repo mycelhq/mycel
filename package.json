@@ -9,7 +9,8 @@
   "scripts": {
     "dev": "tsx watch harness/src/index.ts",
     "start": "tsx harness/src/index.ts",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "test": "MYCEL_RUNTIME=mock MYCEL_API_KEY=testkey MYCEL_OWNER_EMAIL=owner@test.co MYCEL_OWNER_PASSWORD=secret node --import tsx --test harness/test/*.test.ts"
   },
   "dependencies": {
     "@hono/node-server": "^1.13.1",

@@ -43,6 +43,9 @@ export interface MycelConfig {
   publicUrl: string;
   /** Proxy mode: route model calls through the harness so provider keys never enter the sandbox. */
   proxyMode: boolean;
+  /** Runtime: "opencode" drives a real agent in a sandbox; "mock" streams canned events (no
+   *  OpenCode/keys) — for demos and the test suite. */
+  runtime: "opencode" | "mock";
   /** Hard server-side ceilings; client-supplied constraints are clamped to these. */
   maxCostCeilingUsd: number;
   maxRuntimeCeilingS: number;
@@ -77,6 +80,7 @@ export function loadConfig(): MycelConfig {
     apiKey: API_KEY,
     publicUrl: process.env.MYCEL_PUBLIC_URL ?? `http://127.0.0.1:${process.env.PORT ?? 4000}`,
     proxyMode: process.env.MYCEL_PROXY_MODE === "1",
+    runtime: process.env.MYCEL_RUNTIME === "mock" ? "mock" : "opencode",
     maxCostCeilingUsd: Number(process.env.MYCEL_MAX_COST_USD ?? 50),
     maxRuntimeCeilingS: Number(process.env.MYCEL_MAX_RUNTIME_S ?? 1800),
     maxTokensCeiling: Number(process.env.MYCEL_MAX_TOKENS ?? 8192),

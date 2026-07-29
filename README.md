@@ -117,6 +117,7 @@ Consuming it (topology, proxy routes, SSE) and the honest security limitations a
 
 | Var | Default | What |
 |---|---|---|
+| `MYCEL_RUNTIME` | `opencode` | `opencode` (real agent) \| `mock` (canned events, no keys — demos + tests) |
 | `MYCEL_SANDBOX` | `local` | `local` \| `docker` \| `daytona` |
 | `MYCEL_MODEL` | `anthropic/claude-opus-4-8` | default model; per-task override via `input.model` |
 | `MYCEL_API_KEY` | generated | founder/product key (printed on boot if unset) |
@@ -125,6 +126,27 @@ Consuming it (topology, proxy routes, SSE) and the honest security limitations a
 | `MYCEL_PROXY_MODE` | `0` | route model calls through the harness (keys never in the sandbox) |
 | `MYCEL_ARTIFACTS` | inline | `inline` \| `fs:<dir>` \| `s3://…` |
 | `LANGFUSE_*` | — | opt-in tracing |
+
+## Try it with no keys
+
+The kernel runs end-to-end without OpenCode or a provider key — useful for a first look and for CI:
+
+```bash
+MYCEL_RUNTIME=mock npm run dev     # tasks stream canned events and finish
+```
+
+## Develop
+
+```bash
+npm i
+npm run dev          # boots the harness (prints an API key + owner login)
+npx tsc --noEmit     # typecheck
+npm test             # test suite (in-process, mock runtime)
+```
+
+The suite covers auth, boundary validation + constraint clamping, a full task run, SSE ordering
+and replay, connections/secret handling, living knowledge + the feedback loop, the action proxy
+(gate → approve → execute → outbound, and reject), and **per-project tenant isolation**.
 
 ## Principles
 
@@ -144,7 +166,7 @@ portal/          the founder operator console (Next.js + shadcn)
 
 ## License
 
-Open-core. A permissive license for the kernel lands with `LICENSE` shortly.
+[Apache-2.0](./LICENSE). Open-core: the kernel is free and self-hostable; the hosted Cloud is the commercial layer.
 
 ---
 

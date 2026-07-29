@@ -4,10 +4,12 @@
 // slots in at the same seams.
 import { getArtifactBackend } from "./artifacts";
 import { abortReason, clearAbort } from "./cancel";
+import { loadConfig } from "./config";
 import type { EventType, TaskStatus } from "./contract";
 import { emitEvent } from "./events";
 import { createSandbox, type Sandbox } from "./sandbox";
 import { runOpenCodeTask } from "./runtime";
+import { runMockTask } from "./runtime.mock";
 import type { Store } from "./store";
 import { getObserver } from "./tracing";
 import { validateOutput } from "./validate";
@@ -44,16 +46,20 @@ export async function runTask(store: Store, taskId: string): Promise<void> {
     return null;
   };
 
+  const ctx = { emit, onCost, shouldAbort };
+  const useMock = loadConfig().runtime === "mock";
   let sandbox: Sandbox | undefined;
   try {
     // Provisioning is inside the try: a sandbox that fails to start must fail the task, not
     // strand it in `queued` with an SSE stream hanging forever.
     await store.setStatus(taskId, "provisioning");
-    sandbox = await createSandbox();
+    if (!useMock) sandbox = await createSandbox();
     await store.setStatus(taskId, "running");
     await emit("task.created", { wedge: task.wedge, task_type: task.task_type });
 
-    const { text } = await runOpenCodeTask(task, sandbox, { emit, onCost, shouldAbort });
+    const { text } = useMock
+      ? await runMockTask(task, ctx)
+      : await runOpenCodeTask(task, sandbox!, ctx);
 
     // Honest validation against the wedge/task output_schema — not a hardcoded ok:true.
     const schema = task.output_schema;
