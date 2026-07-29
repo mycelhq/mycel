@@ -6,8 +6,16 @@
 // v1 bootstraps a single default Org + Project + owner Member, so there is exactly one tenant and
 // therefore no cross-tenant surface to get wrong. The model is in place; per-project scoping of
 // data lands when a second project actually exists. In-memory (note: pg backing next, like domain).
-import { randomBytes, randomUUID, scryptSync, timingSafeEqual } from "node:crypto";
+import { createHash, randomBytes, randomUUID, scryptSync, timingSafeEqual } from "node:crypto";
 import { loadConfig } from "./config";
+
+/** A stable, deterministic UUID from a name (UUIDv5-style). The default org/project/owner use
+ *  these so their ids survive a restart — otherwise durable rows would be scoped to a dead
+ *  project id after every boot. */
+function stableUuid(name: string): string {
+  const h = createHash("sha1").update(`mycel:${name}`).digest("hex");
+  return `${h.slice(0, 8)}-${h.slice(8, 12)}-5${h.slice(13, 16)}-8${h.slice(17, 20)}-${h.slice(20, 32)}`;
+}
 
 export type Role = "owner" | "admin" | "operator" | "viewer";
 
@@ -70,17 +78,16 @@ class IdentityStore {
   private apiKeys = new Map<string, { project_id: string; org_id: string }>();
   private sessions = new Map<string, Session>();
 
+  /** Set when a durable backend is attached; writes are mirrored to it. */
+  private pg: import("./identity.pg").IdentityPg | null = null;
+
   constructor() {
-    // Bootstrap the default tenant. The existing MYCEL_API_KEY becomes the default project's key.
-    const org: Org = { id: randomUUID(), name: "default", created_at: new Date().toISOString() };
+    // Bootstrap the default tenant with STABLE ids (see stableUuid) so durable data written in a
+    // previous run still resolves to this project. MYCEL_API_KEY is the default project's key.
+    const now = new Date().toISOString();
+    const org: Org = { id: stableUuid("default-org"), name: "default", created_at: now };
     this.orgs.set(org.id, org);
-    const project: Project = {
-      id: randomUUID(),
-      org_id: org.id,
-      name: "default",
-      wedges: [],
-      created_at: new Date().toISOString(),
-    };
+    const project: Project = { id: stableUuid("default-project"), org_id: org.id, name: "default", wedges: [], created_at: now };
     this.projects.set(project.id, project);
     this.apiKeys.set(loadConfig().apiKey, { project_id: project.id, org_id: org.id });
 
@@ -91,15 +98,30 @@ class IdentityStore {
     this.ownerEmail = email;
     const { salt, hash } = hashPassword(pw);
     const member: StoredMember = {
-      id: randomUUID(),
+      id: stableUuid(`owner:${email.toLowerCase()}`),
       org_id: org.id,
       email: email.toLowerCase(),
       role: "owner",
-      created_at: new Date().toISOString(),
+      created_at: now,
       salt,
       hash,
     };
     this.members.set(member.id, member);
+  }
+
+  /** Attach a durable backend: load persisted tenants into the read cache, then mirror writes. */
+  async attach(pg: import("./identity.pg").IdentityPg): Promise<void> {
+    this.pg = pg;
+    const { orgs, projects, members, apiKeys } = await pg.loadAll();
+    for (const o of orgs) this.orgs.set(o.id, o);
+    for (const p of projects) this.projects.set(p.id, p);
+    for (const m of members) this.members.set(m.id, m);
+    for (const [k, v] of apiKeys) this.apiKeys.set(k, v);
+    // persist the bootstrap tenant (idempotent — stable ids)
+    for (const o of this.orgs.values()) await pg.upsertOrg(o);
+    for (const p of this.projects.values()) await pg.upsertProject(p);
+    for (const m of this.members.values()) await pg.upsertMember(m);
+    for (const [k, v] of this.apiKeys) await pg.upsertApiKey(k, v);
   }
 
   readonly ownerEmail: string;
@@ -168,12 +190,17 @@ class IdentityStore {
     return p.wedges.length === 0 || p.wedges.includes(wedge);
   }
 
-  /** Create a project (+ its own product API key) in an org. */
+  /** Create a project (+ its own product API key) in an org. Mirrored to the durable backend. */
   createProject(orgId: string, name: string, wedges: string[] = []): { project: Project; apiKey: string } {
     const project: Project = { id: randomUUID(), org_id: orgId, name, wedges, created_at: new Date().toISOString() };
     this.projects.set(project.id, project);
     const apiKey = `msk_${randomBytes(24).toString("base64url")}`;
     this.apiKeys.set(apiKey, { project_id: project.id, org_id: orgId });
+    if (this.pg) {
+      const pg = this.pg;
+      void pg.upsertProject(project).then(() => pg.upsertApiKey(apiKey, { project_id: project.id, org_id: orgId }))
+        .catch((e) => console.error("[mycel] persist project error:", e));
+    }
     return { project, apiKey };
   }
 
@@ -188,6 +215,10 @@ class IdentityStore {
       created_at: new Date().toISOString(), salt, hash,
     };
     this.members.set(member.id, member);
+    if (this.pg) {
+      const pg = this.pg;
+      void pg.upsertOrg(org).then(() => pg.upsertMember(member)).catch((e) => console.error("[mycel] persist org error:", e));
+    }
     return { org, project, apiKey };
   }
   private publicMember(m: StoredMember): Member {
@@ -201,3 +232,15 @@ export function getIdentityStore(): IdentityStore {
   if (!cached) cached = new IdentityStore();
   return cached;
 }
+
+/** Boot-time: attach durable identity when MYCEL_DATABASE_URL is set (tenants survive restarts). */
+export async function initIdentityStore(): Promise<{ backend: string }> {
+  const url = process.env.MYCEL_DATABASE_URL;
+  const store = getIdentityStore();
+  if (!url) return { backend: "memory" };
+  const { IdentityPg } = await import("./identity.pg");
+  await store.attach(await IdentityPg.connect(url));
+  return { backend: "postgres" };
+}
+
+export type { StoredMember };

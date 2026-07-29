@@ -122,7 +122,7 @@ Consuming it (topology, proxy routes, SSE) and the honest security limitations a
 | `MYCEL_MODEL` | `anthropic/claude-opus-4-8` | default model; per-task override via `input.model` |
 | `MYCEL_API_KEY` | generated | founder/product key (printed on boot if unset) |
 | `MYCEL_OWNER_EMAIL` / `_PASSWORD` | generated | portal owner login |
-| `MYCEL_DATABASE_URL` | — | Postgres; falls back to in-memory |
+| `MYCEL_DATABASE_URL` | — | Postgres for **everything** (tasks, service surface, tenants); falls back to in-memory |
 | `MYCEL_PROXY_MODE` | `0` | route model calls through the harness (keys never in the sandbox) |
 | `MYCEL_ARTIFACTS` | inline | `inline` \| `fs:<dir>` \| `s3://…` |
 | `LANGFUSE_*` | — | opt-in tracing |
@@ -142,6 +142,7 @@ npm i
 npm run dev          # boots the harness (prints an API key + owner login)
 npx tsc --noEmit     # typecheck
 npm test             # test suite (in-process, mock runtime)
+MYCEL_TEST_DATABASE_URL=postgres://... npm test   # + Postgres durability test
 ```
 
 The suite covers auth, boundary validation + constraint clamping, a full task run, SSE ordering

@@ -1,12 +1,15 @@
 import { serve } from "@hono/node-server";
 import { API_KEY_GENERATED, loadConfig } from "./config";
-import { getIdentityStore } from "./identity";
+import { closeDomainStore, initDomainStore } from "./domain";
+import { getIdentityStore, initIdentityStore } from "./identity";
 import { recoverTasks } from "./recovery";
 import { createServer } from "./server";
 import { createStore } from "./store";
 
 const { store, backend } = await createStore();
-const identity = getIdentityStore(); // bootstrap the default org/project/owner
+await initDomainStore(); // durable service surface when MYCEL_DATABASE_URL is set
+await initIdentityStore(); // durable tenants (stable default ids either way)
+const identity = getIdentityStore();
 const recovered = await recoverTasks(store);
 const app = createServer(store);
 const cfg = loadConfig();
@@ -43,6 +46,7 @@ async function shutdown(signal: string): Promise<void> {
   server.close();
   try {
     await store.close?.();
+    await closeDomainStore();
   } catch (e) {
     console.error("[mycel] store close error:", e);
   }

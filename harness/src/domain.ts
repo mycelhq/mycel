@@ -156,14 +156,31 @@ export class InMemoryDomainStore implements DomainStore {
 }
 
 export function createDomainStore(): DomainStore {
-  // In-memory reference. Postgres backing (mirroring store.pg.ts) is the documented next step.
   return new InMemoryDomainStore();
 }
 
 // Process-wide singleton so the server, orchestrator, runtime, and action proxy all share it
-// without threading it through every call.
+// without threading it through every call. getDomainStore() stays synchronous (it's on hot paths);
+// initDomainStore() is awaited once at boot to swap in the durable backend.
 let cached: DomainStore | null = null;
 export function getDomainStore(): DomainStore {
   if (!cached) cached = createDomainStore();
   return cached;
+}
+
+/** Boot-time backend selection: Postgres when MYCEL_DATABASE_URL is set, else in-memory. */
+export async function initDomainStore(): Promise<{ backend: string }> {
+  const url = process.env.MYCEL_DATABASE_URL;
+  if (url) {
+    const { PostgresDomainStore } = await import("./domain.pg");
+    cached = await PostgresDomainStore.connect(url);
+    return { backend: "postgres" };
+  }
+  cached = createDomainStore();
+  return { backend: "memory" };
+}
+
+/** Release the domain store (pg pool) on graceful shutdown. */
+export async function closeDomainStore(): Promise<void> {
+  await (cached as DomainStore & { close?: () => Promise<void> })?.close?.();
 }
