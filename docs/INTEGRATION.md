@@ -35,6 +35,7 @@ GET      /v1/threads/:id          a conversation (messages in/out)
 
 # Internal (sandbox-facing, nonce-gated) — the agent reaches these, never the founder key
 POST /v1/internal/llm/*           proxy-mode model routing (real key stays server-side)
+POST /v1/internal/reads/:cap      the read proxy — ungated but scoped (GET, host from the connection)
 POST /v1/internal/actions/:cap    the action proxy — send/charge/book via a connection, gated
 POST /v1/internal/gate            tool-call approval gate
 ```
@@ -116,6 +117,11 @@ What the kernel enforces today, and what it doesn't yet — so you deploy it kno
   (Stripe/Postmark/Twilio) never enter the sandbox — the agent gets opaque nonces; the harness
   holds the real secrets and mediates every call. Every outward *action* passes the human
   approval gate.
+- **Read/write asymmetry.** Reads are **ungated** (an agent that must wait for a human before it
+  can look at today's transactions is useless) but still scoped: granted connections only, GET
+  only, the host comes from the connection config (the sandbox supplies a relative path, so no
+  SSRF), responses are size-capped, reads are budgeted per task, and every read is traced onto
+  the task timeline. Writes stay gated.
 - **Auth** on the whole public API; **input validation** and **server-side constraint ceilings**
   (a caller can't set `max_cost_usd: 1e6`); model + `max_tokens` pinned in the LLM proxy.
 - **Crash-honest runtime:** a task that fails says why (persisted), OpenCode dying is a failure

@@ -6,7 +6,7 @@ couldn't hold. Nothing here invalidates the architecture — the trust boundary,
 and the contract all held up. What's missing is the **operational spine**.
 
 Short version: **the kernel is strong at "do one gated task well" and missing "run an ongoing
-operation."**
+operation."** Items 1 and 2 are now shipped; 3–5 are the rest of that spine.
 
 ## Solid today
 
@@ -21,19 +21,26 @@ operation."**
 
 Each item below blocked at least one of the three businesses we modeled.
 
-### 1. Scheduler & timers
+### 1. Scheduler & timers  ✅ shipped
 Cron-style recurring work (`daily_sync`, close on the 1st, quarterly filing), `wait_until`,
 follow-up cadences (day 3 / 7 / 14), and SLA/deadline escalation.
 
-*Why first:* all three wedges are blocked without it. A service business runs on a clock; today the
-kernel only reacts to a request or an inbound message.
+*Why first:* all three wedges are blocked without it. A service business runs on a clock.
 
-### 2. Ungated, scoped reads through connections
+**Shipped:** `Schedule` + `/v1/schedules` (cadences: every N / daily / monthly, fire-now, pause).
+Still missing from this item: `wait_until` mid-task (a task can't sleep and resume yet) and SLA
+escalation timers.
+
+### 2. Ungated, scoped reads through connections  ✅ shipped
 The action proxy is send-only and gates **everything** — correct for "email this client," unusable
 for "pull today's bank transactions." Reads need to be cheap, frequent, and ungated (but scoped to
 the connection); writes stay gated.
 
 *Why second:* small change, unblocks every read-heavy wedge (bookkeeping, ads, sourcing).
+
+**Shipped:** `/v1/internal/reads/:capability` — GET-only, granted connections only, host from the
+connection (relative path from the sandbox, so no SSRF), size-capped, per-task read budget, and
+every read traced onto the timeline.
 
 ### 3. Case / engagement primitive
 A long-lived work object with a stage machine — a recruiting role open for six weeks, a monthly

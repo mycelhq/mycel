@@ -30,6 +30,80 @@ export function actionPreview(
   };
 }
 
+// ── reads ──
+// Reads are the asymmetric half of the trust model: a read is *ungated* (an agent that has to
+// wait for a human before it can look at today's transactions is useless) but still *scoped* —
+// only through a granted connection, only GET, host set by the connection, size-capped, traced.
+export const MAX_READ_BYTES = 256 * 1024;
+
+/** Result of a scoped read. `truncated` tells the agent it didn't get everything. */
+export interface ReadResult {
+  ok: boolean;
+  status?: number;
+  detail?: string;
+  bytes?: number;
+  truncated?: boolean;
+  body?: string;
+  data?: unknown;
+}
+
+/** The security crux: the sandbox supplies a PATH, never a host. Anything that could escape the
+ *  connection's base URL (absolute URL, protocol-relative, traversal) is rejected. No SSRF. */
+export function safeReadPath(raw: unknown): string | null {
+  if (typeof raw !== "string") return null;
+  const p = raw.trim();
+  if (!p) return "";
+  if (/^[a-z][a-z0-9+.-]*:/i.test(p)) return null; // http:, file:, gopher: …
+  if (p.startsWith("//")) return null; // protocol-relative → different host
+  if (p.includes("..")) return null; // traversal
+  if (/[\r\n]/.test(p)) return null; // header injection
+  return p.replace(/^\/+/, "");
+}
+
+export async function executeRead(
+  conn: Connection,
+  capability: string,
+  params: Record<string, unknown>,
+): Promise<ReadResult> {
+  const secret = resolveSecret(conn.secret_ref, conn.id);
+  const base = String(conn.config.api_url ?? conn.config.base_url ?? conn.config.url ?? "");
+  if (!base) return { ok: false, detail: `connection "${conn.name}" has no config.api_url to read from` };
+
+  const path = safeReadPath(params.path ?? "");
+  if (path === null) return { ok: false, detail: "invalid path: must be a relative path, not a URL" };
+
+  const url = new URL(`${base.replace(/\/+$/, "")}/${path}`);
+  const query = params.query;
+  if (query && typeof query === "object") {
+    for (const [k, v] of Object.entries(query as Record<string, unknown>)) {
+      if (v !== undefined && v !== null) url.searchParams.set(k, String(v));
+    }
+  }
+
+  try {
+    const res = await fetch(url, {
+      method: "GET", // reads are reads
+      headers: {
+        accept: "application/json",
+        ...(secret ? { authorization: `Bearer ${secret}` } : {}),
+      },
+      signal: AbortSignal.timeout(20_000),
+    });
+    const raw = await res.text();
+    const truncated = raw.length > MAX_READ_BYTES;
+    const body = truncated ? raw.slice(0, MAX_READ_BYTES) : raw;
+    let data: unknown;
+    try {
+      data = JSON.parse(body);
+    } catch {
+      /* not json — the agent gets `body` */
+    }
+    return { ok: res.ok, status: res.status, bytes: raw.length, truncated, body: data ? undefined : body, data };
+  } catch (e) {
+    return { ok: false, detail: String((e as Error)?.message ?? e) };
+  }
+}
+
 export async function executeAction(
   conn: Connection,
   capability: string,

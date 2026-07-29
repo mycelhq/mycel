@@ -153,6 +153,8 @@ export async function runOpenCodeTask(
     MYCEL_GATE_PATTERNS: buildGatePatterns(task, wedge),
     // Action proxy: wedge tools POST here with this token to send/charge/book through a connection.
     MYCEL_ACTIONS_URL: `${cfg.publicUrl}/v1/internal/actions`,
+    // Reads: ungated (but scoped to the same granted connections) — see AGENTS.md.
+    MYCEL_READS_URL: `${cfg.publicUrl}/v1/internal/reads`,
     MYCEL_ACTION_TOKEN: actionNonce,
   })
     .map(([k, v]) => `${k}=${shellQuote(v)}`)
@@ -305,7 +307,15 @@ function buildAgentsMd(task: Task, wedge: LoadedWedge | null, connections: Conne
         `  -H "authorization: Bearer $MYCEL_ACTION_TOKEN" -H "content-type: application/json" \\\n` +
         `  -d '{"connection_id":"<id>","to":"...","subject":"...","body":"..."}'\n` +
         "```\n" +
-        `Every action pauses for human approval before it happens. Available connections:`,
+        `Every action pauses for human approval before it happens.\n\n` +
+        `To READ from a connection (no approval needed, but same connections only):\n` +
+        "```bash\n" +
+        `curl -s "$MYCEL_READS_URL/<capability>" \\\n` +
+        `  -H "authorization: Bearer $MYCEL_ACTION_TOKEN" -H "content-type: application/json" \\\n` +
+        `  -d '{"connection_id":"<id>","path":"v1/charges","query":{"limit":"10"}}'\n` +
+        "```\n" +
+        `Reads are GET-only, size-capped, and traced. Pass a relative path, never a full URL.\n\n` +
+        `Available connections:`,
     );
     for (const c of connections) parts.push(`- **${c.name}** (${c.kind}) — id \`${c.id}\``);
   }

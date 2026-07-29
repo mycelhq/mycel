@@ -11,7 +11,7 @@ import { Hono } from "hono";
 import { streamSSE } from "hono/streaming";
 import { requireApiKey, safeEqual } from "./auth";
 import { awaitApproval, failWaitersForTask, resolveApproval } from "./approvals";
-import { actionPreview, executeAction } from "./actions";
+import { actionPreview, executeAction, executeRead } from "./actions";
 import { getActionGrant } from "./actiongrants";
 import { getArtifactBackend } from "./artifacts";
 import { subscribe } from "./bus";
@@ -62,6 +62,16 @@ function rateLimited(key: string): boolean {
   }
   b.n++;
   return b.n > RATE_MAX;
+}
+
+// Per-task read budget: reads are ungated, so this is the guardrail that keeps a runaway agent
+// from hammering a third-party API. Cleared with the process (reads are per-run by nature).
+const READ_MAX_PER_TASK = Number(process.env.MYCEL_READ_MAX_PER_TASK ?? 200);
+const readCounts = new Map<string, number>();
+function readsExceeded(taskId: string): boolean {
+  const n = (readCounts.get(taskId) ?? 0) + 1;
+  readCounts.set(taskId, n);
+  return n > READ_MAX_PER_TASK;
 }
 
 // Idempotency: same Idempotency-Key returns the same task instead of spawning a duplicate (and
@@ -745,6 +755,56 @@ export function createServer(store: Store): Hono {
     await store.createTask(task);
     void runTask(store, task.id).catch((err) => console.error("[mycel] runTask error:", err));
     return c.json({ task_id: task.id, thread_id: thread.id, client_id: client.id }, 201);
+  });
+
+  // Internal: the READ proxy. The asymmetric half of the trust model — a read is ungated (an agent
+  // that must wait for a human before it can look at today's transactions is useless), but still
+  // scoped: only a granted connection, only GET, the host comes from the connection (no SSRF), the
+  // response is size-capped, reads are rate-limited per task, and every read is traced onto the
+  // task timeline so the founder can see exactly what data was pulled.
+  app.post("/v1/internal/reads/:capability", async (c) => {
+    const nonce = (c.req.header("authorization") ?? "").replace(/^Bearer\s+/i, "");
+    const grant = getActionGrant(nonce);
+    if (!grant) return c.json({ ok: false, error: "invalid action token" }, 401);
+    const capability = c.req.param("capability");
+    const params = (await c.req.json().catch(() => ({}))) as Record<string, unknown>;
+
+    // Bound how much a runaway agent can hammer a third-party API on one task.
+    if (readsExceeded(grant.task_id)) {
+      return c.json({ ok: false, error: `read limit reached for this task (${READ_MAX_PER_TASK})` }, 429);
+    }
+
+    // Same connection resolution as the action proxy: explicit id must be granted, else match kind.
+    const allowed = grant.connectionIds;
+    let connId = typeof params.connection_id === "string" ? params.connection_id : undefined;
+    if (connId && !allowed.includes(connId)) return c.json({ ok: false, error: "connection not granted" }, 403);
+    if (!connId) {
+      for (const id of allowed) {
+        const conn = await domain.getConnection(id);
+        if (conn && capability.toLowerCase().includes(conn.kind)) {
+          connId = id;
+          break;
+        }
+      }
+    }
+    const conn = connId ? await domain.getConnection(connId) : undefined;
+    if (!conn) return c.json({ ok: false, error: "no granted connection for this read" }, 400);
+
+    const tool = `read:${conn.kind}:${capability}`;
+    await emitEvent(store, grant.task_id, "tool.called", {
+      tool,
+      args: { connection: conn.name, path: params.path, query: params.query },
+    });
+    const result = await executeRead(conn, capability, params);
+    await emitEvent(store, grant.task_id, "tool.result", {
+      tool,
+      ok: result.ok,
+      status: result.status,
+      bytes: result.bytes,
+      truncated: result.truncated,
+      detail: result.detail,
+    });
+    return c.json(result);
   });
 
   // Internal: the action proxy — the generalization of the LLM proxy to real-world side effects.
