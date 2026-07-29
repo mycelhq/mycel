@@ -61,6 +61,7 @@ export class PostgresStore implements Store {
         risk text NOT NULL DEFAULT 'medium',
         preview jsonb NOT NULL DEFAULT '{}',
         status text NOT NULL DEFAULT 'pending',
+        policy_reason text,
         expires_at timestamptz
       );
       CREATE TABLE IF NOT EXISTS artifacts (
@@ -77,6 +78,7 @@ export class PostgresStore implements Store {
     await this.pool.query(`ALTER TABLE tasks ADD COLUMN IF NOT EXISTS event_seq int NOT NULL DEFAULT 0;`);
     await this.pool.query(`ALTER TABLE tasks ADD COLUMN IF NOT EXISTS project_id text;`);
     await this.pool.query(`ALTER TABLE tasks ADD COLUMN IF NOT EXISTS case_id uuid;`);
+    await this.pool.query(`ALTER TABLE approvals ADD COLUMN IF NOT EXISTS policy_reason text;`);
   }
 
   private rowToTask(r: any): Task {
@@ -244,6 +246,7 @@ export class PostgresStore implements Store {
       risk: r.risk,
       preview: r.preview,
       status: r.status,
+      policy_reason: r.policy_reason ?? undefined,
       expires_at: r.expires_at ? new Date(r.expires_at).toISOString() : "",
     };
   }
@@ -253,10 +256,10 @@ export class PostgresStore implements Store {
     return r.rows[0] ? this.rowToApproval(r.rows[0]) : undefined;
   }
 
-  async setApproval(id: string, status: Approval["status"]): Promise<Approval | undefined> {
+  async setApproval(id: string, status: Approval["status"], policyReason?: string): Promise<Approval | undefined> {
     const r = await this.pool.query(
-      `UPDATE approvals SET status=$2 WHERE approval_id=$1 RETURNING *`,
-      [id, status],
+      `UPDATE approvals SET status=$2, policy_reason=COALESCE($3, policy_reason) WHERE approval_id=$1 RETURNING *`,
+      [id, status, policyReason ?? null],
     );
     return r.rows[0] ? this.rowToApproval(r.rows[0]) : undefined;
   }

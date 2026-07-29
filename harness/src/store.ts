@@ -30,7 +30,7 @@ export interface Store {
     ttlMs?: number;
   }): Promise<Approval>;
   getApproval(id: string): Promise<Approval | undefined>;
-  setApproval(id: string, status: Approval["status"]): Promise<Approval | undefined>;
+  setApproval(id: string, status: Approval["status"], policyReason?: string): Promise<Approval | undefined>;
   /** The approvals queue for the portal (optionally filtered by status, e.g. "pending"). */
   listApprovals(status?: Approval["status"]): Promise<Approval[]>;
   addArtifact(a: {
@@ -145,9 +145,12 @@ export class InMemoryStore implements Store {
     return this.approvals.get(id);
   }
 
-  async setApproval(id: string, status: Approval["status"]): Promise<Approval | undefined> {
+  async setApproval(id: string, status: Approval["status"], policyReason?: string): Promise<Approval | undefined> {
     const a = this.approvals.get(id);
-    if (a) a.status = status;
+    if (a) {
+      a.status = status;
+      if (policyReason !== undefined) a.policy_reason = policyReason;
+    }
     return a;
   }
 

@@ -77,5 +77,70 @@
       "written_off"
     ],
     "initial": "outstanding"
+  },
+  "workflows": [
+    {
+      "name": "next_step",
+      "description": "The dunning step the policy dictates, given the facts. ALWAYS use this to choose the step; then write the message yourself.",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "days_overdue": {
+            "type": "number"
+          },
+          "disputed": {
+            "type": "boolean"
+          },
+          "good_standing": {
+            "type": "boolean"
+          },
+          "promised_payment_date": {
+            "type": "string"
+          },
+          "today": {
+            "type": "string"
+          },
+          "last_chased_days_ago": {
+            "type": "number"
+          }
+        },
+        "required": [
+          "days_overdue"
+        ]
+      },
+      "output_schema": {
+        "type": "object",
+        "properties": {
+          "step": {
+            "type": "string",
+            "enum": [
+              "reminder",
+              "firm_reminder",
+              "final_notice",
+              "hold"
+            ]
+          },
+          "reason": {
+            "type": "string"
+          },
+          "escalate": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "step",
+          "reason"
+        ]
+      }
+    }
+  ],
+  "policy": {
+    "auto_approve": [
+      {
+        "action": "email:send_reminder",
+        "max_per_task": 3,
+        "max_per_day": 50
+      }
+    ]
   }
 }

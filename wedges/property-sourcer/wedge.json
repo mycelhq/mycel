@@ -81,5 +81,57 @@
       "completed"
     ],
     "initial": "brief"
-  }
+  },
+  "workflows": [
+    {
+      "name": "yields",
+      "description": "Exact gross/net yield, SDLT and running costs for a listing. ALWAYS use this instead of doing the arithmetic yourself.",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "price_gbp": {
+            "type": "number"
+          },
+          "monthly_rent_gbp": {
+            "type": "number"
+          },
+          "property_type": {
+            "type": "string"
+          },
+          "service_charge_gbp": {
+            "type": "number"
+          },
+          "ground_rent_gbp": {
+            "type": "number"
+          },
+          "min_net_yield_pct": {
+            "type": "number"
+          }
+        },
+        "required": [
+          "price_gbp",
+          "monthly_rent_gbp"
+        ]
+      },
+      "output_schema": {
+        "type": "object",
+        "properties": {
+          "gross_yield_pct": {
+            "type": "number"
+          },
+          "net_yield_pct": {
+            "type": "number"
+          },
+          "clears_box": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "gross_yield_pct",
+          "net_yield_pct",
+          "clears_box"
+        ]
+      }
+    }
+  ]
 }

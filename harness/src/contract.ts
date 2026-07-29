@@ -65,7 +65,9 @@ export interface TaskEvent {
 }
 
 export type Risk = "low" | "medium" | "high";
-export type ApprovalDecision = "approved" | "rejected" | "expired";
+/** How an approval was resolved. `auto_approved` means a wedge policy envelope allowed it without
+ *  a human; it still lands in the queue for batch review. */
+export type ApprovalDecision = "approved" | "rejected" | "expired" | "auto_approved";
 
 export interface Approval {
   approval_id: string;
@@ -74,6 +76,8 @@ export interface Approval {
   risk: Risk;
   preview: Record<string, unknown>;
   status: "pending" | ApprovalDecision;
+  /** Set when a policy envelope resolved this instead of a human — the audit trail for batch review. */
+  policy_reason?: string;
   expires_at: string;
 }
 

@@ -40,6 +40,7 @@ import { setSecret } from "./secrets";
 import type { Store } from "./store";
 import { traceLlmCall } from "./tracing";
 import { loadWedge, wedgesDir } from "./wedge";
+import { runWorkflow } from "./workflows";
 
 const TERMINAL: ReadonlySet<TaskStatus> = new Set<TaskStatus>([
   "succeeded",
@@ -369,7 +370,7 @@ export function createServer(store: Store): Hono {
       risk: body.risk ?? "medium",
       preview: body.preview ?? {},
     });
-    return c.json({ allow: decision === "approved", decision });
+    return c.json({ allow: decision === "approved" || decision === "auto_approved", decision });
   });
 
   // Internal: proxy-mode model routing. The sandbox calls this with an opaque nonce; the harness
@@ -926,6 +927,28 @@ export function createServer(store: Store): Hono {
     return c.json({ task_id: task.id, thread_id: thread.id, client_id: client.id }, 201);
   });
 
+  // Internal: deterministic workflows. The agent calls a NAMED function the wedge ships, with JSON
+  // args — it cannot define or edit the code. Pure computation, so no approval gate; traced like a
+  // tool call so the founder sees which computation ran on what inputs.
+  app.post("/v1/internal/workflows/:name", async (c) => {
+    const grant = getActionGrant((c.req.header("authorization") ?? "").replace(/^Bearer\s+/i, ""));
+    if (!grant) return c.json({ ok: false, error: "invalid action token" }, 401);
+    const task = await store.getTask(grant.task_id);
+    if (!task) return c.json({ ok: false, error: "unknown task" }, 404);
+    const name = c.req.param("name");
+    const args = (await c.req.json().catch(() => ({}))) as Record<string, unknown>;
+
+    await emitEvent(store, grant.task_id, "tool.called", { tool: `workflow:${name}`, args });
+    const result = await runWorkflow(task.wedge, name, args);
+    await emitEvent(store, grant.task_id, "tool.result", {
+      tool: `workflow:${name}`,
+      ok: result.ok,
+      ms: result.ms,
+      error: result.error,
+    });
+    return c.json(result, result.ok ? 200 : 400);
+  });
+
   // Internal: the READ proxy. The asymmetric half of the trust model — a read is ungated (an agent
   // that must wait for a human before it can look at today's transactions is useless), but still
   // scoped: only a granted connection, only GET, the host comes from the connection (no SSRF), the
@@ -1011,7 +1034,8 @@ export function createServer(store: Store): Hono {
       risk: "high",
       preview,
     });
-    if (decision !== "approved") {
+    // auto_approved means a wedge policy envelope allowed it — proceed, exactly like a human yes.
+    if (decision !== "approved" && decision !== "auto_approved") {
       return c.json({ ok: false, decision, error: `action ${decision}` }, 200);
     }
 

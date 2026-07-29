@@ -5,6 +5,8 @@
 import { markAbort } from "./cancel";
 import type { ApprovalDecision, Risk } from "./contract";
 import { emitEvent } from "./events";
+import { evaluatePolicy } from "./policy";
+import { loadWedge } from "./wedge";
 import type { Store } from "./store";
 
 /** The outcome of an approval — plus, when the human edits the action before approving, the
@@ -59,6 +61,28 @@ export async function awaitApproval(
     preview: req.preview,
     ttlMs: req.ttlMs,
   });
+
+  // POLICY FIRST: if the wedge declares an envelope this action fits inside, resolve it without a
+  // human. The approval is still recorded (with the reason) so it lands in the batch-review queue —
+  // autonomy is auditable, not invisible. No policy → the human gate, exactly as before.
+  const task = await store.getTask(taskId);
+  const decisionByPolicy = evaluatePolicy(loadWedge(task?.wedge ?? "")?.manifest, {
+    action: req.action,
+    payload: req.preview,
+    taskId,
+    projectId: task?.project_id,
+  });
+  if (decisionByPolicy.auto) {
+    await store.setApproval(approval.approval_id, "auto_approved", decisionByPolicy.reason);
+    await emitEvent(store, taskId, "approval.resolved", {
+      approval_id: approval.approval_id,
+      action: req.action,
+      decision: "auto_approved",
+      policy_reason: decisionByPolicy.reason,
+    });
+    return { approvalId: approval.approval_id, decision: "auto_approved" };
+  }
+
   await store.setStatus(taskId, "awaiting_approval");
   await emitEvent(store, taskId, "approval.requested", {
     approval_id: approval.approval_id,

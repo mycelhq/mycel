@@ -6,7 +6,7 @@ couldn't hold. Nothing here invalidates the architecture — the trust boundary,
 and the contract all held up. What's missing is the **operational spine**.
 
 Short version: **the kernel is strong at "do one gated task well" and missing "run an ongoing
-operation."** Items 1–3 are now shipped; 4–5 are the rest of that spine.
+operation."** Items 1–5 (the operational spine) are now shipped; 6–9 remain.
 
 ## Solid today
 
@@ -53,16 +53,30 @@ spawns an episode that inherits the case's wedge + client + state. The agent can
 *its own* case via `/v1/internal/case` (ungated — no real-world side effect — but scoped to its run
 and attributed to `agent`).
 
-### 4. Deterministic workflows
+### 4. Deterministic workflows  ✅ shipped
 Named, tested functions the agent calls instead of doing arithmetic in prose — reconciliation, yield,
 fees, budget pacing. Cheaper, consistent, auditable. Skills stay prose (judgment); workflows are code
 (mechanics).
 
-### 5. Policy-bounded autonomy
+**Shipped:** a wedge declares `workflows` and ships `workflows/<name>.mjs`; the agent calls one by
+name over `/v1/internal/workflows/:name` with JSON args. Args and return value are schema-validated,
+runs are timed out and size-capped, and each call is traced. The agent can pick *which* computation
+and *what inputs* — never the logic. Examples: `property-sourcer/yields` (exact SDLT + net yield,
+matching the wedge's own example report to the penny) and `invoice-chaser/next_step` (the dunning
+ladder as policy, not vibes).
+
+### 5. Policy-bounded autonomy  ✅ shipped
 Today's rule is *every outward action passes a human*. That's right for "send this email" and wrong
 for "make 40 budget tweaks today" — the founder stops clicking and turns the gate off, which kills
 the trust primitive. Needs envelopes (spend / rate / scope): auto-approve inside, gate outside, batch
 review after the fact.
+
+**Shipped:** a wedge declares `policy.auto_approve` rules (exact action or `prefix:`) with
+`max_amount_usd`, `max_per_task`, `max_per_day`. Inside the envelope the action executes with no
+human and is recorded as `auto_approved` **with its reason**, so it lands in the batch-review queue
+(`GET /v1/approvals?status=auto_approved`) — autonomy is auditable, never invisible. Outside it, the
+human gate applies unchanged. **Fails closed:** no policy, no matching rule, or a cap with no amount
+to check all mean "ask a human".
 
 ### 6. Wedge records
 Schema'd, per-wedge structured data with idempotent upsert — candidates with stages, transactions,

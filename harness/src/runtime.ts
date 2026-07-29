@@ -156,6 +156,7 @@ export async function runOpenCodeTask(
     // Reads: ungated (but scoped to the same granted connections) — see AGENTS.md.
     MYCEL_READS_URL: `${cfg.publicUrl}/v1/internal/reads`,
     MYCEL_CASE_URL: `${cfg.publicUrl}/v1/internal/case`,
+    MYCEL_WORKFLOWS_URL: `${cfg.publicUrl}/v1/internal/workflows`,
     MYCEL_ACTION_TOKEN: actionNonce,
   })
     .map(([k, v]) => `${k}=${shellQuote(v)}`)

@@ -32,6 +32,12 @@ export interface WedgeManifest {
   connections?: string[];
   /** Long-lived engagements: the stage machine a Case moves through. */
   cases?: { stages: string[]; initial?: string };
+  /** Deterministic functions the agent may call (files: workflows/<name>.mjs). Founder code —
+   *  the agent picks which one and the args, never the logic. */
+  workflows?: Array<{ name: string; description?: string; input_schema?: unknown; output_schema?: unknown }>;
+  /** Policy-bounded autonomy: envelopes inside which actions auto-approve (see policy.ts).
+   *  Absent means every action is gated — the safe default. */
+  policy?: { auto_approve?: Array<{ action: string; max_amount_usd?: number; max_per_task?: number; max_per_day?: number }> };
   /** Skill filenames under skills/ (with or without .md). Omit to load all. */
   skills?: string[];
   /** Knowledge filenames under knowledge/. Omit to load all. */
