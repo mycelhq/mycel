@@ -8,6 +8,12 @@ and the contract all held up. What's missing is the **operational spine**.
 Short version: **the kernel is strong at "do one gated task well" and missing "run an ongoing
 operation."** Items 1–5 (the operational spine) are now shipped; 6–9 remain.
 
+**Verified, not asserted:** after shipping 1–5 we built the hardest of the three modelled
+businesses — UK e-commerce bookkeeping — against the live kernel. All 20 capability checks pass, and
+it's now a regression test (`harness/test/stress-bookkeeping.test.ts`, wedge in
+`wedges/books-keeper/`). Cases, schedules, ungated reads, exact integer-pence reconciliation,
+policy-bounded autonomy and runtime knowledge edits all hold up on a real service.
+
 ## Solid today
 
 - **Task → sandboxed agent → human gate → real action**, streamed, validated, traced.

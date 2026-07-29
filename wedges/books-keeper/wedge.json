@@ -1,0 +1,87 @@
+{
+  "wedge": "books-keeper",
+  "title": "Monthly Close for UK E-commerce",
+  "model": "anthropic/claude-opus-4-8",
+  "task_types": {
+    "daily_sync": {
+      "description": "Pull new transactions from the bank feed, categorize what's unambiguous, flag the rest.",
+      "output_schema": {
+        "type": "object",
+        "properties": {
+          "pulled": { "type": "number" },
+          "categorized": { "type": "number" },
+          "flagged": { "type": "array", "items": { "type": "string" } }
+        },
+        "required": ["pulled", "categorized"]
+      }
+    },
+    "chase_receipts": {
+      "description": "Ask the client for the receipts still missing for this period.",
+      "output_schema": {
+        "type": "object",
+        "properties": { "missing": { "type": "number" }, "message": { "type": "string" } },
+        "required": ["missing", "message"]
+      }
+    },
+    "monthly_close": {
+      "description": "Reconcile the period to the penny, produce P&L figures, and flag anomalies.",
+      "output_schema": {
+        "type": "object",
+        "properties": {
+          "reconciled": { "type": "boolean" },
+          "difference_pence": { "type": "number" },
+          "anomalies": { "type": "array", "items": { "type": "string" } }
+        },
+        "required": ["reconciled", "difference_pence"]
+      }
+    },
+    "file_vat": {
+      "description": "Submit the VAT return for the quarter. Always human-approved.",
+      "output_schema": {
+        "type": "object",
+        "properties": { "period": { "type": "string" }, "vat_due_pence": { "type": "number" } },
+        "required": ["period", "vat_due_pence"]
+      }
+    }
+  },
+  "cases": {
+    "stages": ["open", "collecting", "reconciling", "review", "filed"],
+    "initial": "open"
+  },
+  "connections": ["bank-feed", "books-email"],
+  "workflows": [
+    {
+      "name": "reconcile",
+      "description": "Reconcile bank transactions against the ledger to the penny and compute VAT. ALWAYS use this — never do the arithmetic yourself.",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "bank_transactions": { "type": "array" },
+          "ledger_entries": { "type": "array" },
+          "vat_rate_pct": { "type": "number" }
+        },
+        "required": ["bank_transactions", "ledger_entries"]
+      },
+      "output_schema": {
+        "type": "object",
+        "properties": {
+          "reconciled": { "type": "boolean" },
+          "difference_pence": { "type": "number" },
+          "vat_due_pence": { "type": "number" }
+        },
+        "required": ["reconciled", "difference_pence", "vat_due_pence"]
+      }
+    }
+  ],
+  "policy": {
+    "auto_approve": [
+      { "action": "email:send_receipt_chase", "max_per_task": 1, "max_per_day": 20 }
+    ]
+  },
+  "approvals": [
+    { "action": "file_vat", "risk": "high", "required": true },
+    { "action": "send", "risk": "medium", "required": true }
+  ],
+  "skills": ["close-the-month"],
+  "knowledge": ["close-policy.md"]
+}
