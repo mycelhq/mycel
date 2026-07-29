@@ -149,6 +149,12 @@ The suite covers auth, boundary validation + constraint clamping, a full task ru
 and replay, connections/secret handling, living knowledge + the feedback loop, the action proxy
 (gate → approve → execute → outbound, and reject), and **per-project tenant isolation**.
 
+## Roadmap
+
+What the kernel can and can't express yet — written from a stress test against three real
+agency businesses (recruiting, bookkeeping, paid ads), not a wishlist:
+**[docs/ROADMAP.md](docs/ROADMAP.md)**.
+
 ## Principles
 
 1. **Grounded, not guessing.** The agent works from the wedge's skills + knowledge, not a naked prompt.
