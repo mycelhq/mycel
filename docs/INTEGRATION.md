@@ -130,8 +130,9 @@ What the kernel enforces today, and what it doesn't yet — so you deploy it kno
 - **Single-instance.** Cancel, approvals, the SSE bus, and proxy/action grants are in-process —
   run one kernel instance. Horizontal scaling needs a shared bus (Redis); the interfaces are
   ready for it.
-- **The connections/clients/threads store is in-memory** (the task engine is Postgres-backed).
-  Durable domain persistence mirrors the task tables and is the next step.
+- **Durability is opt-in via `MYCEL_DATABASE_URL`.** With it set, everything is Postgres-backed
+  (tasks, events, connections, clients, threads, knowledge, and tenants) and survives restarts —
+  covered by a restart test in CI. Without it, the in-memory default loses state on restart.
 - **No durable mid-run resume.** On restart, interrupted tasks are marked `failed` (not resumed).
 
 ## The frontend is generated, not imported
