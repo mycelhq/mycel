@@ -528,6 +528,175 @@ export function createServer(store: Store): Hono {
     return c.json({ ...thread, messages: await domain.listMessages(thread.id) });
   });
 
+  // ── Cases: long-lived engagements (tasks are episodes within one) ──
+  // Stages come from the wedge manifest (`cases.stages`), so a transition to a stage the wedge
+  // doesn't declare is rejected at the boundary rather than corrupting the engagement.
+  const caseStages = (wedgeSlug: string): string[] => loadWedge(wedgeSlug)?.manifest.cases?.stages ?? [];
+
+  app.get("/v1/cases", async (c) => {
+    const set = accessible(c);
+    const all = await domain.listCases({
+      wedge: c.req.query("wedge") || undefined,
+      status: (c.req.query("status") as "open" | "closed") || undefined,
+      client_id: c.req.query("client_id") || undefined,
+      stage: c.req.query("stage") || undefined,
+    });
+    return c.json(all.filter((k) => inScope(set, k.project_id)));
+  });
+
+  app.post("/v1/cases", async (c) => {
+    const projectId = writeProjectId(c);
+    if (!projectId) return c.json({ error: "specify a project (X-Mycel-Project header)" }, 400);
+    const b = (await c.req.json().catch(() => ({}))) as Record<string, unknown>;
+    if (!b.wedge || !b.title) return c.json({ error: "wedge and title are required" }, 400);
+    const w = loadWedge(String(b.wedge));
+    if (!w) return c.json({ error: `unknown wedge: ${b.wedge}` }, 400);
+    if (!identity.projectAllowsWedge(projectId, String(b.wedge))) {
+      return c.json({ error: `wedge "${b.wedge}" is not enabled for this project` }, 403);
+    }
+    const stages = caseStages(String(b.wedge));
+    const stage = String(b.stage ?? w.manifest.cases?.initial ?? stages[0] ?? "open");
+    if (stages.length && !stages.includes(stage)) {
+      return c.json({ error: `unknown stage "${stage}" — wedge declares: ${stages.join(", ")}` }, 400);
+    }
+    const actor = (c.get("scope").member_id ?? "system") as string;
+    const kase = await domain.createCase({
+      project_id: projectId,
+      wedge: String(b.wedge),
+      title: String(b.title),
+      client_id: typeof b.client_id === "string" ? b.client_id : undefined,
+      stage,
+      status: "open",
+      data: (b.data as Record<string, unknown>) ?? {},
+      due_at: typeof b.due_at === "string" ? b.due_at : undefined,
+      history: [{ at: new Date().toISOString(), kind: "created", to: stage, actor }],
+    });
+    return c.json(kase, 201);
+  });
+
+  // A case with its episodes — this is the operator's real object.
+  app.get("/v1/cases/:id", async (c) => {
+    const kase = await domain.getCase(c.req.param("id"));
+    if (!kase || !inScope(accessible(c), kase.project_id)) return c.json({ error: "not found" }, 404);
+    const tasks = (await store.listTasks({ limit: 200 })).filter((t) => t.case_id === kase.id);
+    const stages = caseStages(kase.wedge);
+    return c.json({ ...kase, stages, tasks });
+  });
+
+  // Advance the stage, patch data, close/reopen. Every change appends to the case history.
+  app.put("/v1/cases/:id", async (c) => {
+    const kase = await domain.getCase(c.req.param("id"));
+    if (!kase || !inScope(accessible(c), kase.project_id)) return c.json({ error: "not found" }, 404);
+    const b = (await c.req.json().catch(() => ({}))) as Record<string, unknown>;
+    const actor = (c.get("scope").member_id ?? "system") as string;
+    const updated = await applyCaseUpdate(kase, b, actor);
+    if ("error" in updated) return c.json({ error: updated.error }, 400);
+    return c.json(updated.value);
+  });
+
+  // Spawn an episode inside the case: a task that inherits the case's wedge + client context.
+  app.post("/v1/cases/:id/tasks", async (c) => {
+    const kase = await domain.getCase(c.req.param("id"));
+    if (!kase || !inScope(accessible(c), kase.project_id)) return c.json({ error: "not found" }, 404);
+    if (kase.status === "closed") return c.json({ error: "case is closed" }, 409);
+    const b = (await c.req.json().catch(() => ({}))) as Record<string, unknown>;
+    if (!b.task_type) return c.json({ error: "task_type is required" }, 400);
+    const w = loadWedge(kase.wedge);
+    const types = w?.manifest.task_types;
+    if (types && Object.keys(types).length && !types[String(b.task_type)]) {
+      return c.json({ error: `unknown task_type "${b.task_type}" for wedge "${kase.wedge}"` }, 400);
+    }
+    const cfg = loadConfig();
+    const iso = new Date().toISOString();
+    const task: Task = {
+      id: randomUUID(),
+      project_id: kase.project_id,
+      case_id: kase.id,
+      wedge: kase.wedge,
+      task_type: String(b.task_type),
+      actor: { kind: "system", id: `case:${kase.id}` },
+      input: {
+        ...((b.input as Record<string, unknown>) ?? {}),
+        case: { id: kase.id, title: kase.title, stage: kase.stage, data: kase.data },
+        client_id: kase.client_id,
+      },
+      constraints: clampConstraints(b.constraints as Partial<Constraints>, cfg.maxCostCeilingUsd, cfg.maxRuntimeCeilingS),
+      tools: [],
+      output_schema: types?.[String(b.task_type)]?.output_schema,
+      status: "queued",
+      cost_usd: 0,
+      created_at: iso,
+      updated_at: iso,
+    };
+    await store.createTask(task);
+    await domain.updateCase(kase.id, {}, { at: iso, kind: "task_spawned", task_id: task.id, actor: "system" });
+    void runTask(store, task.id).catch((err) => console.error("[mycel] case runTask error:", err));
+    return c.json(task, 201);
+  });
+
+  // Internal: the agent reads and advances ITS OWN case. Not an outward action (no real-world side
+  // effect), so it isn't gated — but it is scoped to this run's case and traced onto the timeline.
+  app.get("/v1/internal/case", async (c) => {
+    const grant = getActionGrant((c.req.header("authorization") ?? "").replace(/^Bearer\s+/i, ""));
+    if (!grant) return c.json({ ok: false, error: "invalid action token" }, 401);
+    if (!grant.caseId) return c.json({ ok: false, error: "this task is not part of a case" }, 404);
+    const kase = await domain.getCase(grant.caseId);
+    if (!kase) return c.json({ ok: false, error: "not found" }, 404);
+    return c.json({ ok: true, case: { ...kase, stages: caseStages(kase.wedge) } });
+  });
+
+  app.post("/v1/internal/case/update", async (c) => {
+    const grant = getActionGrant((c.req.header("authorization") ?? "").replace(/^Bearer\s+/i, ""));
+    if (!grant) return c.json({ ok: false, error: "invalid action token" }, 401);
+    if (!grant.caseId) return c.json({ ok: false, error: "this task is not part of a case" }, 404);
+    const kase = await domain.getCase(grant.caseId);
+    if (!kase) return c.json({ ok: false, error: "not found" }, 404);
+    const b = (await c.req.json().catch(() => ({}))) as Record<string, unknown>;
+    const updated = await applyCaseUpdate(kase, b, "agent");
+    if ("error" in updated) return c.json({ ok: false, error: updated.error }, 400);
+    await emitEvent(store, grant.task_id, "progress", {
+      note: `case updated${b.stage ? ` → ${b.stage}` : ""}`,
+      case_id: kase.id,
+    });
+    return c.json({ ok: true, case: updated.value });
+  });
+
+  /** Shared by the public PUT and the agent's internal update: validate the stage, append history. */
+  async function applyCaseUpdate(
+    kase: import("./contract").Case,
+    b: Record<string, unknown>,
+    actor: string,
+  ): Promise<{ value: unknown } | { error: string }> {
+    const iso = new Date().toISOString();
+    const patch: Record<string, unknown> = {};
+    let event: import("./contract").CaseEvent | undefined;
+
+    if (typeof b.stage === "string" && b.stage !== kase.stage) {
+      const stages = caseStages(kase.wedge);
+      if (stages.length && !stages.includes(b.stage)) {
+        return { error: `unknown stage "${b.stage}" — wedge declares: ${stages.join(", ")}` };
+      }
+      patch.stage = b.stage;
+      event = { at: iso, kind: "stage_changed", from: kase.stage, to: b.stage, note: typeof b.note === "string" ? b.note : undefined, actor };
+    }
+    // `data` merges rather than replaces, so a partial update can't wipe the engagement's state.
+    if (b.data && typeof b.data === "object") patch.data = { ...kase.data, ...(b.data as Record<string, unknown>) };
+    if (typeof b.title === "string") patch.title = b.title;
+    if (typeof b.due_at === "string") patch.due_at = b.due_at;
+    if (b.status === "closed" && kase.status !== "closed") {
+      patch.status = "closed";
+      patch.closed_at = iso;
+      event = { at: iso, kind: "closed", note: typeof b.note === "string" ? b.note : undefined, actor };
+    } else if (b.status === "open" && kase.status === "closed") {
+      patch.status = "open";
+      event = { at: iso, kind: "reopened", actor };
+    }
+    if (!event && typeof b.note === "string") event = { at: iso, kind: "note", note: b.note, actor };
+
+    const value = await domain.updateCase(kase.id, patch as never, event);
+    return { value };
+  }
+
   // ── Schedules: recurring work (the operational spine) ──
   app.get("/v1/schedules", async (c) => {
     const set = accessible(c);

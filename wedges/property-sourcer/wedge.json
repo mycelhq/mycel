@@ -8,21 +8,78 @@
       "output_schema": {
         "type": "object",
         "properties": {
-          "verdict": { "type": "string", "enum": ["pursue", "pass", "needs_info"] },
-          "headline": { "type": "string" },
-          "price_gbp": { "type": "number" },
-          "gross_yield_pct": { "type": "number" },
-          "net_yield_pct": { "type": "number" },
-          "risks": { "type": "array", "items": { "type": "string" } },
-          "next_steps": { "type": "array", "items": { "type": "string" } }
+          "verdict": {
+            "type": "string",
+            "enum": [
+              "pursue",
+              "pass",
+              "needs_info"
+            ]
+          },
+          "headline": {
+            "type": "string"
+          },
+          "price_gbp": {
+            "type": "number"
+          },
+          "gross_yield_pct": {
+            "type": "number"
+          },
+          "net_yield_pct": {
+            "type": "number"
+          },
+          "risks": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "next_steps": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          }
         },
-        "required": ["verdict", "headline", "gross_yield_pct", "net_yield_pct", "risks"]
+        "required": [
+          "verdict",
+          "headline",
+          "gross_yield_pct",
+          "net_yield_pct",
+          "risks"
+        ]
       }
     }
   },
-  "tools": ["web_search"],
-  "connections": ["sourcing-inbox"],
-  "approvals": [{ "action": "send", "risk": "high", "required": true }],
-  "skills": ["source-a-deal"],
-  "knowledge": ["sourcing-criteria.md", "example-report.md"]
+  "tools": [
+    "web_search"
+  ],
+  "connections": [
+    "sourcing-inbox"
+  ],
+  "approvals": [
+    {
+      "action": "send",
+      "risk": "high",
+      "required": true
+    }
+  ],
+  "skills": [
+    "source-a-deal"
+  ],
+  "knowledge": [
+    "sourcing-criteria.md",
+    "example-report.md"
+  ],
+  "cases": {
+    "stages": [
+      "brief",
+      "sourcing",
+      "analysing",
+      "submitted",
+      "offer",
+      "completed"
+    ],
+    "initial": "brief"
+  }
 }

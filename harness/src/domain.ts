@@ -5,7 +5,7 @@
 // v0.1 ships an in-memory reference implementation (zero setup). Postgres backing mirrors the
 // task tables and is the next step; the task engine itself is already durable (store.pg.ts).
 import { randomUUID } from "node:crypto";
-import type { Channel, Client, Connection, KnowledgeItem, Message, Schedule, Thread } from "./contract";
+import type { Case, CaseEvent, Channel, Client, Connection, KnowledgeItem, Message, Schedule, Thread } from "./contract";
 
 export interface DomainStore {
   // connections (secrets referenced, never stored in the clear here)
@@ -31,6 +31,16 @@ export interface DomainStore {
   listThreadsForClient(clientId: string): Promise<Thread[]>;
   addMessage(m: Omit<Message, "id" | "created_at">): Promise<Message>;
   listMessages(threadId: string): Promise<Message[]>;
+
+  // cases (long-lived engagements)
+  createCase(c: Omit<Case, "id" | "created_at" | "updated_at" | "history"> & { history?: CaseEvent[] }): Promise<Case>;
+  getCase(id: string): Promise<Case | undefined>;
+  listCases(filter?: { wedge?: string; status?: Case["status"]; client_id?: string; stage?: string }): Promise<Case[]>;
+  updateCase(
+    id: string,
+    patch: Partial<Pick<Case, "stage" | "status" | "data" | "title" | "due_at" | "closed_at">>,
+    event?: CaseEvent,
+  ): Promise<Case | undefined>;
 
   // schedules (recurring work)
   createSchedule(s: Omit<Schedule, "id" | "created_at">): Promise<Schedule>;
@@ -136,6 +146,37 @@ export class InMemoryDomainStore implements DomainStore {
   }
   async listMessages(threadId: string): Promise<Message[]> {
     return this.messages.get(threadId) ?? [];
+  }
+
+  private cases = new Map<string, Case>();
+  async createCase(c: Omit<Case, "id" | "created_at" | "updated_at" | "history"> & { history?: CaseEvent[] }): Promise<Case> {
+    const kase: Case = { ...c, history: c.history ?? [], id: randomUUID(), created_at: now(), updated_at: now() };
+    this.cases.set(kase.id, kase);
+    return kase;
+  }
+  async getCase(id: string): Promise<Case | undefined> {
+    return this.cases.get(id);
+  }
+  async listCases(filter: { wedge?: string; status?: Case["status"]; client_id?: string; stage?: string } = {}): Promise<Case[]> {
+    return [...this.cases.values()]
+      .filter((k) =>
+        (!filter.wedge || k.wedge === filter.wedge) &&
+        (!filter.status || k.status === filter.status) &&
+        (!filter.client_id || k.client_id === filter.client_id) &&
+        (!filter.stage || k.stage === filter.stage))
+      .sort((a, b) => (a.created_at < b.created_at ? 1 : -1));
+  }
+  async updateCase(
+    id: string,
+    patch: Partial<Pick<Case, "stage" | "status" | "data" | "title" | "due_at" | "closed_at">>,
+    event?: CaseEvent,
+  ): Promise<Case | undefined> {
+    const k = this.cases.get(id);
+    if (!k) return undefined;
+    Object.assign(k, patch);
+    if (event) k.history = [...k.history, event];
+    k.updated_at = now();
+    return k;
   }
 
   private schedules = new Map<string, Schedule>();

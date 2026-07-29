@@ -30,6 +30,8 @@ export interface WedgeManifest {
   approvals?: WedgeApproval[];
   /** Connection names/ids this wedge's agent may act through (via the action proxy). */
   connections?: string[];
+  /** Long-lived engagements: the stage machine a Case moves through. */
+  cases?: { stages: string[]; initial?: string };
   /** Skill filenames under skills/ (with or without .md). Omit to load all. */
   skills?: string[];
   /** Knowledge filenames under knowledge/. Omit to load all. */

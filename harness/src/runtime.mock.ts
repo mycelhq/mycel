@@ -29,13 +29,16 @@ export async function runMockTask(task: Task, ctx: RuntimeCtx): Promise<{ text: 
 
   // produce output conforming to the wedge/task output_schema (so output.validated passes)
   const schema = (wedge?.manifest.task_types?.[task.task_type]?.output_schema ?? task.output_schema) as
-    | { type?: string; properties?: Record<string, { type?: string }>; required?: string[] }
+    | { type?: string; properties?: Record<string, { type?: string; enum?: unknown[] }>; required?: string[] }
     | undefined;
   if (schema && typeof schema === "object" && schema.type === "object") {
     const obj: Record<string, unknown> = {};
     for (const [k, spec] of Object.entries(schema.properties ?? {})) {
-      obj[k] =
-        spec.type === "number" || spec.type === "integer" ? 0
+      // Respect `enum` — otherwise the mock emits output its own wedge's schema rejects, and the
+      // validator (correctly) fails the task.
+      obj[k] = Array.isArray(spec.enum) && spec.enum.length
+        ? spec.enum[0]
+        : spec.type === "number" || spec.type === "integer" ? 0
         : spec.type === "boolean" ? true
         : spec.type === "array" ? []
         : spec.type === "object" ? {}

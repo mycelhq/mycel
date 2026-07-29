@@ -8,22 +8,74 @@
       "output_schema": {
         "type": "object",
         "properties": {
-          "step": { "type": "string", "enum": ["reminder", "firm_reminder", "final_notice", "hold"] },
-          "channel": { "type": "string", "enum": ["email", "none"] },
-          "message": { "type": "string" },
-          "reasoning": { "type": "string" }
+          "step": {
+            "type": "string",
+            "enum": [
+              "reminder",
+              "firm_reminder",
+              "final_notice",
+              "hold"
+            ]
+          },
+          "channel": {
+            "type": "string",
+            "enum": [
+              "email",
+              "none"
+            ]
+          },
+          "message": {
+            "type": "string"
+          },
+          "reasoning": {
+            "type": "string"
+          }
         },
-        "required": ["step", "channel", "message"]
+        "required": [
+          "step",
+          "channel",
+          "message"
+        ]
       }
     }
   },
   "tools": [],
-  "connections": ["billing-email", "stripe"],
-  "approvals": [
-    { "action": "send", "risk": "high", "required": true },
-    { "action": "charge", "risk": "high", "required": true },
-    { "action": "refund", "risk": "high", "required": true }
+  "connections": [
+    "billing-email",
+    "stripe"
   ],
-  "skills": ["chase-politely"],
-  "knowledge": ["dunning-policy.md"]
+  "approvals": [
+    {
+      "action": "send",
+      "risk": "high",
+      "required": true
+    },
+    {
+      "action": "charge",
+      "risk": "high",
+      "required": true
+    },
+    {
+      "action": "refund",
+      "risk": "high",
+      "required": true
+    }
+  ],
+  "skills": [
+    "chase-politely"
+  ],
+  "knowledge": [
+    "dunning-policy.md"
+  ],
+  "cases": {
+    "stages": [
+      "outstanding",
+      "reminded",
+      "firm",
+      "final_notice",
+      "paid",
+      "written_off"
+    ],
+    "initial": "outstanding"
+  }
 }

@@ -31,6 +31,7 @@ export class PostgresStore implements Store {
       CREATE TABLE IF NOT EXISTS tasks (
         id uuid PRIMARY KEY,
         project_id text,
+        case_id uuid,
         wedge text NOT NULL,
         task_type text NOT NULL,
         actor jsonb NOT NULL DEFAULT '{}',
@@ -75,12 +76,14 @@ export class PostgresStore implements Store {
     await this.pool.query(`ALTER TABLE tasks ADD COLUMN IF NOT EXISTS error text;`);
     await this.pool.query(`ALTER TABLE tasks ADD COLUMN IF NOT EXISTS event_seq int NOT NULL DEFAULT 0;`);
     await this.pool.query(`ALTER TABLE tasks ADD COLUMN IF NOT EXISTS project_id text;`);
+    await this.pool.query(`ALTER TABLE tasks ADD COLUMN IF NOT EXISTS case_id uuid;`);
   }
 
   private rowToTask(r: any): Task {
     return {
       id: r.id,
       project_id: r.project_id ?? undefined,
+      case_id: r.case_id ?? undefined,
       wedge: r.wedge,
       task_type: r.task_type,
       actor: r.actor,
@@ -98,11 +101,12 @@ export class PostgresStore implements Store {
 
   async createTask(t: Task): Promise<Task> {
     await this.pool.query(
-      `INSERT INTO tasks (id, project_id, wedge, task_type, actor, input, constraints, tools, output_schema, status, cost_usd, created_at, updated_at)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)`,
+      `INSERT INTO tasks (id, project_id, case_id, wedge, task_type, actor, input, constraints, tools, output_schema, status, cost_usd, created_at, updated_at)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)`,
       [
         t.id,
         t.project_id ?? null,
+        t.case_id ?? null,
         t.wedge,
         t.task_type,
         JSON.stringify(t.actor),

@@ -3,7 +3,7 @@
 // parsed by node-pg. Selected automatically when MYCEL_DATABASE_URL is set.
 import { randomUUID } from "node:crypto";
 import pg from "pg";
-import type { Cadence, Channel, Client, Connection, ConnectionKind, ConnectionOwner, KnowledgeItem, Message, Schedule, Thread } from "./contract";
+import type { Cadence, Case, CaseEvent, Channel, Client, Connection, ConnectionKind, ConnectionOwner, KnowledgeItem, Message, Schedule, Thread } from "./contract";
 import { normalizeHandle, type DomainStore } from "./domain";
 
 const { Pool } = pg;
@@ -99,6 +99,22 @@ export class PostgresDomainStore implements DomainStore {
         created_at timestamptz NOT NULL DEFAULT now()
       );
       CREATE INDEX IF NOT EXISTS schedules_due_idx ON schedules (enabled, next_run_at);
+      CREATE TABLE IF NOT EXISTS cases (
+        id uuid PRIMARY KEY,
+        project_id text,
+        wedge text NOT NULL,
+        title text NOT NULL,
+        client_id uuid,
+        stage text NOT NULL,
+        status text NOT NULL DEFAULT 'open',
+        data jsonb NOT NULL DEFAULT '{}',
+        due_at timestamptz,
+        history jsonb NOT NULL DEFAULT '[]',
+        created_at timestamptz NOT NULL DEFAULT now(),
+        updated_at timestamptz NOT NULL DEFAULT now(),
+        closed_at timestamptz
+      );
+      CREATE INDEX IF NOT EXISTS cases_lookup_idx ON cases (wedge, status);
     `);
   }
 
@@ -220,6 +236,59 @@ export class PostgresDomainStore implements DomainStore {
       id: row.id, thread_id: row.thread_id, direction: row.direction, author: row.author, body: row.body,
       status: row.status ?? undefined, task_id: row.task_id ?? undefined, created_at: iso(row.created_at),
     }));
+  }
+
+  // ── cases ──
+  private toCase = (r: any): Case => ({
+    id: r.id, project_id: r.project_id ?? undefined, wedge: r.wedge, title: r.title,
+    client_id: r.client_id ?? undefined, stage: r.stage, status: r.status, data: r.data ?? {},
+    due_at: r.due_at ? iso(r.due_at) : undefined, history: r.history ?? [],
+    created_at: iso(r.created_at), updated_at: iso(r.updated_at),
+    closed_at: r.closed_at ? iso(r.closed_at) : undefined,
+  });
+  async createCase(c: Omit<Case, "id" | "created_at" | "updated_at" | "history"> & { history?: CaseEvent[] }): Promise<Case> {
+    const r = await this.pool.query(
+      `INSERT INTO cases (id, project_id, wedge, title, client_id, stage, status, data, due_at, history)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10) RETURNING *`,
+      [randomUUID(), c.project_id ?? null, c.wedge, c.title, c.client_id ?? null, c.stage,
+       c.status ?? "open", JSON.stringify(c.data ?? {}), c.due_at ?? null, JSON.stringify(c.history ?? [])],
+    );
+    return this.toCase(r.rows[0]);
+  }
+  async getCase(id: string): Promise<Case | undefined> {
+    const r = await this.pool.query(`SELECT * FROM cases WHERE id=$1`, [id]);
+    return r.rows[0] ? this.toCase(r.rows[0]) : undefined;
+  }
+  async listCases(filter: { wedge?: string; status?: Case["status"]; client_id?: string; stage?: string } = {}): Promise<Case[]> {
+    const where: string[] = []; const vals: unknown[] = [];
+    for (const [col, val] of [["wedge", filter.wedge], ["status", filter.status], ["client_id", filter.client_id], ["stage", filter.stage]] as const) {
+      if (val) { vals.push(val); where.push(`${col}=$${vals.length}`); }
+    }
+    const r = await this.pool.query(
+      `SELECT * FROM cases ${where.length ? "WHERE " + where.join(" AND ") : ""} ORDER BY created_at DESC`, vals);
+    return r.rows.map(this.toCase);
+  }
+  async updateCase(
+    id: string,
+    patch: Partial<Pick<Case, "stage" | "status" | "data" | "title" | "due_at" | "closed_at">>,
+    event?: CaseEvent,
+  ): Promise<Case | undefined> {
+    const r = await this.pool.query(
+      `UPDATE cases SET
+         stage     = COALESCE($2, stage),
+         status    = COALESCE($3, status),
+         data      = COALESCE($4::jsonb, data),
+         title     = COALESCE($5, title),
+         due_at    = COALESCE($6::timestamptz, due_at),
+         closed_at = COALESCE($7::timestamptz, closed_at),
+         history   = CASE WHEN $8::jsonb IS NULL THEN history ELSE history || $8::jsonb END,
+         updated_at = now()
+       WHERE id=$1 RETURNING *`,
+      [id, patch.stage ?? null, patch.status ?? null, patch.data ? JSON.stringify(patch.data) : null,
+       patch.title ?? null, patch.due_at ?? null, patch.closed_at ?? null,
+       event ? JSON.stringify([event]) : null],
+    );
+    return r.rows[0] ? this.toCase(r.rows[0]) : undefined;
   }
 
   // ── schedules ──

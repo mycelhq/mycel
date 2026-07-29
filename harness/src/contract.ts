@@ -23,6 +23,8 @@ export interface Task {
   id: string;
   /** The project (tenant) this task belongs to. Reads are filtered by the caller's projects. */
   project_id?: string;
+  /** The case (long-lived engagement) this task is an episode of, when there is one. */
+  case_id?: string;
   wedge: string;
   task_type: string;
   actor: { kind: "user" | "business" | "system"; id: string };
@@ -168,6 +170,39 @@ export interface KnowledgeItem {
   metadata: Record<string, unknown>;
   created_at: string;
   updated_at: string;
+}
+
+/** A **Case** is long-lived work with a stage machine: a recruiting role open for six weeks, a
+ *  monthly close, an ad account under management. Tasks become *episodes within a case*, so state
+ *  that outlives a single run (which candidate is at which stage, what's still missing) has a home.
+ *  Stages are declared by the wedge, so transitions can be validated at the boundary. */
+export interface CaseEvent {
+  at: string;
+  kind: "created" | "stage_changed" | "note" | "task_spawned" | "closed" | "reopened";
+  from?: string;
+  to?: string;
+  note?: string;
+  task_id?: string;
+  actor: string; // member id, "agent", or "system"
+}
+
+export interface Case {
+  id: string;
+  project_id?: string;
+  wedge: string;
+  title: string;
+  /** The customer this engagement is for, when there is one. */
+  client_id?: string;
+  stage: string;
+  status: "open" | "closed";
+  /** Operational state for the engagement (per-wedge shape: candidates, missing receipts, …). */
+  data: Record<string, unknown>;
+  /** Deadline, if the work has one (a filing date, a client-promised ship date). */
+  due_at?: string;
+  history: CaseEvent[];
+  created_at: string;
+  updated_at: string;
+  closed_at?: string;
 }
 
 /** A recurring job that spawns a task on a cadence. This is what lets a wedge *run an operation*

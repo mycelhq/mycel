@@ -13,6 +13,8 @@ export interface ActionGrant {
   connectionIds: string[];
   /** The thread outbound messages are recorded on (a reply's conversation), if any. */
   threadId?: string;
+  /** The case this run is an episode of, if any — lets the agent read/advance its engagement. */
+  caseId?: string;
 }
 
 const grants = new Map<string, ActionGrant>();

@@ -104,7 +104,7 @@ export async function runOpenCodeTask(
       if (channel && !connectionIds.includes(channel.connection_id)) connectionIds.push(channel.connection_id);
     }
   }
-  const actionNonce = registerActionGrant({ task_id: task.id, connectionIds, threadId });
+  const actionNonce = registerActionGrant({ task_id: task.id, connectionIds, threadId, caseId: task.case_id });
   const grantedConns = allConns.filter((c) => connectionIds.includes(c.id));
 
   // 1. Write opencode.json + AGENTS.md, then GROUND the agent: mount the wedge's skills +
@@ -155,6 +155,7 @@ export async function runOpenCodeTask(
     MYCEL_ACTIONS_URL: `${cfg.publicUrl}/v1/internal/actions`,
     // Reads: ungated (but scoped to the same granted connections) — see AGENTS.md.
     MYCEL_READS_URL: `${cfg.publicUrl}/v1/internal/reads`,
+    MYCEL_CASE_URL: `${cfg.publicUrl}/v1/internal/case`,
     MYCEL_ACTION_TOKEN: actionNonce,
   })
     .map(([k, v]) => `${k}=${shellQuote(v)}`)
@@ -297,6 +298,19 @@ function buildAgentsMd(task: Task, wedge: LoadedWedge | null, connections: Conne
       `policies, examples) and ./inputs/ (documents for this specific task) before acting. ` +
       `Be concise. Write deliverables to ./output/.`,
   );
+  if (task.case_id) {
+    parts.push("");
+    parts.push(`## This is part of an ongoing engagement`);
+    parts.push(
+      `Read the case (stage, accumulated state) and record what you learn — state must outlive this run:\n` +
+        "```bash\n" +
+        `curl -s "$MYCEL_CASE_URL" -H "authorization: Bearer $MYCEL_ACTION_TOKEN"\n` +
+        `curl -s "$MYCEL_CASE_URL/update" -H "authorization: Bearer $MYCEL_ACTION_TOKEN" \\\n` +
+        `  -H "content-type: application/json" -d '{"stage":"<next stage>","data":{...},"note":"why"}'\n` +
+        "```\n" +
+        `Only stages the wedge declares are accepted. \`data\` merges, so send just what changed.`,
+    );
+  }
   if (connections.length) {
     parts.push("");
     parts.push(`## Taking real-world actions`);

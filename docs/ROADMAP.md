@@ -6,7 +6,7 @@ couldn't hold. Nothing here invalidates the architecture — the trust boundary,
 and the contract all held up. What's missing is the **operational spine**.
 
 Short version: **the kernel is strong at "do one gated task well" and missing "run an ongoing
-operation."** Items 1 and 2 are now shipped; 3–5 are the rest of that spine.
+operation."** Items 1–3 are now shipped; 4–5 are the rest of that spine.
 
 ## Solid today
 
@@ -42,10 +42,16 @@ the connection); writes stay gated.
 connection (relative path from the sandbox, so no SSRF), size-capped, per-task read budget, and
 every read traced onto the timeline.
 
-### 3. Case / engagement primitive
+### 3. Case / engagement primitive  ✅ shipped
 A long-lived work object with a stage machine — a recruiting role open for six weeks, a monthly
 close, an ad account under management. Tasks become *episodes within a case*. Also gives operator
 UIs their real object: clients and engagements, not a flat task list.
+
+**Shipped:** `Case` + `/v1/cases` (stages declared by the wedge, so undeclared transitions are
+refused; `data` merges; every change appends to an audit `history`). `POST /v1/cases/:id/tasks`
+spawns an episode that inherits the case's wedge + client + state. The agent can read and advance
+*its own* case via `/v1/internal/case` (ungated — no real-world side effect — but scoped to its run
+and attributed to `agent`).
 
 ### 4. Deterministic workflows
 Named, tested functions the agent calls instead of doing arithmetic in prose — reconciliation, yield,
