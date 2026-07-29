@@ -5,9 +5,11 @@
 // Design notes:
 //  - `nextRun` is a pure function of (cadence, from) so the awkward part (wall-clock math, month
 //    rollover) is unit-testable without waiting on time.
-//  - The tick loop is in-process and advances `next_run_at` BEFORE running, so a slow task can't
-//    cause a double-fire. Single-instance (like cancel/grants/bus); a shared lock is what this
-//    needs to run multi-instance, and that lands with the Redis work.
+//  - The tick CLAIMS due schedules through the store (advancing `next_run_at` in the same
+//    transaction), so a slow task can't double-fire AND N replicas can't both fire one schedule —
+//    on Postgres the claim uses FOR UPDATE SKIP LOCKED. This is the one piece of multi-instance
+//    safety that needs no Redis, and it's the most dangerous one to get wrong: without it every
+//    replica sends the client its own copy of the same email.
 //  - Catch-up policy: a schedule that was due while the kernel was down fires ONCE on boot, then
 //    resumes its cadence. We don't replay every missed occurrence — for a daily sync you want
 //    today's run, not thirty of them.
@@ -88,14 +90,15 @@ export function startScheduler(store: Store, domain: DomainStore, intervalMs = 1
   let running = false;
 
   async function tick(now = new Date()): Promise<string[]> {
-    if (running) return []; // never overlap ticks
+    if (running) return []; // never overlap ticks within one replica
     running = true;
     const fired: string[] = [];
     try {
-      for (const s of await domain.listDueSchedules(now.toISOString())) {
-        // Advance FIRST so a slow or failing task can't cause a double-fire.
-        const next = nextRun(s.cadence, now).toISOString();
-        await domain.updateSchedule(s.id, { next_run_at: next, last_run_at: now.toISOString() });
+      // CLAIM, don't list. The store advances next_run_at inside the same transaction and (on
+      // Postgres) uses FOR UPDATE SKIP LOCKED, so with N replicas exactly one wins each schedule.
+      // This is what stops a client receiving N duplicate emails.
+      const claimed = await domain.claimDueSchedules(now.toISOString(), (s, at) => nextRun(s.cadence, at).toISOString());
+      for (const s of claimed) {
         try {
           const task = await fireSchedule(store, domain, s, now);
           await domain.updateSchedule(s.id, { last_task_id: task.id });

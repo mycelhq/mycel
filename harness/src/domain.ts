@@ -55,8 +55,15 @@ export interface DomainStore {
   createSchedule(s: Omit<Schedule, "id" | "created_at">): Promise<Schedule>;
   getSchedule(id: string): Promise<Schedule | undefined>;
   listSchedules(): Promise<Schedule[]>;
-  /** Enabled schedules whose next_run_at is at or before `nowIso`. */
+  /** Enabled schedules whose next_run_at is at or before `nowIso`. Read-only (portal/inspection). */
   listDueSchedules(nowIso: string): Promise<Schedule[]>;
+  /**
+   * ATOMICALLY claim due schedules for execution: advance `next_run_at` and return what was won.
+   * With N kernel replicas this is what guarantees a schedule fires ONCE — without it, every
+   * replica would fire it and a client would get N duplicate emails. `advance` computes the next
+   * due time for a cadence (injected so the store stays free of scheduling logic).
+   */
+  claimDueSchedules(nowIso: string, advance: (s: Schedule, now: Date) => string, limit?: number): Promise<Schedule[]>;
   updateSchedule(
     id: string,
     patch: Partial<Pick<Schedule, "enabled" | "next_run_at" | "last_run_at" | "last_task_id" | "input" | "cadence" | "name">>,
@@ -243,6 +250,17 @@ export class InMemoryDomainStore implements DomainStore {
   }
   async listDueSchedules(nowIso: string): Promise<Schedule[]> {
     return [...this.schedules.values()].filter((s) => s.enabled && s.next_run_at <= nowIso);
+  }
+  async claimDueSchedules(nowIso: string, advance: (s: Schedule, now: Date) => string, limit = 50): Promise<Schedule[]> {
+    // In-memory is single-process by definition, so "claim" is just read-then-advance. The JS event
+    // loop makes this atomic enough — there is no second replica to race with.
+    const due = (await this.listDueSchedules(nowIso)).slice(0, limit);
+    const now = new Date(nowIso);
+    for (const s of due) {
+      s.next_run_at = advance(s, now);
+      s.last_run_at = nowIso;
+    }
+    return due;
   }
   async updateSchedule(
     id: string,

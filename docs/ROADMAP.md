@@ -106,10 +106,20 @@ PDFs/images in (parse, OCR), spreadsheets/PDFs out. Artifacts are text today.
 ### 9. Audit trail
 An immutable record of who changed what — a legal requirement in regulated wedges like bookkeeping.
 
+### Multi-instance — partially shipped
+**Shipped (the dangerous half):** the scheduler now *claims* due schedules through the store instead
+of listing them — `FOR UPDATE SKIP LOCKED` on Postgres, with `next_run_at` advanced inside the same
+transaction. Proven against a real database: the old list-then-update path fires a schedule **twice**
+across two replicas (two emails to the client); the claim fires it **once**. Tested with 2 and 4
+concurrent replicas (`harness/test/multi-instance.test.ts`, runs in CI).
+
+**Still single-instance:** cancel, approval waiters, the SSE bus, proxy/action grants, policy
+counters, idempotency and read budgets are in-process. Run one replica until these are Redis-backed.
+Each already sits behind a small interface for exactly that swap.
+
 ### Later
 Voice channels, image generation, multi-human assignment and review queues, outcomes/reporting,
-billing primitives, and a Redis-backed bus for multi-instance (the interfaces are already ready for
-it; we're not adding it until someone needs two instances).
+billing primitives.
 
 ## How to help
 

@@ -133,9 +133,10 @@ What the kernel enforces today, and what it doesn't yet — so you deploy it kno
   but process isolation is the sandbox's job.)
 - **Per-task tool ACLs are coarse.** Tools are governed by the approval gate + bash denylist,
   not a per-task allowlist yet. `task.tools` is recorded but not hard-enforced.
-- **Single-instance.** Cancel, approvals, the SSE bus, and proxy/action grants are in-process —
-  run one kernel instance. Horizontal scaling needs a shared bus (Redis); the interfaces are
-  ready for it.
+- **Mostly single-instance.** The *scheduler* is multi-instance safe (it claims due schedules with
+  `FOR UPDATE SKIP LOCKED`, so N replicas can't double-fire — verified against a real Postgres). But
+  cancel, approval waiters, the SSE bus, proxy/action grants, policy counters, idempotency and read
+  budgets are still in-process: **run one replica** until those are Redis-backed.
 - **Durability is opt-in via `MYCEL_DATABASE_URL`.** With it set, everything is Postgres-backed
   (tasks, events, connections, clients, threads, knowledge, and tenants) and survives restarts —
   covered by a restart test in CI. Without it, the in-memory default loses state on restart.

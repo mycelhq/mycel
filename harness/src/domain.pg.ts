@@ -386,6 +386,46 @@ export class PostgresDomainStore implements DomainStore {
     );
     return r.rows.map(this.toSched);
   }
+
+  /**
+   * The multi-instance guarantee. `FOR UPDATE SKIP LOCKED` means replica A locks the due rows and
+   * replica B *skips them entirely* rather than blocking — so exactly one replica claims each
+   * schedule, and `next_run_at` is advanced inside the same transaction before anything fires.
+   * Without this, N replicas each fire the same schedule and the client gets N duplicate emails.
+   */
+  async claimDueSchedules(
+    nowIso: string,
+    advance: (s: Schedule, now: Date) => string,
+    limit = 50,
+  ): Promise<Schedule[]> {
+    const client = await this.pool.connect();
+    try {
+      await client.query("BEGIN");
+      const due = await client.query(
+        `SELECT * FROM schedules
+           WHERE enabled AND next_run_at <= $1
+           ORDER BY next_run_at
+           LIMIT $2
+           FOR UPDATE SKIP LOCKED`,
+        [nowIso, limit],
+      );
+      const now = new Date(nowIso);
+      const claimed: Schedule[] = [];
+      for (const row of due.rows) {
+        const s = this.toSched(row);
+        const next = advance(s, now);
+        await client.query(`UPDATE schedules SET next_run_at=$2, last_run_at=$3 WHERE id=$1`, [s.id, next, nowIso]);
+        claimed.push({ ...s, next_run_at: next, last_run_at: nowIso });
+      }
+      await client.query("COMMIT");
+      return claimed;
+    } catch (e) {
+      await client.query("ROLLBACK").catch(() => {});
+      throw e;
+    } finally {
+      client.release();
+    }
+  }
   async updateSchedule(
     id: string,
     patch: Partial<Pick<Schedule, "enabled" | "next_run_at" | "last_run_at" | "last_task_id" | "input" | "cadence" | "name">>,
