@@ -529,6 +529,124 @@ export function createServer(store: Store): Hono {
     return c.json({ ...thread, messages: await domain.listMessages(thread.id) });
   });
 
+  // ── Records: structured, queryable per-wedge state ──
+  // The gap the bookkeeping stress test surfaced: case.data can hold 500 transactions but can't
+  // answer "which receipts are still missing?". Records make that a query. Writes are idempotent on
+  // (project, wedge, collection, key), so re-ingesting a bank transaction updates it, never
+  // double-posts.
+  app.get("/v1/records", async (c) => {
+    const set = accessible(c);
+    let where: Record<string, unknown> | undefined;
+    const raw = c.req.query("where");
+    if (raw) {
+      try { where = JSON.parse(raw); } catch { return c.json({ error: "where must be JSON" }, 400); }
+    }
+    const rows = await domain.queryRecords({
+      wedge: c.req.query("wedge") || undefined,
+      collection: c.req.query("collection") || undefined,
+      case_id: c.req.query("case_id") || undefined,
+      where,
+      limit: c.req.query("limit") ? Number(c.req.query("limit")) : undefined,
+    });
+    return c.json(rows.filter((r) => inScope(set, r.project_id)));
+  });
+
+  app.post("/v1/records", async (c) => {
+    const projectId = writeProjectId(c);
+    if (!projectId) return c.json({ error: "specify a project (X-Mycel-Project header)" }, 400);
+    const b = (await c.req.json().catch(() => ({}))) as Record<string, unknown>;
+    const err = validateRecordInput(b, projectId);
+    if (err) return c.json({ error: err.error }, err.status);
+    const rec = await domain.upsertRecord({
+      project_id: projectId,
+      wedge: String(b.wedge),
+      collection: String(b.collection),
+      key: String(b.key),
+      data: (b.data as Record<string, unknown>) ?? {},
+      case_id: typeof b.case_id === "string" ? b.case_id : undefined,
+    });
+    return c.json(rec, 201);
+  });
+
+  app.get("/v1/records/:id", async (c) => {
+    const r = await domain.getRecord(c.req.param("id"));
+    if (!r || !inScope(accessible(c), r.project_id)) return c.json({ error: "not found" }, 404);
+    return c.json(r);
+  });
+
+  app.delete("/v1/records/:id", async (c) => {
+    const r = await domain.getRecord(c.req.param("id"));
+    if (!r || !inScope(accessible(c), r.project_id)) return c.json({ error: "not found" }, 404);
+    return c.json({ ok: await domain.deleteRecord(r.id) });
+  });
+
+  // Internal: the agent reads and writes records for ITS OWN wedge/project. Data, not a real-world
+  // side effect, so ungated — but scoped to the run and traced.
+  app.post("/v1/internal/records/upsert", async (c) => {
+    const grant = getActionGrant((c.req.header("authorization") ?? "").replace(/^Bearer\s+/i, ""));
+    if (!grant) return c.json({ ok: false, error: "invalid action token" }, 401);
+    const task = await store.getTask(grant.task_id);
+    if (!task) return c.json({ ok: false, error: "unknown task" }, 404);
+    const b = (await c.req.json().catch(() => ({}))) as Record<string, unknown>;
+    // A batch keeps a 500-transaction ingest to one call.
+    const items = Array.isArray(b.records) ? b.records : [b];
+    if (items.length > 1000) return c.json({ ok: false, error: "max 1000 records per call" }, 400);
+    const out = [];
+    for (const raw of items as Record<string, unknown>[]) {
+      if (!raw?.collection || !raw?.key) return c.json({ ok: false, error: "each record needs collection and key" }, 400);
+      out.push(
+        await domain.upsertRecord({
+          project_id: task.project_id,
+          wedge: task.wedge, // the agent can only write its own wedge's records
+          collection: String(raw.collection),
+          key: String(raw.key),
+          data: (raw.data as Record<string, unknown>) ?? {},
+          case_id: (typeof raw.case_id === "string" ? raw.case_id : undefined) ?? task.case_id,
+        }),
+      );
+    }
+    await emitEvent(store, grant.task_id, "tool.result", { tool: "records:upsert", ok: true, count: out.length });
+    return c.json({ ok: true, count: out.length, records: out.length === 1 ? out : undefined });
+  });
+
+  app.post("/v1/internal/records/query", async (c) => {
+    const grant = getActionGrant((c.req.header("authorization") ?? "").replace(/^Bearer\s+/i, ""));
+    if (!grant) return c.json({ ok: false, error: "invalid action token" }, 401);
+    const task = await store.getTask(grant.task_id);
+    if (!task) return c.json({ ok: false, error: "unknown task" }, 404);
+    const b = (await c.req.json().catch(() => ({}))) as Record<string, unknown>;
+    const q = {
+      wedge: task.wedge,
+      collection: typeof b.collection === "string" ? b.collection : undefined,
+      case_id: typeof b.case_id === "string" ? b.case_id : undefined,
+      where: (b.where as Record<string, unknown>) ?? undefined,
+      limit: typeof b.limit === "number" ? Math.min(b.limit, 500) : undefined,
+    };
+    const [rows, count] = await Promise.all([domain.queryRecords(q), domain.countRecords(q)]);
+    const scoped = rows.filter((r) => !task.project_id || r.project_id === task.project_id);
+    await emitEvent(store, grant.task_id, "tool.called", {
+      tool: "records:query",
+      args: { collection: q.collection, where: q.where },
+    });
+    return c.json({ ok: true, count, records: scoped });
+  });
+
+  /** Shared validation for a record write. Returns an explicit status — never infer it from the
+   *  message text (that was a bug: an "unknown wedge" error was answering 403 instead of 400). */
+  function validateRecordInput(
+    b: Record<string, unknown>,
+    projectId: string,
+  ): { error: string; status: 400 | 403 } | null {
+    if (!b.wedge || !b.collection || !b.key) {
+      return { error: "wedge, collection and key are required", status: 400 };
+    }
+    if (!loadWedge(String(b.wedge))) return { error: `unknown wedge: ${b.wedge}`, status: 400 };
+    if (!identity.projectAllowsWedge(projectId, String(b.wedge))) {
+      return { error: `wedge "${b.wedge}" is not enabled for this project`, status: 403 };
+    }
+    return null;
+  }
+
   // ── Cases: long-lived engagements (tasks are episodes within one) ──
   // Stages come from the wedge manifest (`cases.stages`), so a transition to a stage the wedge
   // doesn't declare is rejected at the boundary rather than corrupting the engagement.

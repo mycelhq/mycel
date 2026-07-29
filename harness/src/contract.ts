@@ -176,6 +176,24 @@ export interface KnowledgeItem {
   updated_at: string;
 }
 
+/** Structured, queryable per-wedge state — the thing `case.data` couldn't be. A record lives in a
+ *  named `collection` ("transactions", "candidates", "campaigns") and carries a natural `key` so
+ *  writes are idempotent: re-ingesting the same bank transaction updates it instead of double-posting.
+ *  This is what makes "which receipts are still missing?" a query rather than a prompt. */
+export interface Record_ {
+  id: string;
+  project_id?: string;
+  wedge: string;
+  collection: string;
+  /** Natural key, unique within (project, wedge, collection). Upserts match on it. */
+  key: string;
+  data: Record<string, unknown>;
+  /** The engagement this record belongs to, when there is one. */
+  case_id?: string;
+  created_at: string;
+  updated_at: string;
+}
+
 /** A **Case** is long-lived work with a stage machine: a recruiting role open for six weeks, a
  *  monthly close, an ad account under management. Tasks become *episodes within a case*, so state
  *  that outlives a single run (which candidate is at which stage, what's still missing) has a home.

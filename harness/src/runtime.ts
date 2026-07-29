@@ -157,6 +157,7 @@ export async function runOpenCodeTask(
     MYCEL_READS_URL: `${cfg.publicUrl}/v1/internal/reads`,
     MYCEL_CASE_URL: `${cfg.publicUrl}/v1/internal/case`,
     MYCEL_WORKFLOWS_URL: `${cfg.publicUrl}/v1/internal/workflows`,
+    MYCEL_RECORDS_URL: `${cfg.publicUrl}/v1/internal/records`,
     MYCEL_ACTION_TOKEN: actionNonce,
   })
     .map(([k, v]) => `${k}=${shellQuote(v)}`)

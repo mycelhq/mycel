@@ -5,7 +5,7 @@
 // v0.1 ships an in-memory reference implementation (zero setup). Postgres backing mirrors the
 // task tables and is the next step; the task engine itself is already durable (store.pg.ts).
 import { randomUUID } from "node:crypto";
-import type { Case, CaseEvent, Channel, Client, Connection, KnowledgeItem, Message, Schedule, Thread } from "./contract";
+import type { Case, CaseEvent, Channel, Record_, Client, Connection, KnowledgeItem, Message, Schedule, Thread } from "./contract";
 
 export interface DomainStore {
   // connections (secrets referenced, never stored in the clear here)
@@ -31,6 +31,15 @@ export interface DomainStore {
   listThreadsForClient(clientId: string): Promise<Thread[]>;
   addMessage(m: Omit<Message, "id" | "created_at">): Promise<Message>;
   listMessages(threadId: string): Promise<Message[]>;
+
+  // records (structured, queryable per-wedge state)
+  /** Idempotent: matches on (wedge, collection, key) and updates in place. */
+  upsertRecord(r: Omit<Record_, "id" | "created_at" | "updated_at">): Promise<Record_>;
+  getRecord(id: string): Promise<Record_ | undefined>;
+  /** `where` matches equality on top-level data fields. */
+  queryRecords(q: { wedge?: string; collection?: string; case_id?: string; where?: Record<string, unknown>; limit?: number }): Promise<Record_[]>;
+  deleteRecord(id: string): Promise<boolean>;
+  countRecords(q: { wedge?: string; collection?: string; case_id?: string; where?: Record<string, unknown> }): Promise<number>;
 
   // cases (long-lived engagements)
   createCase(c: Omit<Case, "id" | "created_at" | "updated_at" | "history"> & { history?: CaseEvent[] }): Promise<Case>;
@@ -146,6 +155,47 @@ export class InMemoryDomainStore implements DomainStore {
   }
   async listMessages(threadId: string): Promise<Message[]> {
     return this.messages.get(threadId) ?? [];
+  }
+
+  private records = new Map<string, Record_>();
+  private recKey = (r: { project_id?: string; wedge: string; collection: string; key: string }) =>
+    `${r.project_id ?? "-"}|${r.wedge}|${r.collection}|${r.key}`;
+  async upsertRecord(r: Omit<Record_, "id" | "created_at" | "updated_at">): Promise<Record_> {
+    const k = this.recKey(r);
+    const existing = [...this.records.values()].find((x) => this.recKey(x) === k);
+    if (existing) {
+      existing.data = { ...existing.data, ...r.data };
+      if (r.case_id) existing.case_id = r.case_id;
+      existing.updated_at = now();
+      return existing;
+    }
+    const rec: Record_ = { ...r, id: randomUUID(), created_at: now(), updated_at: now() };
+    this.records.set(rec.id, rec);
+    return rec;
+  }
+  async getRecord(id: string): Promise<Record_ | undefined> {
+    return this.records.get(id);
+  }
+  private matches(r: Record_, q: { wedge?: string; collection?: string; case_id?: string; where?: Record<string, unknown> }): boolean {
+    if (q.wedge && r.wedge !== q.wedge) return false;
+    if (q.collection && r.collection !== q.collection) return false;
+    if (q.case_id && r.case_id !== q.case_id) return false;
+    for (const [k, v] of Object.entries(q.where ?? {})) {
+      if (JSON.stringify(r.data?.[k]) !== JSON.stringify(v)) return false;
+    }
+    return true;
+  }
+  async queryRecords(q: { wedge?: string; collection?: string; case_id?: string; where?: Record<string, unknown>; limit?: number }): Promise<Record_[]> {
+    return [...this.records.values()]
+      .filter((r) => this.matches(r, q))
+      .sort((a, b) => (a.created_at < b.created_at ? 1 : -1))
+      .slice(0, q.limit ?? 200);
+  }
+  async deleteRecord(id: string): Promise<boolean> {
+    return this.records.delete(id);
+  }
+  async countRecords(q: { wedge?: string; collection?: string; case_id?: string; where?: Record<string, unknown> }): Promise<number> {
+    return [...this.records.values()].filter((r) => this.matches(r, q)).length;
   }
 
   private cases = new Map<string, Case>();

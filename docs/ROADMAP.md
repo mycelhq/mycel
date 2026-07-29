@@ -6,7 +6,7 @@ couldn't hold. Nothing here invalidates the architecture — the trust boundary,
 and the contract all held up. What's missing is the **operational spine**.
 
 Short version: **the kernel is strong at "do one gated task well" and missing "run an ongoing
-operation."** Items 1–5 (the operational spine) are now shipped; 6–9 remain.
+operation."** Items 1–6 are now shipped; 7–9 remain.
 
 **Verified, not asserted:** after shipping 1–5 we built the hardest of the three modelled
 businesses — UK e-commerce bookkeeping — against the live kernel. All 20 capability checks pass, and
@@ -84,9 +84,17 @@ human and is recorded as `auto_approved` **with its reason**, so it lands in the
 human gate applies unchanged. **Fails closed:** no policy, no matching rule, or a cap with no amount
 to check all mean "ask a human".
 
-### 6. Wedge records
+### 6. Wedge records  ✅ shipped
 Schema'd, per-wedge structured data with idempotent upsert — candidates with stages, transactions,
 campaign metrics. Markdown knowledge grounds judgment; it can't carry operational state.
+
+**Shipped:** `/v1/records` + agent-facing `/v1/internal/records/{upsert,query}`. A record lives in a
+named `collection` with a natural `key`, so **writes are idempotent** — re-ingesting a bank
+transaction merges into it instead of double-posting (a unique index on
+`(project, wedge, collection, key)` in Postgres, `data @> jsonb` + a GIN index for queries).
+Batch upsert (≤1000/call) so a 500-transaction ingest is one round trip. This closes the gap the
+bookkeeping re-run surfaced: *"which receipts are still missing?"* is now
+`?collection=receipts&where={"status":"missing"}` instead of loading a blob and filtering in the model.
 
 ### 7. External-party requests
 Ask the *client or candidate* for something, wait, remind, escalate. Distinct from founder approval

@@ -3,7 +3,7 @@
 // parsed by node-pg. Selected automatically when MYCEL_DATABASE_URL is set.
 import { randomUUID } from "node:crypto";
 import pg from "pg";
-import type { Cadence, Case, CaseEvent, Channel, Client, Connection, ConnectionKind, ConnectionOwner, KnowledgeItem, Message, Schedule, Thread } from "./contract";
+import type { Cadence, Case, CaseEvent, Record_, Channel, Client, Connection, ConnectionKind, ConnectionOwner, KnowledgeItem, Message, Schedule, Thread } from "./contract";
 import { normalizeHandle, type DomainStore } from "./domain";
 
 const { Pool } = pg;
@@ -115,6 +115,22 @@ export class PostgresDomainStore implements DomainStore {
         closed_at timestamptz
       );
       CREATE INDEX IF NOT EXISTS cases_lookup_idx ON cases (wedge, status);
+      CREATE TABLE IF NOT EXISTS records (
+        id uuid PRIMARY KEY,
+        project_id text,
+        wedge text NOT NULL,
+        collection text NOT NULL,
+        key text NOT NULL,
+        data jsonb NOT NULL DEFAULT '{}',
+        case_id uuid,
+        created_at timestamptz NOT NULL DEFAULT now(),
+        updated_at timestamptz NOT NULL DEFAULT now()
+      );
+      -- the natural key: re-ingesting the same transaction updates it, never double-posts
+      CREATE UNIQUE INDEX IF NOT EXISTS records_natural_key
+        ON records (COALESCE(project_id,'-'), wedge, collection, key);
+      CREATE INDEX IF NOT EXISTS records_query_idx ON records (wedge, collection);
+      CREATE INDEX IF NOT EXISTS records_data_idx ON records USING gin (data);
     `);
   }
 
@@ -236,6 +252,54 @@ export class PostgresDomainStore implements DomainStore {
       id: row.id, thread_id: row.thread_id, direction: row.direction, author: row.author, body: row.body,
       status: row.status ?? undefined, task_id: row.task_id ?? undefined, created_at: iso(row.created_at),
     }));
+  }
+
+  // ── records ──
+  private toRec = (r: any): Record_ => ({
+    id: r.id, project_id: r.project_id ?? undefined, wedge: r.wedge, collection: r.collection,
+    key: r.key, data: r.data ?? {}, case_id: r.case_id ?? undefined,
+    created_at: iso(r.created_at), updated_at: iso(r.updated_at),
+  });
+  async upsertRecord(r: Omit<Record_, "id" | "created_at" | "updated_at">): Promise<Record_> {
+    // Merge on conflict so a partial re-ingest enriches rather than truncates.
+    const res = await this.pool.query(
+      `INSERT INTO records (id, project_id, wedge, collection, key, data, case_id)
+       VALUES ($1,$2,$3,$4,$5,$6,$7)
+       ON CONFLICT (COALESCE(project_id,'-'), wedge, collection, key) DO UPDATE
+         SET data = records.data || EXCLUDED.data,
+             case_id = COALESCE(EXCLUDED.case_id, records.case_id),
+             updated_at = now()
+       RETURNING *`,
+      [randomUUID(), r.project_id ?? null, r.wedge, r.collection, r.key, JSON.stringify(r.data ?? {}), r.case_id ?? null],
+    );
+    return this.toRec(res.rows[0]);
+  }
+  async getRecord(id: string): Promise<Record_ | undefined> {
+    const r = await this.pool.query(`SELECT * FROM records WHERE id=$1`, [id]);
+    return r.rows[0] ? this.toRec(r.rows[0]) : undefined;
+  }
+  private recWhere(q: { wedge?: string; collection?: string; case_id?: string; where?: Record<string, unknown> }) {
+    const where: string[] = []; const vals: unknown[] = [];
+    for (const [col, val] of [["wedge", q.wedge], ["collection", q.collection], ["case_id", q.case_id]] as const) {
+      if (val) { vals.push(val); where.push(`${col}=$${vals.length}`); }
+    }
+    if (q.where && Object.keys(q.where).length) { vals.push(JSON.stringify(q.where)); where.push(`data @> $${vals.length}::jsonb`); }
+    return { clause: where.length ? "WHERE " + where.join(" AND ") : "", vals };
+  }
+  async queryRecords(q: { wedge?: string; collection?: string; case_id?: string; where?: Record<string, unknown>; limit?: number }): Promise<Record_[]> {
+    const { clause, vals } = this.recWhere(q);
+    vals.push(q.limit ?? 200);
+    const r = await this.pool.query(`SELECT * FROM records ${clause} ORDER BY created_at DESC LIMIT $${vals.length}`, vals);
+    return r.rows.map(this.toRec);
+  }
+  async deleteRecord(id: string): Promise<boolean> {
+    const r = await this.pool.query(`DELETE FROM records WHERE id=$1`, [id]);
+    return (r.rowCount ?? 0) > 0;
+  }
+  async countRecords(q: { wedge?: string; collection?: string; case_id?: string; where?: Record<string, unknown> }): Promise<number> {
+    const { clause, vals } = this.recWhere(q);
+    const r = await this.pool.query(`SELECT COUNT(*)::int AS n FROM records ${clause}`, vals);
+    return r.rows[0]?.n ?? 0;
   }
 
   // ── cases ──
