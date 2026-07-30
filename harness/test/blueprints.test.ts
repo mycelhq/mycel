@@ -38,16 +38,27 @@ test("blueprints: provisioning creates a whole business and reports what's missi
   assert.equal(res.status, 201);
   const r = res.json;
   assert.equal(r.blueprint, BP);
-  assert.deepEqual(r.created.connections.sort(), ["bank-feed", "books-email"]);
+  assert.deepEqual(r.created.connections.sort(), ["bank-feed", "books-email", "xero"]);
   assert.equal(r.created.schedules.length, 3, "daily sync + receipt chase + month-end close");
   assert.ok(r.created.knowledge.length >= 1, "seed knowledge written");
 
   // it is NOT ready — the founder still owes credentials, and we say so precisely
   assert.equal(r.ready, false);
   const missing = r.checklist.filter((i: { done: boolean }) => !i.done);
-  assert.equal(missing.length, 2, "both credentials outstanding");
-  assert.ok(missing[0].action?.startsWith("POST /v1/connections/"), "the checklist tells you exactly how to finish");
-  assert.ok(missing[0].why, "and why it's needed");
+  assert.equal(missing.length, 3, "two credentials and one OAuth connection outstanding");
+  for (const item of missing) {
+    assert.ok(item.action?.startsWith("POST /v1/connections/"), "the checklist tells you exactly how to finish");
+    assert.ok(item.why, "and why it's needed");
+  }
+
+  // A brokered connection asks to be AUTHORISED, not pasted. Telling a founder to supply a
+  // credential for Xero would send them hunting for a key this flow no longer uses.
+  const xero = r.checklist.find((i: { kind?: string }) => i.kind === "composio");
+  assert.ok(xero, "the blueprint's brokered connection is on the checklist");
+  assert.match(xero.what, /^Connect /);
+  assert.match(xero.action, /composio\/connect$/);
+  const pasted = r.checklist.find((i: { kind?: string }) => i.kind === "email");
+  assert.match(pasted.action, /secret/, "a plain credential still gets a paste action");
 
   // the crux: schedules must NOT be live yet, or a credential-less business starts failing on a timer
   const scheds = (await api(app, "schedules")).json;
@@ -65,7 +76,7 @@ test("blueprints: provisioning twice does not create a second business", async (
 
   assert.equal(second.created.connections.length, 0, "nothing new created on a repeat provision");
   assert.equal(second.created.schedules.length, 0);
-  assert.deepEqual(second.reused.connections.sort(), ["bank-feed", "books-email"]);
+  assert.deepEqual(second.reused.connections.sort(), ["bank-feed", "books-email", "xero"]);
   assert.equal(second.reused.schedules.length, 3);
 
   const conns = (await api(app, "connections")).json as { name: string }[];
@@ -86,11 +97,19 @@ test("blueprints: activation is REFUSED until the checklist is satisfied, then g
   const refused = await api(app, `blueprints/${BP}/activate`, { method: "POST" });
   assert.equal(refused.status, 409);
   assert.equal(refused.json.error, "not ready");
-  assert.equal(refused.json.missing.length, 2);
+  assert.equal(refused.json.missing.length, 3);
 
   // supply the credentials the way a founder would
-  const conns = (await api(app, "connections")).json as { id: string; name: string }[];
+  const conns = (await api(app, "connections")).json as { id: string; name: string; kind: string }[];
+  const domain = getDomainStore();
   for (const conn of conns) {
+    if (conn.kind === "composio") {
+      // Standing in for the OAuth round trip: what "connected" means for a brokered connection is
+      // that Composio has an account for it, not that we hold a secret.
+      const full = (await domain.getConnection(conn.id))!;
+      await domain.updateConnection(conn.id, { config: { ...full.config, connected_account_id: "ca_test" } });
+      continue;
+    }
     const r = await api(app, `connections/${conn.id}/secret`, { method: "POST", body: JSON.stringify({ value: `tok-${conn.name}` }) });
     assert.equal(r.json.ok, true);
   }

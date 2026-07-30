@@ -6,6 +6,12 @@
 // calendar are structured stubs — wire the provider call and they light up without touching the
 // security model.
 import type { Connection, ConnectionKind } from "./contract";
+import {
+  composioConfig,
+  composioUserId,
+  connConfig as composioConnConfig,
+  executeTool,
+} from "./composio";
 import { resolveSecret } from "./secrets";
 
 export interface ActionResult {
@@ -24,6 +30,23 @@ export function actionPreview(
   // rather than the payload. A human approving an outbound call should be able to see the
   // destination; a preview that only echoes what the agent asked for isn't a check on the agent.
   const endpoint = conn.config.url ?? conn.config.api_url ?? undefined;
+  if (conn.kind === "composio") {
+    // For a brokered call the meaningful preview is the toolkit, the tool and its arguments — a
+    // human approving "create an invoice in Xero" needs to see the amount and the customer, and
+    // there is no `to`/`subject`/`body` to fall back on.
+    const cc = composioConnConfig(conn);
+    return {
+      connection: conn.name,
+      kind: conn.kind,
+      capability,
+      toolkit: cc.toolkit,
+      tool: capability,
+      // Arguments only. Never the Composio API key, and never the connected account's token —
+      // neither is in `payload`, and this is the note that keeps it that way.
+      arguments: payload.arguments ?? payload.body ?? {},
+      preview: `${cc.toolkit}: ${capability}`,
+    };
+  }
   return {
     connection: conn.name,
     kind: conn.kind,
@@ -123,6 +146,8 @@ export async function executeAction(
       case "webhook":
       case "custom":
         return await postWebhook(conn, payload, secret);
+      case "composio":
+        return await runComposioTool(conn, capability, payload);
       case "stripe":
       case "sms":
       case "whatsapp":
@@ -204,5 +229,40 @@ async function safeJson(res: Response): Promise<unknown> {
     return await res.json();
   } catch {
     return undefined;
+  }
+}
+
+/**
+ * Execute a Composio tool. The capability IS the tool slug.
+ *
+ * Note what the agent does not get to choose: the API key (harness-held), the Composio user
+ * (derived from the connection owner) and the connected account (from the connection's config). It
+ * chooses the tool and its arguments, and a human still approves. Same shape as every other action —
+ * Composio widens what the business can reach without widening what the sandbox can hold.
+ */
+async function runComposioTool(
+  conn: Connection,
+  capability: string,
+  payload: Record<string, unknown>,
+): Promise<ActionResult> {
+  const cfg = composioConfig();
+  if (!cfg) return { ok: false, detail: "COMPOSIO_API_KEY is not set on the harness" };
+  const cc = composioConnConfig(conn);
+  if (!cc.connected_account_id) {
+    return { ok: false, detail: `connection "${conn.name}" is not connected yet — authorise ${cc.toolkit || "the toolkit"} first` };
+  }
+  const args = (payload.arguments ?? payload.body ?? {}) as Record<string, unknown>;
+  try {
+    const r = await executeTool(cfg, {
+      slug: capability,
+      userId: composioUserId(conn),
+      connectedAccountId: cc.connected_account_id,
+      arguments: args,
+    });
+    return { ok: r.successful, detail: r.error ?? (r.successful ? "ok" : "tool reported failure"), data: r.data };
+  } catch (e) {
+    // A Composio error message can quote request context, so pass through the message only — never
+    // headers, and never the key.
+    return { ok: false, detail: `composio: ${(e as Error).message}` };
   }
 }

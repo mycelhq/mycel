@@ -41,6 +41,16 @@ import { runTask } from "./orchestrator";
 import { getGrant } from "./proxygrants";
 import { hasSecret, setSecret } from "./secrets";
 import type { Store } from "./store";
+import {
+  connConfig as composioConnConfig,
+  composioConfig,
+  composioUserId,
+  connectionStatus as composioStatus,
+  initiateConnection as composioInitiate,
+  isReadTool as isComposioReadTool,
+  listTools as composioListTools,
+  slugToolkit,
+} from "./composio";
 import { langfuseState, traceLlmCall } from "./tracing";
 import { loadWedge, wedgesDir } from "./wedge";
 import { runWorkflow } from "./workflows";
@@ -97,6 +107,32 @@ export function createServer(store: Store): Hono {
   const writeProjectId = (c: import("hono").Context) =>
     identity.resolveWriteProject(c.get("scope"), c.req.header("x-mycel-project"));
   const inScope = (set: Set<string>, pid?: string) => !!pid && set.has(pid);
+
+  /**
+   * Which granted connection a capability refers to.
+   *
+   * An explicit `connection_id` must be in the grant. Otherwise: a Composio capability is a tool slug
+   * like `XERO_GET_INVOICES`, so match its prefix against the connection's toolkit; everything else
+   * falls back to matching the connection kind inside the capability name ("send_email" → `email`).
+   */
+  const resolveGrantedConnection = async (
+    allowed: string[],
+    capability: string,
+    explicit?: unknown,
+  ): Promise<{ id?: string; refused?: true }> => {
+    if (typeof explicit === "string") {
+      return allowed.includes(explicit) ? { id: explicit } : { refused: true };
+    }
+    const toolkit = slugToolkit(capability);
+    const conns = (await Promise.all(allowed.map((id) => domain.getConnection(id)))).filter(
+      (x): x is NonNullable<typeof x> => !!x,
+    );
+    const byToolkit = toolkit
+      ? conns.find((cn) => cn.kind === "composio" && composioConnConfig(cn).toolkit.toLowerCase() === toolkit)
+      : undefined;
+    const byKind = conns.find((cn) => capability.toLowerCase().includes(cn.kind));
+    return { id: (byToolkit ?? byKind)?.id };
+  };
 
   app.get("/health", (c) => c.json({ ok: true, service: "mycel-harness", version: "v0.1" }));
 
@@ -467,7 +503,13 @@ export function createServer(store: Store): Hono {
   // guesses (and lies) or stays silent about the one thing the founder needs to act on.
   const withSecretFlag = async (conn: Connection) => ({
     ...conn,
-    has_secret: !!conn.secret_ref || (await hasSecret(conn.id)),
+    // For a Composio connection there is no secret to store here at all — Composio holds the OAuth
+    // grant and refreshes it. "Connected" means the account exists, so that's what the flag reports;
+    // otherwise every Composio connection would read as "needs credential" forever.
+    has_secret:
+      conn.kind === "composio"
+        ? !!composioConnConfig(conn).connected_account_id
+        : !!conn.secret_ref || (await hasSecret(conn.id)),
   });
   app.get("/v1/connections", async (c) => {
     const set = accessible(c);
@@ -481,6 +523,85 @@ export function createServer(store: Store): Hono {
     if (!conn || !inScope(accessible(c), conn.project_id)) return c.json({ error: "not found" }, 404);
     return c.json(await withSecretFlag(conn));
   });
+
+  // ── Composio: OAuth, brokered ──
+  // The founder clicks once per toolkit; Composio owns the callback and the refresh cycle. Mycel
+  // exposes no public redirect route, so there's no internet-facing OAuth surface here and no
+  // half-finished grant to persist — we ask Composio for the status when we want to know.
+  const composioConn = async (c: import("hono").Context) => {
+    const conn = await domain.getConnection(c.req.param("id") ?? "");
+    if (!conn || !inScope(accessible(c), conn.project_id)) return { error: "not found" as const, status: 404 as const };
+    if (conn.kind !== "composio") return { error: "not a composio connection" as const, status: 400 as const };
+    const cfg = composioConfig();
+    if (!cfg) return { error: "COMPOSIO_API_KEY is not set on the harness" as const, status: 501 as const };
+    return { conn, cfg };
+  };
+
+  app.post("/v1/connections/:id/composio/connect", async (c) => {
+    const r = await composioConn(c);
+    if ("error" in r) return c.json({ error: r.error }, r.status);
+    const { conn, cfg } = r;
+    const cc = composioConnConfig(conn);
+    const body = (await c.req.json().catch(() => ({}))) as { auth_config_id?: string; callback_url?: string };
+    const authConfigId = body.auth_config_id ?? cc.auth_config_id;
+    if (!authConfigId) {
+      return c.json({ error: "auth_config_id required (create one per toolkit in Composio, then set it on the connection)" }, 400);
+    }
+    try {
+      const out = await composioInitiate(cfg, {
+        authConfigId,
+        // Derived from the connection's owner, never from the request body — the whole point of the
+        // per-client mapping is that nobody can ask to be someone else's Composio user.
+        userId: composioUserId(conn),
+        callbackUrl: body.callback_url,
+      });
+      await domain.updateConnection(conn.id, {
+        config: { ...conn.config, auth_config_id: authConfigId, connected_account_id: out.connected_account_id },
+      });
+      await audit({
+        project_id: conn.project_id ?? "",
+        actor: (c.get("scope").member_id ?? "system") as string,
+        action: "connection.linked",
+        entity: "connection",
+        entity_id: conn.id,
+        // The connected-account id is a reference, not a credential. The token stays at Composio.
+        detail: { connection: conn.name, toolkit: cc.toolkit, connected_account_id: out.connected_account_id },
+      });
+      return c.json(out, 201);
+    } catch (e) {
+      return c.json({ error: (e as Error).message }, 502);
+    }
+  });
+
+  app.get("/v1/connections/:id/composio/status", async (c) => {
+    const r = await composioConn(c);
+    if ("error" in r) return c.json({ error: r.error }, r.status);
+    const cc = composioConnConfig(r.conn);
+    if (!cc.connected_account_id) return c.json({ status: "NOT_STARTED", active: false });
+    try {
+      const st = await composioStatus(r.cfg, cc.connected_account_id);
+      return c.json({ ...st, active: st.status === "ACTIVE" });
+    } catch (e) {
+      return c.json({ error: (e as Error).message }, 502);
+    }
+  });
+
+  // What can this toolkit do? For a founder authoring a wedge — the agent never calls this.
+  app.get("/v1/composio/tools", async (c) => {
+    const cfg = composioConfig();
+    if (!cfg) return c.json({ error: "COMPOSIO_API_KEY is not set on the harness" }, 501);
+    try {
+      const tools = await composioListTools(cfg, {
+        toolkit: c.req.query("toolkit") || undefined,
+        search: c.req.query("search") || undefined,
+        limit: c.req.query("limit") ? Number(c.req.query("limit")) : undefined,
+      });
+      return c.json(tools);
+    } catch (e) {
+      return c.json({ error: (e as Error).message }, 502);
+    }
+  });
+
   // Store a connection's secret in the vault (a client's OAuth token, a provider key). The value
   // is never returned; the connection then resolves it server-side at action time.
   app.post("/v1/connections/:id/secret", async (c) => {
@@ -1198,21 +1319,24 @@ export function createServer(store: Store): Hono {
       return c.json({ ok: false, error: `read limit reached for this task (${READ_MAX_PER_TASK})` }, 429);
     }
 
-    // Same connection resolution as the action proxy: explicit id must be granted, else match kind.
     const allowed = grant.connectionIds;
-    let connId = typeof params.connection_id === "string" ? params.connection_id : undefined;
-    if (connId && !allowed.includes(connId)) return c.json({ ok: false, error: "connection not granted" }, 403);
-    if (!connId) {
-      for (const id of allowed) {
-        const conn = await domain.getConnection(id);
-        if (conn && capability.toLowerCase().includes(conn.kind)) {
-          connId = id;
-          break;
-        }
-      }
-    }
-    const conn = connId ? await domain.getConnection(connId) : undefined;
+    const picked = await resolveGrantedConnection(allowed, capability, params.connection_id);
+    if (picked.refused) return c.json({ ok: false, error: "connection not granted" }, 403);
+    const conn = picked.id ? await domain.getConnection(picked.id) : undefined;
     if (!conn) return c.json({ ok: false, error: "no granted connection for this read" }, 400);
+
+    // Composio tools are mostly WRITES. Letting any of them through the ungated read path would
+    // quietly dissolve the read/write asymmetry — XERO_CREATE_INVOICE is not a read just because the
+    // agent called it through /reads. Only slugs the connection explicitly lists are readable.
+    if (conn.kind === "composio" && !isComposioReadTool(conn, capability)) {
+      return c.json(
+        {
+          ok: false,
+          error: `"${capability}" is not a declared read for "${conn.name}" — use the action proxy so a human approves it`,
+        },
+        403,
+      );
+    }
 
     const tool = `read:${conn.kind}:${capability}`;
     await emitEvent(store, grant.task_id, "tool.called", {
@@ -1242,21 +1366,10 @@ export function createServer(store: Store): Hono {
     const capability = c.req.param("capability");
     const payload = (await c.req.json().catch(() => ({}))) as Record<string, unknown>;
 
-    // Pick the connection: an explicit id (must be in the grant), else the first granted
-    // connection whose kind matches the capability name.
     const allowed = grant.connectionIds;
-    let connId = typeof payload.connection_id === "string" ? payload.connection_id : undefined;
-    if (connId && !allowed.includes(connId)) return c.json({ ok: false, error: "connection not granted" }, 403);
-    if (!connId) {
-      for (const id of allowed) {
-        const conn = await domain.getConnection(id);
-        if (conn && capability.toLowerCase().includes(conn.kind)) {
-          connId = id;
-          break;
-        }
-      }
-    }
-    const conn = connId ? await domain.getConnection(connId) : undefined;
+    const picked = await resolveGrantedConnection(allowed, capability, payload.connection_id);
+    if (picked.refused) return c.json({ ok: false, error: "connection not granted" }, 403);
+    const conn = picked.id ? await domain.getConnection(picked.id) : undefined;
     if (!conn) return c.json({ ok: false, error: "no granted connection for this action" }, 400);
 
     // HUMAN APPROVAL GATE — suspends the task, surfaces a preview, waits for approve/reject.

@@ -17,6 +17,7 @@ import { join } from "node:path";
 import type { Cadence, ConnectionKind } from "./contract";
 import type { DomainStore } from "./domain";
 import { firstRun } from "./scheduler";
+import { connConfig as composioConnConfig } from "./composio";
 import { hasSecret } from "./secrets";
 import { loadWedge } from "./wedge";
 
@@ -73,6 +74,8 @@ export interface ChecklistItem {
   what: string;
   why: string;
   done: boolean;
+  /** The connection kind, so a UI can offer "Connect" vs a paste box without guessing. */
+  kind?: ConnectionKind;
   /** How the founder finishes it — an actual call, not a vague instruction. */
   action?: string;
   connection_id?: string;
@@ -180,13 +183,27 @@ export async function buildChecklist(
 
   for (const spec of blueprint.requires_connections ?? []) {
     const conn = conns.find((c) => c.name === spec.name);
-    const hasCred = conn ? !!conn.secret_ref || (await hasSecret(conn.id)) : false;
+    // A brokered connection has nothing to paste — it's an OAuth click, and the token stays at
+    // Composio. Telling a founder to "supply a credential" for Xero would send them looking for a
+    // key that no longer exists in this flow.
+    const brokered = spec.kind === "composio";
+    const toolkit = brokered ? (conn ? composioConnConfig(conn).toolkit : String(spec.config?.toolkit ?? spec.name)) : "";
+    const hasCred = conn
+      ? brokered
+        ? !!composioConnConfig(conn).connected_account_id
+        : !!conn.secret_ref || (await hasSecret(conn.id))
+      : false;
     items.push({
-      what: `Credential for “${spec.name}”`,
+      what: brokered ? `Connect ${toolkit || spec.name}` : `Credential for “${spec.name}”`,
       why: spec.secret_hint ?? spec.why,
       done: hasCred,
       connection_id: conn?.id,
-      action: conn ? `POST /v1/connections/${conn.id}/secret {"value":"…"}` : undefined,
+      kind: spec.kind,
+      action: conn
+        ? brokered
+          ? `POST /v1/connections/${conn.id}/composio/connect`
+          : `POST /v1/connections/${conn.id}/secret {"value":"…"}`
+        : undefined,
     });
   }
 

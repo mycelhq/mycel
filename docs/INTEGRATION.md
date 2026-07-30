@@ -51,6 +51,44 @@ The event stream is the heart of it. A task emits, in order:
 approval.requested (pauses) → approval.resolved → output.validated → artifact.created →
 cost.charged → task.finished`. Render from the stream; never poll.
 
+## Composio: OAuth and 250+ toolkits, without a token in the sandbox
+
+Every credential used to be paste-a-token-by-hand, which rules out most real accounting and CRM
+software outright — a Xero access token lasts 30 minutes and needs a refresh round trip, and no
+founder is re-pasting one every half hour. Set `COMPOSIO_API_KEY` and a connection of kind
+`composio` becomes a one-click authorisation instead.
+
+```
+POST /v1/connections                     {"kind":"composio","name":"xero","client_id":"acme",
+                                          "config":{"toolkit":"xero","auth_config_id":"ac_…",
+                                                    "read_tools":["XERO_GET_INVOICES"]}}
+POST /v1/connections/:id/composio/connect → { redirect_url, connected_account_id, status }
+GET  /v1/connections/:id/composio/status  → { status, active }
+GET  /v1/composio/tools?toolkit=xero      → what you can call (for authoring, not for the agent)
+```
+
+Send the founder to `redirect_url`, then poll `status` until `active`. **Composio owns the OAuth
+callback**, so Mycel exposes no public redirect route — one less internet-facing surface, and no
+half-finished grant to store if they abandon the tab.
+
+The agent then calls a tool by slug through the normal action proxy
+(`POST /v1/internal/actions/XERO_CREATE_INVOICE`), and it passes the human gate like any other
+outward action. Three things the agent does **not** get to choose:
+
+- **The Composio API key** stays in the harness, exactly like a model provider key.
+- **`user_id` is derived from the connection's owner**, never from the request. A client-owned
+  connection maps to `<project>:client:<client_id>`, so each customer's Xero is a separate Composio
+  account and the agent cannot act as a different customer even if it asks to.
+- **Which account** — the connected-account id comes from the connection's config.
+
+**Reads must be declared.** Composio tools are mostly writes, and `XERO_CREATE_INVOICE` is not a read
+just because the agent called it through `/v1/internal/reads`. Only slugs listed in the connection's
+`read_tools` go down the ungated path; everything else is refused with a pointer to the action proxy.
+Default deny — a connection that declares nothing is readable through nothing.
+
+A blueprint can declare a brokered connection, and the readiness checklist then says *"Connect Xero"*
+with a `composio/connect` action instead of asking for a credential that doesn't exist.
+
 ## Recommended topology: your backend fronts the kernel
 
 **Keep the kernel private. The browser talks to your app; your app proxies to the kernel.**

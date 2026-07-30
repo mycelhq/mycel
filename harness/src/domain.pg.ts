@@ -153,6 +153,22 @@ export class PostgresDomainStore implements DomainStore {
     const r = await this.pool.query(`SELECT * FROM connections WHERE id=$1`, [id]);
     return r.rows[0] ? this.toConn(r.rows[0]) : undefined;
   }
+  async updateConnection(
+    id: string,
+    patch: Partial<Pick<Connection, "name" | "config" | "secret_ref">>,
+  ): Promise<Connection | undefined> {
+    // COALESCE so a partial patch preserves the columns it doesn't mention — the same discipline the
+    // schedule update needs (a patch that passes `undefined` must not blank a column).
+    const r = await this.pool.query(
+      `UPDATE connections SET
+         name       = COALESCE($2, name),
+         config     = COALESCE($3::jsonb, config),
+         secret_ref = COALESCE($4, secret_ref)
+       WHERE id=$1 RETURNING *`,
+      [id, patch.name ?? null, patch.config ? JSON.stringify(patch.config) : null, patch.secret_ref ?? null],
+    );
+    return r.rows[0] ? this.toConn(r.rows[0]) : undefined;
+  }
   async listConnections(): Promise<Connection[]> {
     const r = await this.pool.query(`SELECT * FROM connections ORDER BY created_at`);
     return r.rows.map(this.toConn);

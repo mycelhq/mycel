@@ -1,29 +1,73 @@
 {
   "blueprint": "books-keeper",
-  "title": "Bookkeeping agency — UK e-commerce monthly close",
+  "title": "Bookkeeping agency \u2014 UK e-commerce monthly close",
   "summary": "Reconcile a client's books to the penny every month. Pulls the bank feed daily, chases missing receipts, closes the month, prepares VAT for your approval.",
   "wedge": "books-keeper",
-  "sells_as": "Monthly bookkeeping, £400–900/mo per client",
+  "sells_as": "Monthly bookkeeping, \u00a3400\u2013900/mo per client",
   "requires_connections": [
     {
       "name": "bank-feed",
       "kind": "custom",
       "why": "Pull transactions daily (Plaid/TrueLayer/your bank's API).",
-      "config": { "api_url": "https://api.example-bank.com" },
+      "config": {
+        "api_url": "https://api.example-bank.com"
+      },
       "secret_hint": "The API token for the bank feed. Stored encrypted; never sent to the agent."
     },
     {
       "name": "books-email",
       "kind": "email",
       "why": "Chase missing receipts and deliver the close report.",
-      "config": { "api_url": "https://api.postmarkapp.com/email", "from": "books@yourdomain.com" },
+      "config": {
+        "api_url": "https://api.postmarkapp.com/email",
+        "from": "books@yourdomain.com"
+      },
       "secret_hint": "Your transactional email provider's server token."
+    },
+    {
+      "name": "xero",
+      "kind": "composio",
+      "why": "The client's accounting ledger \u2014 where the reconciled month actually gets posted.",
+      "secret_hint": "One OAuth click. Composio holds the grant and refreshes it, so nothing to paste and nothing to rotate.",
+      "config": {
+        "toolkit": "xero",
+        "read_tools": [
+          "XERO_GET_INVOICES",
+          "XERO_GET_CONTACTS",
+          "XERO_GET_ACCOUNTS"
+        ]
+      }
     }
   ],
   "schedules": [
-    { "name": "daily transaction sync", "task_type": "daily_sync", "cadence": { "kind": "daily", "hour": 6, "minute": 0 } },
-    { "name": "receipt chase", "task_type": "chase_receipts", "cadence": { "kind": "daily", "hour": 10, "minute": 0 } },
-    { "name": "month-end close", "task_type": "monthly_close", "cadence": { "kind": "monthly", "day": 1, "hour": 9, "minute": 0 } }
+    {
+      "name": "daily transaction sync",
+      "task_type": "daily_sync",
+      "cadence": {
+        "kind": "daily",
+        "hour": 6,
+        "minute": 0
+      }
+    },
+    {
+      "name": "receipt chase",
+      "task_type": "chase_receipts",
+      "cadence": {
+        "kind": "daily",
+        "hour": 10,
+        "minute": 0
+      }
+    },
+    {
+      "name": "month-end close",
+      "task_type": "monthly_close",
+      "cadence": {
+        "kind": "monthly",
+        "day": 1,
+        "hour": 9,
+        "minute": 0
+      }
+    }
   ],
   "seed_knowledge": [
     {
@@ -32,5 +76,8 @@
       "content": "# Engagement terms\n\nEdit this with your actual terms. Example:\n- Monthly close delivered by the 7th working day.\n- VAT returns prepared, never filed without founder approval.\n- Receipts chased up to 3 times, then escalated to the founder."
     }
   ],
-  "first_case": { "title": "First close — {client}", "stage": "open" }
+  "first_case": {
+    "title": "First close \u2014 {client}",
+    "stage": "open"
+  }
 }

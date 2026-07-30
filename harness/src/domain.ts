@@ -12,6 +12,11 @@ export interface DomainStore {
   createConnection(c: Omit<Connection, "id" | "created_at">): Promise<Connection>;
   getConnection(id: string): Promise<Connection | undefined>;
   listConnections(): Promise<Connection[]>;
+  /** Patch a connection's non-secret fields. Used to record a broker's connected-account id. */
+  updateConnection(
+    id: string,
+    patch: Partial<Pick<Connection, "name" | "config" | "secret_ref">>,
+  ): Promise<Connection | undefined>;
 
   // channels
   createChannel(c: Omit<Channel, "id" | "created_at">): Promise<Channel>;
@@ -110,6 +115,15 @@ export class InMemoryDomainStore implements DomainStore {
   }
   async getConnection(id: string): Promise<Connection | undefined> {
     return this.connections.get(id);
+  }
+  async updateConnection(
+    id: string,
+    patch: Partial<Pick<Connection, "name" | "config" | "secret_ref">>,
+  ): Promise<Connection | undefined> {
+    const c = this.connections.get(id);
+    if (!c) return undefined;
+    Object.assign(c, defined(patch));
+    return c;
   }
   async listConnections(): Promise<Connection[]> {
     return [...this.connections.values()];

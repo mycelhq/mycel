@@ -147,6 +147,23 @@ task for client A could name client B's connection id and be handed it. The sele
 exported pure function (`selectGrantableConnections`) so the per-client half of the trust boundary is
 testable at all, which it previously wasn't.
 
+### Composio — OAuth and 250+ toolkits  ✅ shipped
+The gap that mattered most for real customers: every credential was paste-a-token-by-hand, so Xero,
+QuickBooks and HubSpot were effectively out of reach (a Xero token expires in 30 minutes and needs a
+refresh; nobody re-pastes one every half hour). A connection of kind `composio` is now a one-click
+authorisation — Composio holds the grant and refreshes it.
+
+The trust boundary is unchanged, which was the point: the Composio API key stays in the harness like a
+model key, the sandbox still only gets an opaque action nonce, every tool call passes the human gate,
+and `user_id` is derived from the connection's *owner* so a client-owned connection maps to that
+client's account and the agent cannot ask to be someone else. Reads must be explicitly declared per
+connection (`read_tools`) — otherwise the ungated read path would have quietly become a way to run
+`XERO_CREATE_INVOICE` without a human. Implemented against the REST API with plain `fetch`, so the
+kernel gains no dependency and the whole thing is testable offline against a fake.
+
+Still hand-rolled: `stripe`/`sms`/`whatsapp`/`calendar` executors remain stubs, and Composio auth
+configs are created once in their dashboard rather than through our API.
+
 ### Security posture (shipped alongside)
 - **Write destinations are connection-bound.** `postWebhook` used to prefer an agent-supplied
   `payload.url` over the connection's configured host, which — since the connection's secret is sent

@@ -21,7 +21,9 @@ export type AuditAction =
   | "case.stage_changed"
   | "case.closed"
   | "policy.envelope_used"
-  | "project.created";
+  | "project.created"
+  /** An external account was linked through a broker (Composio OAuth). Never records the token. */
+  | "connection.linked";
 
 export interface AuditEntry {
   seq: number;

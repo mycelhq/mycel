@@ -105,7 +105,16 @@ export interface CreateTaskInput {
 //    every outward action passes the human approval gate. ──
 
 /** An external capability with server-held secrets. The secret is referenced, never returned. */
-export type ConnectionKind = "email" | "sms" | "whatsapp" | "stripe" | "calendar" | "webhook" | "custom";
+export type ConnectionKind =
+  | "email"
+  | "sms"
+  | "whatsapp"
+  | "stripe"
+  | "calendar"
+  | "webhook"
+  | "custom"
+  /** Composio-brokered: OAuth and 250+ toolkits. `config.toolkit` names which. See composio.ts. */
+  | "composio";
 /** Who a connection belongs to. Founder-owned (his Stripe, his outreach domain) is shared across
  *  jobs; client-owned (a client's Gmail/calendar the founder operates on their behalf) is scoped
  *  to that client and only offered to tasks serving them. */
