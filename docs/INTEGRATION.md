@@ -12,6 +12,11 @@ API is never open). The key lives server-side in your product's proxy routes —
 holds it. The `/v1/internal/*` endpoints are sandbox-facing and authed separately (gate token /
 opaque nonces), so the sandbox never needs the founder key.
 
+**`X-Mycel-Project`** selects the tenant. On a **write** it names the project the row lands in; on a
+**read** it narrows the result to that one project. Omit it and reads span every project the caller can
+see — right for a fleet view, wrong for a per-business screen (two customers' work in one timeline).
+A project outside the caller's scope yields nothing; it never widens access.
+
 ## What the kernel exposes (`/v1`)
 
 Server-to-server. Everything a product needs is here:
@@ -118,6 +123,13 @@ What the kernel enforces today, and what it doesn't yet — so you deploy it kno
   (Stripe/Postmark/Twilio) never enter the sandbox — the agent gets opaque nonces; the harness
   holds the real secrets and mediates every call. Every outward *action* passes the human
   approval gate.
+- **Per-client credential isolation.** A connection owned by a client is grantable only to a task
+  serving that client, and naming it explicitly cannot override that — so one customer's mailbox or
+  bank token can't be used on another customer's job. Founder-owned connections still have to be
+  named by the wedge or the task.
+- **The destination host always comes from the connection, for reads AND writes.** The sandbox
+  supplies a path; absolute URLs, protocol-relative URLs, traversal and CRLF are rejected. This
+  matters most on writes, because the connection's credential rides along as a bearer token.
 - **Read/write asymmetry.** Reads are **ungated** (an agent that must wait for a human before it
   can look at today's transactions is useless) but still scoped: granted connections only, GET
   only, the host comes from the connection config (the sandbox supplies a relative path, so no

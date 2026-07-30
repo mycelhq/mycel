@@ -26,6 +26,46 @@ export interface RuntimeCtx {
   shouldAbort(): string | null;
 }
 
+/** Who this run is acting for, if anyone. All three sources are caller-supplied. */
+export function taskClientId(task: Task): string | undefined {
+  const inputClient = task.input?.client as { id?: string } | undefined;
+  return (
+    (typeof task.input?.client_id === "string" ? task.input.client_id : undefined) ??
+    inputClient?.id ??
+    (task.actor.kind === "user" ? task.actor.id : undefined)
+  );
+}
+
+/** A client-owned connection belongs to exactly one client. Founder-owned ones are unrestricted. */
+export function entitledTo(conn: Pick<Connection, "owner">, clientId?: string): boolean {
+  return conn.owner.kind !== "client" || conn.owner.id === clientId;
+}
+
+/**
+ * Which connections a run may act through. Extracted and exported because it is the per-client half
+ * of the trust boundary, and inline it could not be tested at all.
+ *
+ * Ownership is a GATE, not a preference: naming a connection cannot override it. This used to be one
+ * arm of an `||` next to "the wedge or task named it" — and since `task.input.connections` is
+ * caller-supplied and unvalidated, a task for client A could name client B's connection id and be
+ * handed it. One customer's mailbox or bank token, used on another customer's job. The project
+ * boundary held; the per-client boundary was a default any caller could opt out of.
+ *
+ * Callers must pre-filter to the task's project. This function does not check tenancy.
+ */
+export function selectGrantableConnections(
+  conns: Connection[],
+  wanted: Set<string>,
+  clientId?: string,
+): Connection[] {
+  return conns.filter((c) => {
+    if (!entitledTo(c, clientId)) return false;
+    // This client's own connections come automatically — the founder acts on their behalf, through
+    // their mailbox and their calendar. Founder-owned ones must be named by the wedge or the task.
+    return c.owner.kind === "client" || wanted.has(c.name) || wanted.has(c.id);
+  });
+}
+
 export async function runOpenCodeTask(
   task: Task,
   sandbox: Sandbox,
@@ -80,28 +120,20 @@ export async function runOpenCodeTask(
     ...(wedge?.manifest.connections ?? []),
     ...(Array.isArray(task.input?.connections) ? (task.input.connections as string[]) : []),
   ]);
-  // Founder-owned connections the wedge/task named, PLUS every connection owned by the client this
-  // task serves (the founder acts on their behalf — their mailbox, their calendar).
-  const inputClient = task.input?.client as { id?: string } | undefined;
-  const clientId =
-    (typeof task.input?.client_id === "string" ? task.input.client_id : undefined) ??
-    inputClient?.id ??
-    (task.actor.kind === "user" ? task.actor.id : undefined);
-  const connectionIds = allConns
-    .filter(
-      (c) =>
-        wantedConns.has(c.name) ||
-        wantedConns.has(c.id) ||
-        (c.owner.kind === "client" && c.owner.id === clientId),
-    )
-    .map((c) => c.id);
+  const clientId = taskClientId(task);
+  const connectionIds = selectGrantableConnections(allConns, wantedConns, clientId).map((c) => c.id);
   let threadId: string | undefined;
   if (typeof task.input?.thread_id === "string") {
     threadId = task.input.thread_id;
     const thread = await domain.getThread(threadId);
     if (thread) {
       const channel = (await domain.listChannels()).find((ch) => ch.id === thread.channel_id);
-      if (channel && !connectionIds.includes(channel.connection_id)) connectionIds.push(channel.connection_id);
+      const conn = channel ? allConns.find((c) => c.id === channel.connection_id) : undefined;
+      // The reply channel goes through the same ownership gate. A thread id is caller-supplied too,
+      // so without this check it was a second route to another client's connection.
+      if (conn && entitledTo(conn, clientId) && !connectionIds.includes(conn.id)) {
+        connectionIds.push(conn.id);
+      }
     }
   }
   const actionNonce = registerActionGrant({ task_id: task.id, connectionIds, threadId, caseId: task.case_id });

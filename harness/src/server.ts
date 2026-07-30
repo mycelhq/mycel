@@ -41,7 +41,7 @@ import { runTask } from "./orchestrator";
 import { getGrant } from "./proxygrants";
 import { hasSecret, setSecret } from "./secrets";
 import type { Store } from "./store";
-import { traceLlmCall } from "./tracing";
+import { langfuseState, traceLlmCall } from "./tracing";
 import { loadWedge, wedgesDir } from "./wedge";
 import { runWorkflow } from "./workflows";
 
@@ -90,7 +90,10 @@ export function createServer(store: Store): Hono {
 
   // ── tenancy helpers ── every read filters by the caller's accessible projects; every write
   // stamps the resolved project; every by-id fetch checks membership. One place, used everywhere.
-  const accessible = (c: import("hono").Context) => identity.accessibleProjectIds(c.get("scope"));
+  // Reads see every project in scope, unless the caller names one with X-Mycel-Project — the same
+  // header that selects the target of a write. One header, one meaning, both directions.
+  const accessible = (c: import("hono").Context) =>
+    identity.accessibleProjectIds(c.get("scope"), c.req.header("x-mycel-project"));
   const writeProjectId = (c: import("hono").Context) =>
     identity.resolveWriteProject(c.get("scope"), c.req.header("x-mycel-project"));
   const inScope = (set: Set<string>, pid?: string) => !!pid && set.has(pid);
@@ -228,7 +231,7 @@ export function createServer(store: Store): Hono {
     return c.json(out);
   });
 
-  // GET /v1/meta — what the portal needs to render itself: version, wedges, Langfuse deep-link base.
+  // GET /v1/meta — what a product needs to render itself: version, wedges, observability state.
   app.get("/v1/meta", async (c) => {
     const cfg = loadConfig();
     let wedges: string[] = [];
@@ -241,6 +244,9 @@ export function createServer(store: Store): Hono {
       version: "v0.1",
       wedges,
       langfuse_url: cfg.langfuse?.baseUrl ?? null,
+      // "configured" is not "working" — see langfuseState(). A UI that links to traces should check
+      // this, not the url, or it sends people to an empty dashboard.
+      tracing: langfuseState(),
       store: process.env.MYCEL_DATABASE_URL ? "postgres" : "memory",
       sandbox: cfg.sandboxBackend,
     });

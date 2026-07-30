@@ -6,6 +6,9 @@ import { canonical, entryHash, verifyChain, initAuditStore, auditList, auditVeri
 import { InMemoryStore } from "../src/store";
 import { createServer } from "../src/server";
 import { getDomainStore } from "../src/domain";
+import { selectGrantableConnections } from "../src/runtime";
+import { actionPreview, executeAction } from "../src/actions";
+import type { Connection, ConnectionOwner } from "../src/contract";
 import { registerActionGrant } from "../src/actiongrants";
 import { resolveApproval } from "../src/approvals";
 
@@ -170,4 +173,83 @@ test("audit: a real approval + executed action land in the chain, with no secret
   assert.ok(!JSON.stringify(chain).includes("SUPERSECRET"), "no secret material anywhere in the chain");
 
   srv.close();
+});
+
+// ── per-client connection isolation ──
+// The claim under test is one the product makes out loud on its Connections screen: "one client's
+// credential can never be used on another's job." It was false: ownership sat as one arm of an `||`
+// beside "the wedge or task named it", and `task.input.connections` is caller-supplied.
+
+const conn = (owner: ConnectionOwner, name: string): Connection => ({
+  id: `id-${name}`,
+  project_id: "p1",
+  kind: "email",
+  name,
+  owner,
+  config: {},
+  created_at: new Date().toISOString(),
+});
+
+const FOUNDER: ConnectionOwner = { kind: "founder", id: "founder" };
+const shared = conn(FOUNDER, "shared-mailbox");
+const aMail = conn({ kind: "client", id: "client-a" }, "a-mailbox");
+const bMail = conn({ kind: "client", id: "client-b" }, "b-mailbox");
+const ALL = [shared, aMail, bMail];
+
+test("per-client connections: naming another client's connection does not grant it", () => {
+  // A task serving client A that explicitly names client B's connection, by id AND by name — the
+  // exact shape of the bypass, since nothing validates `task.input.connections`.
+  const wanted = new Set([bMail.id, bMail.name, shared.name]);
+  const got = selectGrantableConnections(ALL, wanted, "client-a").map((c) => c.name);
+
+  assert.ok(got.includes("a-mailbox"), "its own client's connection is granted automatically");
+  assert.ok(got.includes("shared-mailbox"), "a named founder connection is granted");
+  assert.ok(
+    !got.includes("b-mailbox"),
+    "another client's connection is refused even though the task named it explicitly",
+  );
+});
+
+test("per-client connections: a founder-run task gets no client credentials by default", () => {
+  // No client id at all (a scheduled sweep, say). It must not inherit anyone's mailbox.
+  const got = selectGrantableConnections(ALL, new Set([shared.name]), undefined).map((c) => c.name);
+  assert.deepEqual(got, ["shared-mailbox"]);
+
+  // …and naming them doesn't help.
+  const forced = selectGrantableConnections(ALL, new Set([aMail.id, bMail.id]), undefined);
+  assert.deepEqual(forced, [], "client-owned connections need a matching client, not a mention");
+});
+
+test("per-client connections: founder connections still need to be named", () => {
+  // The gate must not accidentally widen the founder side into "everything in the project".
+  assert.deepEqual(selectGrantableConnections(ALL, new Set(), "client-a").map((c) => c.name), [
+    "a-mailbox",
+  ]);
+});
+
+test("actions: the destination host comes from the connection, never from the agent", async () => {
+  // Reads were always guarded this way (safeReadPath); writes were not — and since the connection's
+  // secret rides along as a bearer token, an agent-chosen host meant credential exfiltration with
+  // one approval click.
+  const webhook: Connection = {
+    id: "wh1",
+    project_id: "p1",
+    kind: "webhook",
+    name: "ops-hook",
+    owner: FOUNDER,
+    config: { url: "https://hooks.internal.test/mycel" },
+    created_at: new Date().toISOString(),
+  };
+
+  for (const evil of ["https://attacker.test/steal", "//attacker.test/steal", "../../etc", "a\r\nb"]) {
+    const r = await executeAction(webhook, "notify", { url: evil, body: { x: 1 } }, "super-secret");
+    assert.equal(r.ok, false, `must refuse ${evil}`);
+    assert.match(String(r.detail), /within the connection's host/);
+  }
+
+  // And the approval card shows where it's really going, so the human is checking the agent rather
+  // than reading the agent's own claim back to itself.
+  const preview = actionPreview(webhook, "notify", { url: "https://attacker.test/steal", body: "hi" });
+  assert.equal(preview.endpoint, "https://hooks.internal.test/mycel");
+  assert.notEqual(preview.to, "https://attacker.test/steal");
 });

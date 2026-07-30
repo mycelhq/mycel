@@ -168,9 +168,27 @@ class IdentityStore {
   }
 
   /** The set of project ids a scope may read. Key → its one project; member → all in its org. */
-  accessibleProjectIds(scope: AuthScope): Set<string> {
-    if (scope.kind === "key" && scope.project_id) return new Set([scope.project_id]);
-    return new Set(this.listProjects(scope.org_id).map((p) => p.id));
+  /**
+   * The projects a READ may see.
+   *
+   * `requested` is the `X-Mycel-Project` header. Supplying it NARROWS the result to that one
+   * project; omitting it means "everything I can see", which is what a fleet-wide view wants.
+   *
+   * This is the single chokepoint every read route filters through, so narrowing here is what makes
+   * a per-project view possible at all. Without it a member in an org with two projects gets both
+   * businesses blended into one list — two clients' tasks in one timeline, with nothing marking
+   * which is which.
+   *
+   * Fails closed: a header naming a project outside the caller's scope yields an EMPTY set, not the
+   * full one. Asking for something you can't have must never widen what you get.
+   */
+  accessibleProjectIds(scope: AuthScope, requested?: string): Set<string> {
+    const all =
+      scope.kind === "key" && scope.project_id
+        ? new Set([scope.project_id])
+        : new Set(this.listProjects(scope.org_id).map((p) => p.id));
+    if (!requested) return all;
+    return all.has(requested) ? new Set([requested]) : new Set<string>();
   }
 
   /** The project a write lands in. Key → fixed. Member → the requested one (if in org), else the

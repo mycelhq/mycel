@@ -20,11 +20,16 @@ export function actionPreview(
   capability: string,
   payload: Record<string, unknown>,
 ): Record<string, unknown> {
+  // `endpoint` is the host the credential will actually be sent to, taken from the CONNECTION
+  // rather than the payload. A human approving an outbound call should be able to see the
+  // destination; a preview that only echoes what the agent asked for isn't a check on the agent.
+  const endpoint = conn.config.url ?? conn.config.api_url ?? undefined;
   return {
     connection: conn.name,
     kind: conn.kind,
     capability,
-    to: payload.to ?? payload.recipient ?? payload.url ?? undefined,
+    to: payload.to ?? payload.recipient ?? undefined,
+    endpoint,
     subject: payload.subject ?? undefined,
     preview: typeof payload.body === "string" ? payload.body.slice(0, 400) : payload.body,
   };
@@ -47,8 +52,9 @@ export interface ReadResult {
   data?: unknown;
 }
 
-/** The security crux: the sandbox supplies a PATH, never a host. Anything that could escape the
- *  connection's base URL (absolute URL, protocol-relative, traversal) is rejected. No SSRF. */
+/** The security crux, for reads AND writes: the sandbox supplies a PATH, never a host. Anything that
+ *  could escape the connection's base URL (absolute URL, protocol-relative, traversal) is rejected.
+ *  No SSRF, and no sending a connection's credential to a host the agent chose. */
 export function safeReadPath(raw: unknown): string | null {
   if (typeof raw !== "string") return null;
   const p = raw.trim();
@@ -164,8 +170,24 @@ async function postWebhook(
   payload: Record<string, unknown>,
   secret?: string,
 ): Promise<ActionResult> {
-  const url = String(payload.url ?? conn.config.url ?? "");
-  if (!url) return { ok: false, detail: "webhook connection missing config.url" };
+  // The host comes from the CONNECTION, never from the payload.
+  //
+  // This used to be `payload.url ?? conn.config.url`, so an agent-supplied url won outright — and
+  // since the connection's secret is attached below as a bearer token, that was a way to post the
+  // credential itself to any host the agent named. Reads have always been guarded this way
+  // (`safeReadPath`); writes were not, which is the wrong asymmetry: the gated half of the trust
+  // boundary was the loose one.
+  //
+  // The agent may still choose a path within the connection's host, which is what a webhook
+  // connection legitimately needs.
+  const base = String(conn.config.url ?? conn.config.api_url ?? "");
+  if (!base) return { ok: false, detail: "webhook connection missing config.url" };
+  const suffix = payload.path ?? payload.url;
+  const rel = suffix === undefined ? "" : safeReadPath(suffix);
+  if (rel === null) {
+    return { ok: false, detail: "path must stay within the connection's host (no absolute url, no traversal)" };
+  }
+  const url = rel ? `${base.replace(/\/+$/, "")}/${rel}` : base;
   const res = await fetch(url, {
     method: "POST",
     headers: {

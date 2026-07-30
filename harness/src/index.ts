@@ -8,6 +8,7 @@ import { closeSecretStore, initSecretStore } from "./secrets";
 import { startScheduler } from "./scheduler";
 import { createServer } from "./server";
 import { createStore } from "./store";
+import { flushLogs } from "./tracing";
 
 const { store, backend } = await createStore();
 await initDomainStore(); // durable service surface when MYCEL_DATABASE_URL is set
@@ -56,6 +57,9 @@ async function shutdown(signal: string): Promise<void> {
     await closeDomainStore();
     await closeSecretStore();
     await closeAuditStore();
+    // Queued JSONL lines are still in memory (appends are non-blocking by design), so drain them
+    // before exiting or the tail of an in-flight run is lost.
+    await flushLogs();
   } catch (e) {
     console.error("[mycel] store close error:", e);
   }

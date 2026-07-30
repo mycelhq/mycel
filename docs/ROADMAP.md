@@ -135,7 +135,25 @@ concurrent replicas (`harness/test/multi-instance.test.ts`, runs in CI).
 counters, idempotency and read budgets are in-process. Run one replica until these are Redis-backed.
 Each already sits behind a small interface for exactly that swap.
 
+### Per-tenant scope + per-client isolation  ✅ shipped
+`X-Mycel-Project` now narrows **reads** as well as selecting the target of a write, through the single
+function every read route filters on. Without it a founder running two businesses on one kernel saw
+both blended into one list, with nothing marking which client a row belonged to. Fails closed: naming
+a project outside your scope returns nothing rather than falling back to everything.
+
+Per-client connections are now *enforced* rather than defaulted. Ownership used to be one arm of an
+`||` beside "the wedge or task named it" — and since `task.input.connections` is caller-supplied, a
+task for client A could name client B's connection id and be handed it. The selection is now an
+exported pure function (`selectGrantableConnections`) so the per-client half of the trust boundary is
+testable at all, which it previously wasn't.
+
 ### Security posture (shipped alongside)
+- **Write destinations are connection-bound.** `postWebhook` used to prefer an agent-supplied
+  `payload.url` over the connection's configured host, which — since the connection's secret is sent
+  as a bearer token — was a way to post the credential to any host the agent chose, behind one
+  approval click. The host now always comes from the connection and the agent may only pick a path,
+  the same guard reads have always had. The approval card shows the real destination, so the human is
+  checking the agent rather than reading its own claim back to itself.
 - **Vault encrypted at rest** — AES-256-GCM per secret (`MYCEL_SECRET_KEY`), authenticated so
   tampering fails closed rather than returning junk; a key id per envelope leaves room for rotation.
   Durable in Postgres, storing only ciphertext: a stolen database dump is useless without the key

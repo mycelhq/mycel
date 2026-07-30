@@ -23,6 +23,18 @@ function appendLine(path: string, line: string): void {
   chains.set(path, next);
 }
 
+/**
+ * Wait for queued log writes to reach disk.
+ *
+ * Appends are deliberately fire-and-forget so a `token.delta` stream never blocks on disk, which
+ * means at shutdown the tail of a run is still sitting in memory. Called from the SIGTERM path so a
+ * restart doesn't silently truncate the record of what an agent just did — the log is the thing you
+ * go back to when a customer asks why the business sent that.
+ */
+export async function flushLogs(): Promise<void> {
+  await Promise.allSettled([...chains.values()]);
+}
+
 export interface Observer {
   onTaskStart(task: Task): void | Promise<void>;
   onEvent(taskId: string, ev: TaskEvent): void | Promise<void>;
@@ -56,17 +68,43 @@ class LangfuseObserver implements Observer {
       });
       return new LangfuseObserver(lf);
     } catch (e) {
-      console.warn("[mycel] Langfuse tracing unavailable:", (e as Error).message);
+      console.warn(
+        "[mycel] Langfuse keys are set but tracing is NOT running:",
+        (e as Error).message,
+        "\n         Run `npm install langfuse` in the kernel to enable it.",
+      );
       return null;
     }
   }
 
   onTaskStart(task: Task): void {
+    // `project_id` is the tenancy key, and it has to be here.
+    //
+    // The cloud design is deliberately ONE Langfuse project with traces tagged per tenant, because
+    // creating a Langfuse project per customer needs the Instance Management API, which is
+    // Enterprise Edition. That design only works if there is something to filter on — without
+    // project_id, every tenant's traces are indistinguishable except by raw task id, and the
+    // "segmented by tags" plan has no segment.
+    //
+    // Tags as well as metadata: Langfuse can filter a trace list by tag, so these are what make a
+    // per-project view possible at all, rather than just visible once you already found the trace.
+    const tags = [
+      `project:${task.project_id ?? "none"}`,
+      `wedge:${task.wedge}`,
+      ...(task.case_id ? [`case:${task.case_id}`] : []),
+    ];
     const trace = this.lf.trace({
       id: task.id,
       name: `${task.wedge}:${task.task_type}`,
       input: task.input,
-      metadata: { wedge: task.wedge, actor: task.actor },
+      tags,
+      metadata: {
+        project_id: task.project_id ?? null,
+        wedge: task.wedge,
+        task_type: task.task_type,
+        case_id: task.case_id ?? null,
+        actor: task.actor,
+      },
     });
     this.traces.set(task.id, trace);
   }
@@ -133,6 +171,21 @@ let llmDirReady = false;
 
 let cached: Observer | null = null;
 
+/**
+ * Whether Langfuse is off, wired up, or configured-but-broken.
+ *
+ * The third state is the dangerous one and used to be invisible: the `langfuse` package is an
+ * optional peer installed by the setup script only if you opt in, so setting the keys later gives you
+ * a single `console.warn` at boot and no traces — while any UI that keys off "are the keys set?"
+ * cheerfully shows a traces link pointing at an empty dashboard. Reported so the UI can tell the
+ * difference instead of guessing.
+ */
+export type TracingState = "off" | "active" | "unavailable";
+let tracingState: TracingState = "off";
+export function langfuseState(): TracingState {
+  return tracingState;
+}
+
 export async function getObserver(): Promise<Observer> {
   if (cached) return cached;
   const cfg = loadConfig();
@@ -140,7 +193,19 @@ export async function getObserver(): Promise<Observer> {
   if (cfg.langfuse) {
     const lf = await LangfuseObserver.create(cfg.langfuse);
     if (lf) observers.push(lf);
+    tracingState = lf ? "active" : "unavailable";
   }
   cached = new MultiObserver(observers);
   return cached;
+}
+
+// ── test seams ──
+// Exported so the two sinks can be driven directly. The Langfuse one otherwise needs a live account
+// and a network round trip to exercise at all, which is why it went untested for so long — and its
+// failure mode is silence, so "untested" reads exactly like "working".
+export function _langfuseObserverForTest(fake: unknown): Observer {
+  return new (LangfuseObserver as unknown as new (lf: unknown) => LangfuseObserver)(fake);
+}
+export function _localObserverForTest(dir: string): Observer {
+  return new LocalLogObserver(dir);
 }
