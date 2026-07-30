@@ -1,0 +1,28 @@
+{
+  "blueprint": "invoice-chaser",
+  "title": "Accounts-receivable chaser",
+  "summary": "Chase overdue invoices politely and on policy. Picks the right dunning step deterministically, drafts the message, and only sends what you approve (or what your policy envelope allows).",
+  "wedge": "invoice-chaser",
+  "sells_as": "AR recovery, 2–5% of recovered value or £300+/mo",
+  "requires_connections": [
+    {
+      "name": "billing-email",
+      "kind": "email",
+      "why": "Send the reminders.",
+      "config": { "api_url": "https://api.postmarkapp.com/email", "from": "billing@yourdomain.com" },
+      "secret_hint": "Your transactional email provider's server token."
+    },
+    {
+      "name": "stripe",
+      "kind": "stripe",
+      "why": "Read invoice status; charging always requires your approval.",
+      "config": { "api_url": "https://api.stripe.com/v1" },
+      "secret_hint": "A Stripe restricted key. Stored encrypted; never sent to the agent."
+    }
+  ],
+  "schedules": [
+    { "name": "daily overdue sweep", "task_type": "chase_invoice", "cadence": { "kind": "daily", "hour": 9, "minute": 30 } }
+  ],
+  "seed_knowledge": [],
+  "first_case": { "title": "Overdue — {client}", "stage": "outstanding" }
+}

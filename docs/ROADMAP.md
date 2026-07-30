@@ -114,6 +114,16 @@ per-project sequence allocated under a row lock so replicas can't fork the chain
 real database: untampered → `ok:true`; a direct `UPDATE audit_log SET actor='attacker'` →
 `ok:false, broken_at:2`.
 
+### Blueprints — provision a business, not a task  ✅ shipped
+The deployable unit Cloud needs: a named bundle of wedge + schedules + required connections + seed
+knowledge. `POST /v1/blueprints/:slug/provision` creates it all in one call and returns a **readiness
+checklist** of what the founder still owes (credentials, mostly). Two decisions worth knowing:
+schedules are provisioned **disabled** (a business with no bank token shouldn't start failing on its
+6am tick), and **`activate` is refused with 409 until the checklist is satisfied**. Provisioning is
+idempotent — clicking twice reuses by name instead of creating a second business. Blueprint files
+carry config and intent but never credentials, so they're safe to commit and share (asserted in a
+test). Provisioning lands in the audit chain.
+
 ### Multi-instance — partially shipped
 **Shipped (the dangerous half):** the scheduler now *claims* due schedules through the store instead
 of listing them — `FOR UPDATE SKIP LOCKED` on Postgres, with `next_run_at` advanced inside the same

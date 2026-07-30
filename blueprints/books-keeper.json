@@ -1,0 +1,36 @@
+{
+  "blueprint": "books-keeper",
+  "title": "Bookkeeping agency — UK e-commerce monthly close",
+  "summary": "Reconcile a client's books to the penny every month. Pulls the bank feed daily, chases missing receipts, closes the month, prepares VAT for your approval.",
+  "wedge": "books-keeper",
+  "sells_as": "Monthly bookkeeping, £400–900/mo per client",
+  "requires_connections": [
+    {
+      "name": "bank-feed",
+      "kind": "custom",
+      "why": "Pull transactions daily (Plaid/TrueLayer/your bank's API).",
+      "config": { "api_url": "https://api.example-bank.com" },
+      "secret_hint": "The API token for the bank feed. Stored encrypted; never sent to the agent."
+    },
+    {
+      "name": "books-email",
+      "kind": "email",
+      "why": "Chase missing receipts and deliver the close report.",
+      "config": { "api_url": "https://api.postmarkapp.com/email", "from": "books@yourdomain.com" },
+      "secret_hint": "Your transactional email provider's server token."
+    }
+  ],
+  "schedules": [
+    { "name": "daily transaction sync", "task_type": "daily_sync", "cadence": { "kind": "daily", "hour": 6, "minute": 0 } },
+    { "name": "receipt chase", "task_type": "chase_receipts", "cadence": { "kind": "daily", "hour": 10, "minute": 0 } },
+    { "name": "month-end close", "task_type": "monthly_close", "cadence": { "kind": "monthly", "day": 1, "hour": 9, "minute": 0 } }
+  ],
+  "seed_knowledge": [
+    {
+      "name": "engagement-terms.md",
+      "kind": "fact",
+      "content": "# Engagement terms\n\nEdit this with your actual terms. Example:\n- Monthly close delivered by the 7th working day.\n- VAT returns prepared, never filed without founder approval.\n- Receipts chased up to 3 times, then escalated to the founder."
+    }
+  ],
+  "first_case": { "title": "First close — {client}", "stage": "open" }
+}

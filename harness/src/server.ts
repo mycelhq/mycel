@@ -10,6 +10,7 @@ import { join } from "node:path";
 import { Hono } from "hono";
 import { streamSSE } from "hono/streaming";
 import { audit, auditList, auditVerify } from "./audit";
+import { buildChecklist, listBlueprints, loadBlueprint, provision } from "./blueprints";
 import { requireApiKey, safeEqual } from "./auth";
 import { awaitApproval, failWaitersForTask, resolveApproval } from "./approvals";
 import { actionPreview, executeAction, executeRead } from "./actions";
@@ -533,6 +534,82 @@ export function createServer(store: Store): Hono {
     const thread = await domain.getThread(c.req.param("id"));
     if (!thread || !inScope(accessible(c), thread.project_id)) return c.json({ error: "not found" }, 404);
     return c.json({ ...thread, messages: await domain.listMessages(thread.id) });
+  });
+
+  // ── Blueprints: provision a whole business, not a task ──
+  // This is what Cloud's "describe it and it goes live" resolves to. Provisioning is idempotent and
+  // creates schedules DISABLED, so a business with no credentials yet can't start failing on a timer.
+  app.get("/v1/blueprints", async (c) =>
+    c.json(
+      listBlueprints().map((b) => ({
+        blueprint: b.blueprint,
+        title: b.title,
+        summary: b.summary,
+        wedge: b.wedge,
+        sells_as: b.sells_as,
+        requires_connections: (b.requires_connections ?? []).map((r) => ({ name: r.name, kind: r.kind, why: r.why })),
+        schedules: (b.schedules ?? []).map((s) => ({ name: s.name, task_type: s.task_type, cadence: s.cadence })),
+        installed: !!loadWedge(b.wedge),
+      })),
+    ),
+  );
+
+  app.get("/v1/blueprints/:slug", async (c) => {
+    const b = loadBlueprint(c.req.param("slug"));
+    if (!b) return c.json({ error: "unknown blueprint" }, 404);
+    return c.json(b);
+  });
+
+  // Apply a blueprint to a project → connections, disabled schedules, seed knowledge + a checklist
+  // of what the founder must still supply.
+  app.post("/v1/blueprints/:slug/provision", async (c) => {
+    const projectId = writeProjectId(c);
+    if (!projectId) return c.json({ error: "specify a project (X-Mycel-Project header)" }, 400);
+    const b = loadBlueprint(c.req.param("slug"));
+    if (!b) return c.json({ error: "unknown blueprint" }, 404);
+    if (!loadWedge(b.wedge)) return c.json({ error: `blueprint needs wedge "${b.wedge}", which isn't installed` }, 400);
+    if (!identity.projectAllowsWedge(projectId, b.wedge)) {
+      return c.json({ error: `wedge "${b.wedge}" is not enabled for this project` }, 403);
+    }
+    const result = await provision(domain, b, projectId);
+    await audit({
+      project_id: projectId,
+      actor: (c.get("scope").member_id ?? "system") as string,
+      action: "project.created",
+      entity: "blueprint",
+      entity_id: b.blueprint,
+      detail: { created: result.created, reused: result.reused, ready: result.ready },
+    });
+    return c.json(result, 201);
+  });
+
+  /** Readiness — what's still missing before this business can run. */
+  app.get("/v1/blueprints/:slug/readiness", async (c) => {
+    const scope = c.get("scope");
+    const projectId = c.req.query("project_id") ?? scope.project_id ?? [...accessible(c)][0];
+    if (!projectId || !accessible(c).has(projectId)) return c.json({ error: "not found" }, 404);
+    const b = loadBlueprint(c.req.param("slug"));
+    if (!b) return c.json({ error: "unknown blueprint" }, 404);
+    const checklist = await buildChecklist(domain, b, projectId);
+    return c.json({ blueprint: b.blueprint, project_id: projectId, checklist, ready: checklist.every((i) => i.done) });
+  });
+
+  // Go live: enable the blueprint's schedules — but only once the checklist is actually satisfied.
+  app.post("/v1/blueprints/:slug/activate", async (c) => {
+    const projectId = writeProjectId(c);
+    if (!projectId) return c.json({ error: "specify a project (X-Mycel-Project header)" }, 400);
+    const b = loadBlueprint(c.req.param("slug"));
+    if (!b) return c.json({ error: "unknown blueprint" }, 404);
+    const checklist = await buildChecklist(domain, b, projectId);
+    const missing = checklist.filter((i) => !i.done);
+    if (missing.length) {
+      // Refuse rather than "activate" a business that would fail on its first tick.
+      return c.json({ error: "not ready", missing }, 409);
+    }
+    const names = new Set((b.schedules ?? []).map((s) => s.name));
+    const mine = (await domain.listSchedules()).filter((s) => s.project_id === projectId && names.has(s.name));
+    for (const s of mine) await domain.updateSchedule(s.id, { enabled: true });
+    return c.json({ ok: true, activated: mine.map((s) => s.name) });
   });
 
   // ── Audit: the tamper-evident record of consequential decisions ──
