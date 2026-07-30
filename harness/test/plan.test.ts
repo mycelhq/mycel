@@ -137,3 +137,52 @@ test("plan: the metered limit refuses a job at the door, not after it is queued"
   id.setPlan(orgId, { plan: "self_hosted" });
   assert.equal((await spawn()).status, 201, "and unmetered again once the plan allows it");
 });
+
+test("plan: setting someone else's plan needs a credential of its own", async () => {
+  // A hosted control plane holds ONE product key and serves every tenant. Without a second
+  // credential, a key leaked from any product could rewrite every customer's entitlements.
+  const { app } = makeApp();
+  const id = getIdentityStore();
+  const { org: theirs } = id.createOrgWithOwner("someone-else", `else-${Date.now()}@example.com`, PW);
+
+  const previous = process.env.MYCEL_CONTROL_TOKEN;
+  delete process.env.MYCEL_CONTROL_TOKEN;
+
+  // Unset by default, so cross-org writes are unavailable to a self-hosted install. Nobody has to
+  // notice a setting in order to be safe.
+  const unset = await api(app, "org/plan", {
+    method: "PUT",
+    body: JSON.stringify({ org_id: theirs.id, plan: "scale" }),
+  });
+  assert.equal(unset.status, 403);
+  assert.equal(id.getOrg(theirs.id)?.plan, undefined, "and nothing was written");
+
+  process.env.MYCEL_CONTROL_TOKEN = "control-abc";
+  const wrong = await api(app, "org/plan", {
+    method: "PUT",
+    headers: { "x-mycel-control": "control-abd" },
+    body: JSON.stringify({ org_id: theirs.id, plan: "scale" }),
+  });
+  assert.equal(wrong.status, 403);
+
+  const right = await api(app, "org/plan", {
+    method: "PUT",
+    headers: { "x-mycel-control": "control-abc" },
+    body: JSON.stringify({ org_id: theirs.id, plan: "growth", status: "active" }),
+  });
+  assert.equal(right.status, 200, right.text);
+  assert.equal(id.getOrg(theirs.id)?.plan, "growth");
+
+  // An org that doesn't exist is a 404, not a silent success.
+  assert.equal(
+    (await api(app, "org/plan", {
+      method: "PUT",
+      headers: { "x-mycel-control": "control-abc" },
+      body: JSON.stringify({ org_id: "no-such-org", plan: "growth" }),
+    })).status,
+    404,
+  );
+
+  if (previous === undefined) delete process.env.MYCEL_CONTROL_TOKEN;
+  else process.env.MYCEL_CONTROL_TOKEN = previous;
+});

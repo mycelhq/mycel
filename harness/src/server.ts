@@ -670,14 +670,29 @@ export function createServer(store: Store): Hono {
   });
 
   /**
-   * Set the plan. Product key only.
+   * Set the plan.
    *
    * This is the one write in the kernel that a member cannot make, and the asymmetry is the point:
    * a session belongs to someone who benefits from a bigger number here.
+   *
+   * Setting SOMEONE ELSE'S plan is a second, larger privilege, and it needs its own credential.
+   * A hosted control plane holds one product key and serves every tenant, so without this a
+   * key that leaked from any product could rewrite every customer's entitlements. `MYCEL_CONTROL_TOKEN`
+   * is unset by default, which means cross-org writes are simply unavailable to a self-hosted
+   * install — the failure is closed, and nobody has to notice a setting to be safe.
    */
   app.put("/v1/org/plan", async (c) => {
     const scope = c.get("scope");
     if (scope.kind !== "key") return c.json({ error: "the plan is set by the control plane" }, 403);
+    const targetOrg = ((await c.req.raw.clone().json().catch(() => ({}))) as { org_id?: string }).org_id;
+    if (targetOrg && targetOrg !== scope.org_id) {
+      const control = process.env.MYCEL_CONTROL_TOKEN ?? "";
+      const presented = c.req.header("x-mycel-control") ?? "";
+      if (!control || !safeEqual(presented, control)) {
+        return c.json({ error: "setting another org's plan requires the control token" }, 403);
+      }
+      if (!identity.getOrg(targetOrg)) return c.json({ error: "not found" }, 404);
+    }
     const b = (await c.req.json().catch(() => ({}))) as {
       plan?: string;
       status?: string;
@@ -690,13 +705,14 @@ export function createServer(store: Store): Hono {
     if (status && !["active", "trialing", "past_due", "cancelled"].includes(status)) {
       return c.json({ error: `unknown status: ${b.status}` }, 400);
     }
-    const org = identity.setPlan(scope.org_id, {
+    const orgId = targetOrg ?? scope.org_id;
+    const org = identity.setPlan(orgId, {
       plan,
       status,
       billing_ref: b.billing_ref,
       renews_at: b.renews_at,
     });
-    return org ? c.json({ org, limits: identity.limitsFor(scope.org_id) }) : c.json({ error: "not found" }, 404);
+    return org ? c.json({ org, limits: identity.limitsFor(orgId) }) : c.json({ error: "not found" }, 404);
   });
 
   /** Guard for the team-management routes. Returns an error response, or null when allowed. */
