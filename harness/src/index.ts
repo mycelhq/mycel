@@ -6,6 +6,7 @@ import { getIdentityStore, initIdentityStore } from "./identity";
 import { recoverTasks } from "./recovery";
 import { closeSecretStore, initSecretStore } from "./secrets";
 import { startScheduler } from "./scheduler";
+import { closeQueue, initQueue, startWorker } from "./queue";
 import { createServer } from "./server";
 import { createStore } from "./store";
 import { flushLogs } from "./tracing";
@@ -22,10 +23,19 @@ const cfg = loadConfig();
 const port = Number(process.env.PORT ?? 4000);
 
 const server = serve({ fetch: app.fetch, port });
+const queue = await initQueue();
+// Every API process is a worker too by default, so one container behaves exactly as before.
+// MYCEL_WORKER=0 gives an API-only replica; a worker-only container against the same database
+// scales execution independently of traffic — which is the point of having a queue at all.
+const worker = process.env.MYCEL_WORKER === "0" ? null : await startWorker(store);
+
 const scheduler = startScheduler(store, getDomainStore());
 console.log(
   `mycel-harness v0.1 on http://localhost:${port}  ` +
-    `[sandbox=${cfg.sandboxBackend} store=${backend} model=${cfg.model}]` +
+    `[sandbox=${cfg.sandboxBackend} store=${backend} model=${cfg.model} ` +
+    // Surfaced rather than silent: "inline" means this process runs every task it receives, which
+    // is correct on a laptop and a scaling ceiling in production.
+    `queue=${queue.mode}${worker ? "" : " worker=off"}]` +
     (recovered ? `  recovered ${recovered} interrupted task(s)` : ""),
 );
 if (API_KEY_GENERATED) {
@@ -52,6 +62,10 @@ async function shutdown(signal: string): Promise<void> {
   console.log(`\n[mycel] ${signal} — shutting down…`);
   server.close();
   scheduler.stop();
+  // Drain before exiting. graphile-worker stops taking jobs and waits for in-flight ones, which is
+  // the difference between a deploy being invisible and a deploy losing a run mid-approval.
+  if (worker) await worker.stop();
+  await closeQueue();
   try {
     await store.close?.();
     await closeDomainStore();

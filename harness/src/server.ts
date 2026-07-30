@@ -38,7 +38,7 @@ import { getDomainStore } from "./domain";
 import { emitEvent } from "./events";
 import { getIdentityStore } from "./identity";
 import { fireSchedule, firstRun } from "./scheduler";
-import { runTask } from "./orchestrator";
+import { enqueueTask } from "./queue";
 import { getGrant } from "./proxygrants";
 import { hasSecret, setSecret } from "./secrets";
 import type { Store } from "./store";
@@ -262,7 +262,7 @@ export function createServer(store: Store): Hono {
       };
       await store.createTask(task);
       taskId = task.id;
-      void runTask(store, task.id).catch((err) => console.error("[mycel] runTask error:", err));
+    await enqueueTask(store, task.id);
     }
 
     return c.json({ ...msg, task_id: taskId }, 201);
@@ -488,8 +488,9 @@ export function createServer(store: Store): Hono {
     };
     await store.createTask(task);
     if (idem) idempotency.set(idem, task.id);
-    // fire-and-forget in-process orchestration (a durable engine slots in here later)
-    void runTask(store, task.id).catch((err) => console.error("[mycel] runTask error:", err));
+    // Enqueued, not executed here. With Postgres configured a worker claims it, so replicas share
+    // load instead of following the load balancer; without one it runs inline exactly as before.
+    await enqueueTask(store, task.id);
     return c.json(task, 201);
   });
 
@@ -1551,7 +1552,7 @@ export function createServer(store: Store): Hono {
     };
     await store.createTask(task);
     await domain.updateCase(kase.id, {}, { at: iso, kind: "task_spawned", task_id: task.id, actor: "system" });
-    void runTask(store, task.id).catch((err) => console.error("[mycel] case runTask error:", err));
+    await enqueueTask(store, task.id);
     return c.json(task, 201);
   });
 
@@ -1941,7 +1942,7 @@ export function createServer(store: Store): Hono {
       updated_at: now,
     };
     await store.createTask(task);
-    void runTask(store, task.id).catch((err) => console.error("[mycel] runTask error:", err));
+    await enqueueTask(store, task.id);
     return c.json({ task_id: task.id, thread_id: thread.id, client_id: client.id }, 201);
   });
 
