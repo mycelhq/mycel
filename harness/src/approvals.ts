@@ -98,12 +98,42 @@ export async function awaitApproval(
   });
 
   const outcome = await new Promise<ApprovalOutcome>((resolve) => {
-    waiters.set(approval.approval_id, { taskId, resolve });
+    let settled = false;
+    const done = (o: ApprovalOutcome) => {
+      if (settled) return;
+      settled = true;
+      clearInterval(poll);
+      resolve(o);
+    };
+
+    waiters.set(approval.approval_id, { taskId, resolve: done });
     (byTask.get(taskId) ?? byTask.set(taskId, new Set()).get(taskId)!).add(approval.approval_id);
-    const ttl = setTimeout(
-      () => settle(approval.approval_id, { decision: "expired" }),
-      req.ttlMs ?? 5 * 60 * 1000,
-    );
+
+    // The cross-instance half.
+    //
+    // The waiter is an in-process promise, but the DECISION is a row. With more than one replica the
+    // founder's approve call can land on a different instance than the run that's blocked — so also
+    // watch the row, which is the source of truth either way.
+    //
+    // Without this, a second replica silently breaks the gate: the approval is recorded, the UI says
+    // approved, and the task hangs until its TTL expires. Silent, and worst at the exact moment the
+    // product's core promise is being exercised.
+    //
+    // 700ms: a human just clicked a button, so sub-second is indistinguishable from instant, and
+    // this is one indexed read per pending approval.
+    const poll = setInterval(async () => {
+      try {
+        const row = await store.getApproval(approval.approval_id);
+        if (row && row.status !== "pending") {
+          done({ decision: row.status as ApprovalDecision });
+        }
+      } catch {
+        /* a transient read failure must not resolve the gate — keep waiting */
+      }
+    }, 700);
+    (poll as unknown as { unref?: () => void }).unref?.();
+
+    const ttl = setTimeout(() => settle(approval.approval_id, { decision: "expired" }), req.ttlMs ?? 5 * 60 * 1000);
     (ttl as { unref?: () => void }).unref?.();
   });
   const decision = outcome.decision;

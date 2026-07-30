@@ -680,6 +680,35 @@ export function createServer(store: Store): Hono {
         wake = null;
         w?.();
       });
+
+      // The cross-instance half.
+      //
+      // The in-process bus only carries events emitted by THIS process. With more than one replica,
+      // a browser attached here can be watching a run executing over there — so also poll the
+      // durable log, which is the actual source of truth. Events carry monotonic ids and the drain
+      // below already skips anything at or below `lastSent`, so a duplicate from both paths costs a
+      // comparison and nothing else.
+      //
+      // This is what makes horizontal scaling a `desired_count` change rather than a Redis
+      // dependency. The interval is the worst-case added latency, and 400ms is imperceptible next to
+      // a model call.
+      const poll = setInterval(async () => {
+        try {
+          for (const ev of await store.eventsAfter(taskId, lastSent)) {
+            if (queue.length >= MAX_QUEUE) {
+              overflow = true;
+              break;
+            }
+            queue.push(ev);
+          }
+        } catch {
+          /* a transient read failure must not kill a live stream */
+        }
+        const w = wake;
+        wake = null;
+        w?.();
+      }, 400);
+      (poll as unknown as { unref?: () => void }).unref?.();
       stream.onAbort(() => {
         const w = wake;
         wake = null;
@@ -726,6 +755,7 @@ export function createServer(store: Store): Hono {
           }
         }
       } finally {
+        clearInterval(poll);
         unsub(); // always release the bus listener — no leak on client disconnect / error
       }
     });
