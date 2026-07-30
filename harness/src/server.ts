@@ -547,10 +547,19 @@ export function createServer(store: Store): Hono {
     const { conn, cfg } = r;
     const cc = composioConnConfig(conn);
     const body = (await c.req.json().catch(() => ({}))) as { auth_config_id?: string; callback_url?: string };
-    const authConfigId = body.auth_config_id ?? cc.auth_config_id;
-    if (!authConfigId) {
-      return c.json({ error: "auth_config_id required (create one per toolkit in Composio, then set it on the connection)" }, 400);
+    // Fall back to creating a Composio-managed auth config, the same way the catalogue does.
+    //
+    // Without this, a connection that came from a BLUEPRINT was a dead end: blueprints declare
+    // `{toolkit: "xero"}` with no auth config id (they can't — it's per-project), so the Connect
+    // button on the setup flow returned 400 and the founder had no way forward. Two routes to the
+    // same outcome, one of which worked.
+    if (!cc.toolkit && !body.auth_config_id) {
+      return c.json({ error: "connection has no config.toolkit" }, 400);
     }
+    const authConfigId =
+      body.auth_config_id ??
+      cc.auth_config_id ??
+      (await createManagedAuthConfig(cfg, { toolkit: cc.toolkit })).id;
     try {
       const out = await composioInitiate(cfg, {
         authConfigId,

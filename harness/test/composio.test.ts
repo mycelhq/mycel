@@ -356,3 +356,37 @@ test("composio: connecting for a client gives that client their own account", as
     await fake.close();
   }
 });
+
+test("composio: a blueprint-provisioned connection can still be connected in one click", async () => {
+  // Blueprints declare `{toolkit: "xero"}` and cannot carry an auth config id — those are
+  // per-project. Without a managed fallback the Connect button on the setup flow returned 400, so a
+  // connection that arrived via a blueprint was a dead end while the same app connected fine from
+  // the catalogue. Two routes to one outcome, one of them broken.
+  const fake = await fakeComposio();
+  process.env.COMPOSIO_API_KEY = API_KEY;
+  process.env.COMPOSIO_BASE_URL = fake.url;
+  try {
+    const { app } = makeApp();
+    const domain = getDomainStore();
+    const projectId = (await api(app, "me")).json.projects[0].id;
+    const conn = await domain.createConnection({
+      project_id: projectId,
+      kind: "composio",
+      name: "blueprint-xero",
+      owner: { kind: "founder", id: "founder" },
+      config: { toolkit: "notion" }, // no auth_config_id, exactly as a blueprint provisions it
+    });
+
+    const r = await api(app, `connections/${conn.id}/composio/connect`, { method: "POST" });
+    assert.equal(r.status, 201, r.text);
+    assert.equal(r.json.redirect_url, "https://auth.xero.test/authorize?x=1");
+
+    const stored = (await domain.getConnection(conn.id))!;
+    assert.ok(stored.config.auth_config_id, "an auth config was created and remembered");
+    assert.equal(stored.config.connected_account_id, "ca_test_123");
+  } finally {
+    delete process.env.COMPOSIO_API_KEY;
+    delete process.env.COMPOSIO_BASE_URL;
+    await fake.close();
+  }
+});

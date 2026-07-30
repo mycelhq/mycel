@@ -187,6 +187,13 @@ notice it.
 `GET /v1/wedges/:wedge/intake` returns coverage; the cloud app surfaces it as a Teach page and a
 dashboard nudge.
 
+### Onboarding — derived, not stored  ✅ shipped
+Cloud's first run sequences the four things that have to happen (pick a business, connect its apps,
+teach it what you know, go live). Every step is computed from kernel state rather than persisted as
+wizard progress, so there is nothing to resume and the checklist cannot drift from reality. Worth
+noting for anyone building a product on the kernel: the readiness checklist, intake coverage and
+schedule state are already the right primitives for this — no onboarding-specific API was needed.
+
 ### App catalogue — 250+ toolkits, one click  ✅ shipped
 `GET /v1/composio/toolkits` is the browsable catalogue, annotated with what this project already has
 connected, and `POST /v1/composio/toolkits/:slug/connect` does auth config + connection + authorise
