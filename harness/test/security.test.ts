@@ -1,5 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import { randomUUID } from "node:crypto";
 import { createServer as httpServer } from "node:http";
 import { seal, open_, setSecret, getSecret, initSecretStore, _resetKeyCache } from "../src/secrets";
 import { canonical, entryHash, verifyChain, initAuditStore, auditList, auditVerify, GENESIS, type AuditEntry } from "../src/audit";
@@ -67,14 +68,18 @@ test("vault: store round-trip through the public API", async () => {
 test("audit: the chain verifies, and any edit/delete/reorder is caught", async () => {
   await initAuditStore();
   const { audit } = await import("../src/audit");
+  // A project of its own. The audit store is append-only and, on a real Postgres, PERSISTS between
+  // runs — a shared project id meant this asserted `length === 5` against a table that had 20 rows
+  // by the third run. The chain property is what's under test, not how many entries exist.
+  const project = `audit-${randomUUID()}`;
   for (let i = 0; i < 5; i++) {
-    await audit({ project_id: "p1", actor: "member", action: "approval.granted", entity: "task", entity_id: `t${i}`, detail: { i } });
+    await audit({ project_id: project, actor: "member", action: "approval.granted", entity: "task", entity_id: `t${i}`, detail: { i } });
   }
-  const entries = await auditList("p1");
+  const entries = await auditList(project);
   assert.equal(entries.length, 5);
   assert.equal(entries[0].prev_hash, GENESIS, "the chain starts at genesis");
   assert.equal(entries[1].prev_hash, entries[0].hash, "each entry links to the previous");
-  assert.equal((await auditVerify("p1")).ok, true, "an untouched chain verifies");
+  assert.equal((await auditVerify(project)).ok, true, "an untouched chain verifies");
 
   // EDIT a field — the recomputed hash must not match
   const edited = entries.map((e) => ({ ...e }));

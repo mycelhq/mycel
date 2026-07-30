@@ -35,3 +35,16 @@ export async function waitTask(app: ReturnType<typeof createServer>, id: string,
   }
   throw new Error(`task ${id} did not finish within ${timeoutMs}ms`);
 }
+
+/**
+ * A fresh tenant id for a test that writes to an append-only or globally-listed store.
+ *
+ * The audit log, the approvals list and the task list are all global reads. Against the in-memory
+ * store each test file gets a clean process, so absolute counts pass; against a real Postgres they
+ * accumulate across runs and the same assertion fails the second time. That has now cost three
+ * debugging detours, so: scope by a unique id, or filter by something the test created. Never assert
+ * a count over a shared collection.
+ */
+export function freshProjectId(prefix = "t"): string {
+  return `${prefix}-${randomUUID()}`;
+}

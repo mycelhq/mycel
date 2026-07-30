@@ -115,7 +115,9 @@ test("end to end: an in-envelope action executes with no human, and is queued fo
   assert.equal((await store.getTask("pt1"))!.status, "running", "the task never suspended");
 
   // …but it IS recorded, with the reason, so the founder can batch-review what autonomy did
-  const auto = await store.listApprovals("auto_approved");
+  // Scoped to THIS task, not the whole store. `listApprovals` is global, so an absolute count here
+  // only held while this was the one test in the file that auto-approved anything.
+  const auto = (await store.listApprovals("auto_approved")).filter((a) => a.task_id === "pt1");
   assert.equal(auto.length, 1);
   assert.equal(auto[0].action, "email:send_reminder");
   assert.match(auto[0].policy_reason!, /auto-approved/);
