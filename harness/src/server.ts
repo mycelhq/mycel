@@ -11,7 +11,7 @@ import { Hono } from "hono";
 import { streamSSE } from "hono/streaming";
 import { audit, auditList, auditVerify } from "./audit";
 import { buildChecklist, listBlueprints, loadBlueprint, provision } from "./blueprints";
-import { requireApiKey, safeEqual } from "./auth";
+import { bearer, requireApiKey, safeEqual } from "./auth";
 import { awaitApproval, failWaitersForTask, resolveApproval } from "./approvals";
 import { actionPreview, executeAction, executeRead } from "./actions";
 import { getActionGrant } from "./actiongrants";
@@ -55,6 +55,13 @@ import {
   slugToolkit,
 } from "./composio";
 import { buildCoverage, gapId, isGapId, recordAnswer } from "./intake";
+import {
+  exchangePortalLink,
+  mintPortalLink,
+  resolveClientSession,
+  revokeClientSessions,
+  type ClientScope,
+} from "./portal";
 import { langfuseState, traceLlmCall } from "./tracing";
 import { loadWedge, wedgesDir } from "./wedge";
 import { runWorkflow } from "./workflows";
@@ -141,6 +148,100 @@ export function createServer(store: Store): Hono {
   app.get("/health", (c) => c.json({ ok: true, service: "mycel-harness", version: "v0.1" }));
 
   // Member login (portal). No auth — it IS the auth. Returns a session token the portal forwards.
+  // ── Client portal ──
+  // A separate credential plane. `/v1/portal/*` accepts ONLY a client session, and a client session
+  // is not resolvable anywhere else — so this is the one place in the kernel that answers to someone
+  // other than the founder, and it can only ever answer about them.
+  app.post("/v1/portal/session", async (c) => {
+    const b = (await c.req.json().catch(() => ({}))) as { token?: string };
+    const out = exchangePortalLink(b.token ?? "");
+    // One message for expired, used and forged alike: distinguishing them tells someone holding a
+    // stale link whether it was ever real.
+    if (!out) return c.json({ error: "that link is invalid or has expired" }, 401);
+    const client = await domain.getClient(out.scope.client_id);
+    return c.json({
+      token: out.token,
+      expires_at: out.expires_at,
+      client: client ? { id: client.id, display_name: client.display_name } : undefined,
+    });
+  });
+
+  app.use("/v1/portal/*", async (c, next) => {
+    if (c.req.path === "/v1/portal/session") return next();
+    const scope = resolveClientSession(bearer(c));
+    if (!scope) return c.json({ error: "unauthorized" }, 401);
+    c.set("client", scope);
+    await next();
+  });
+
+  /** The scope is the only source of client identity here — never a path or body parameter. */
+  const client = (c: import("hono").Context) => c.get("client") as ClientScope;
+
+  app.get("/v1/portal/me", async (c) => {
+    const sc = client(c);
+    const row = await domain.getClient(sc.client_id);
+    if (!row || row.project_id !== sc.project_id) return c.json({ error: "not found" }, 404);
+    return c.json({ id: row.id, display_name: row.display_name, since: row.created_at });
+  });
+
+  app.get("/v1/portal/threads", async (c) => {
+    const sc = client(c);
+    const threads = (await domain.listThreadsForClient(sc.client_id)).filter(
+      // The client_id lookup should be sufficient; the project check is belt and braces against a
+      // future store that indexes differently.
+      (t) => !t.project_id || t.project_id === sc.project_id,
+    );
+    return c.json(threads);
+  });
+
+  app.get("/v1/portal/threads/:id", async (c) => {
+    const sc = client(c);
+    const thread = await domain.getThread(c.req.param("id") ?? "");
+    // Ownership is checked against the SESSION, not against anything the caller sent. A 404 rather
+    // than a 403, so probing ids can't confirm that someone else's thread exists.
+    if (!thread || thread.client_id !== sc.client_id) return c.json({ error: "not found" }, 404);
+    const messages = await domain.listMessages(thread.id);
+    return c.json({ thread, messages });
+  });
+
+  app.post("/v1/portal/threads/:id/messages", async (c) => {
+    const sc = client(c);
+    const thread = await domain.getThread(c.req.param("id") ?? "");
+    if (!thread || thread.client_id !== sc.client_id) return c.json({ error: "not found" }, 404);
+    const b = (await c.req.json().catch(() => ({}))) as { body?: string };
+    const body = (b.body ?? "").trim();
+    if (!body) return c.json({ error: "body is required" }, 400);
+    if (body.length > 10_000) return c.json({ error: "message is too long" }, 413);
+    const msg = await domain.addMessage({
+      thread_id: thread.id,
+      direction: "inbound",
+      // Attributed to the client from the session — a client cannot post as the agent or as another
+      // customer by setting a field.
+      author: sc.client_id,
+      body,
+      status: "sent",
+    });
+    return c.json(msg, 201);
+  });
+
+  app.get("/v1/portal/cases", async (c) => {
+    const sc = client(c);
+    const cases = await domain.listCases({ client_id: sc.client_id });
+    // Only what a customer should see: where their engagement is up to, not the agent's internals.
+    return c.json(
+      cases
+        .filter((x) => !x.project_id || x.project_id === sc.project_id)
+        .map((x) => ({
+          id: x.id,
+          title: x.title,
+          stage: x.stage,
+          status: x.status,
+          due_at: x.due_at,
+          updated_at: x.updated_at,
+        })),
+    );
+  });
+
   app.post("/v1/auth/signup", async (c) => {
     const b = (await c.req.json().catch(() => ({}))) as { email?: string; password?: string; org_name?: string };
     const email = (b.email ?? "").trim().toLowerCase();
@@ -885,6 +986,30 @@ export function createServer(store: Store): Hono {
     if (!client || !inScope(accessible(c), client.project_id)) return c.json({ error: "not found" }, 404);
     const threads = await domain.listThreadsForClient(client.id);
     return c.json({ ...client, threads });
+  });
+
+  /** Mint a portal link for a client. Returned once — only the hash is stored. */
+  app.post("/v1/clients/:id/portal-link", async (c) => {
+    const row = await domain.getClient(c.req.param("id") ?? "");
+    if (!row || !inScope(accessible(c), row.project_id)) return c.json({ error: "not found" }, 404);
+    const out = mintPortalLink({ project_id: row.project_id ?? "", client_id: row.id });
+    await audit({
+      project_id: row.project_id ?? "",
+      actor: (c.get("scope").member_id ?? "system") as string,
+      action: "client.portal_link",
+      entity: "client",
+      entity_id: row.id,
+      // The token itself is never recorded — the audit log must not become a way to get in.
+      detail: { client: row.display_name ?? row.id, expires_at: out.expires_at },
+    });
+    return c.json(out, 201);
+  });
+
+  /** Revoke every session AND any unexchanged link — otherwise a live key stays in their inbox. */
+  app.post("/v1/clients/:id/portal-revoke", async (c) => {
+    const row = await domain.getClient(c.req.param("id") ?? "");
+    if (!row || !inScope(accessible(c), row.project_id)) return c.json({ error: "not found" }, 404);
+    return c.json({ ok: true, revoked: revokeClientSessions(row.id) });
   });
 
   app.get("/v1/threads/:id", async (c) => {

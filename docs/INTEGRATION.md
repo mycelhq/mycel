@@ -36,6 +36,28 @@ email. Matching is on email, so an account reached by password and later by Goog
 `reset/request` returns the token for *you* to email; the kernel stores only its hash and never sends
 mail itself.
 
+### Client portal — a second credential plane
+
+```
+POST /v1/clients/:id/portal-link     founder → { token, expires_at }   shown ONCE
+POST /v1/clients/:id/portal-revoke   founder → kills sessions AND unopened links
+POST /v1/portal/session              public  → exchange the link for a client session
+GET  /v1/portal/me · threads · threads/:id · cases     CLIENT SESSION ONLY
+POST /v1/portal/threads/:id/messages                   the client replies
+```
+
+`/v1/portal/*` accepts **only** a client session, and a client session resolves nowhere else. That's
+stronger than filtering: presenting a client token to a founder route fails as an unknown credential
+rather than as an authorised request that happens to return nothing — a filter you forget to apply
+leaks, a credential the route can't parse can't. Both directions are tested.
+
+Ownership is always taken from the session, never from a path or body parameter. Another client's
+thread is **404, not 403**, so probing ids can't confirm what exists. A reply's author and direction
+are derived from the session too, so a customer can't post a message that appears to come from you.
+
+Links are single-use and hashed at rest; revoking kills live sessions *and* any link still sitting
+unopened in an inbox, because otherwise "revoke" leaves a working key in their email.
+
 ## What the kernel exposes (`/v1`)
 
 Server-to-server. Everything a product needs is here:

@@ -96,6 +96,17 @@ Batch upsert (≤1000/call) so a 500-transaction ingest is one round trip. This 
 bookkeeping re-run surfaced: *"which receipts are still missing?"* is now
 `?collection=receipts&where={"status":"missing"}` instead of loading a blob and filtering in the model.
 
+### Client portal  ✅ shipped
+The kernel now answers to someone other than the founder. A client gets a magic link (single-use,
+hashed, 7 days), exchanges it for a 30-day session, and can see their own threads and engagements and
+reply — with no password to invent for a portal they'll open four times a year.
+
+The design constraint: a client session must be USELESS anywhere else, not merely filtered. Client
+tokens live in a registry `resolveAuth` never consults, so a client token on a founder route fails as
+an unrecognised credential. Tested in both directions.
+
+This is also the identity primitive the generated business app will need, which is why it came first.
+
 ### 7. External-party requests
 Ask the *client or candidate* for something, wait, remind, escalate. Distinct from founder approval
 (which is about permission, not information).

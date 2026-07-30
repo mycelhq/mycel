@@ -23,7 +23,9 @@ export type AuditAction =
   | "policy.envelope_used"
   | "project.created"
   /** An external account was linked through a broker (Composio OAuth). Never records the token. */
-  | "connection.linked";
+  | "connection.linked"
+  /** A portal link was minted for a client. Never records the token itself. */
+  | "client.portal_link";
 
 export interface AuditEntry {
   seq: number;

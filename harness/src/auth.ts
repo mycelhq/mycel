@@ -11,9 +11,18 @@ import { type AuthScope, getIdentityStore } from "./identity";
 
 declare module "hono" {
   interface ContextVariableMap {
+    /** The founder plane: a product API key or a member session. */
     scope: AuthScope;
+    /**
+     * The client plane, set only on `/v1/portal/*`. Kept as a SEPARATE variable rather than folded
+     * into `scope`, so a founder route can never accidentally treat a customer as an operator —
+     * `c.get("scope")` is simply undefined for a client, and the route fails closed.
+     */
+    client: import("./portal").ClientScope;
   }
 }
+
+export { bearer };
 
 export function safeEqual(a: string, b: string): boolean {
   const ba = Buffer.from(a);
