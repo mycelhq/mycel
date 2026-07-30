@@ -1226,6 +1226,14 @@ export function createServer(store: Store): Hono {
             await stream.writeSSE({ id: String(ev.id), event: ev.type, data: JSON.stringify(ev) });
             lastSent = ev.id;
           }
+          // Say the run is over before hanging up.
+          //
+          // Not every terminal task has a `task.finished` in its log — one cancelled before its
+          // execution loop started never emits one. Closing silently is indistinguishable from a
+          // dropped connection, so `EventSource` reconnects, gets the same silent close, and
+          // retries forever against a run that will never say anything again. This frame is the
+          // difference between a client that settles and one that spins.
+          await stream.writeSSE({ event: "closed", data: JSON.stringify({ status: t.status }) });
           return;
         }
 
@@ -1234,7 +1242,19 @@ export function createServer(store: Store): Hono {
         while (!done && !stream.aborted) {
           if (queue.length === 0 && !overflow) await new Promise<void>((r) => (wake = r));
           if (overflow) {
-            await stream.writeSSE({ event: "error", data: JSON.stringify({ error: "stream overflow — reconnect with Last-Event-ID" }) });
+            // Deliberately carries NO `id:`. The browser keeps the last id it actually received
+            // data for, so its automatic reconnect resumes from the last real event rather than
+            // skipping the burst that caused the overflow. That is load-bearing — stamping an id
+            // here would silently drop everything the client missed.
+            //
+            // Sent as `overflow` rather than `error`: EventSource delivers transport failures on
+            // the "error" handler too, so a shared name forces every client to tell them apart by
+            // whether the frame happens to have `.data`. Everyone gets that wrong once.
+            const frame = JSON.stringify({ error: "stream overflow — reconnect with Last-Event-ID" });
+            await stream.writeSSE({ event: "overflow", data: frame });
+            // Also under the old name, for one release, so a client written against it keeps
+            // working while it moves over.
+            await stream.writeSSE({ event: "error", data: frame });
             return;
           }
           while (queue.length) {

@@ -49,3 +49,27 @@ test("unknown task id is 404", async () => {
   const { app } = makeApp();
   assert.equal((await api(app, "tasks/does-not-exist")).status, 404);
 });
+
+test("SSE tells a reconnecting client the run is over, even with no task.finished", async () => {
+  // Not every terminal task has a `task.finished` in its log — one cancelled before its execution
+  // loop starts never emits one. Closing silently is indistinguishable from a dropped connection,
+  // so EventSource reconnects, gets the same silent close, and retries forever against a run that
+  // will never say anything again.
+  const { app, store } = makeApp();
+  const projectId = (await api(app, "me")).json.projects[0].id;
+  const now = new Date().toISOString();
+  await store.createTask({
+    id: "silent-terminal", project_id: projectId, wedge: "books-keeper", task_type: "daily_sync",
+    actor: { kind: "system", id: "test" }, input: {}, constraints: {}, tools: [],
+    status: "cancelled", cost_usd: 0, created_at: now, updated_at: now,
+  } as never);
+
+  const res = await app.request(`/v1/tasks/silent-terminal/events`, {
+    headers: { authorization: `Bearer ${KEY}`, "Last-Event-ID": "0" },
+  });
+  const body = await res.text();
+  const types = [...body.matchAll(/event:\s*([\w.]+)/g)].map((m) => m[1]);
+  assert.ok(!types.includes("task.finished"), "this task never emitted one");
+  assert.equal(types.at(-1), "closed", "so the stream says so explicitly instead of just hanging up");
+  assert.match(body, /"status":"cancelled"/, "and says which terminal state it reached");
+});
