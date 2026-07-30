@@ -28,7 +28,7 @@ work actually gets done.
 
 ```bash
 # 1. run the kernel
-curl -fsSL https://mycel.dev/init | bash        # or: git clone https://github.com/mycelhq/mycel && cd mycel && npm i && npm run dev
+curl -fsSL https://mycel.dev/init | bash        # or: git clone https://github.com/mycelhq/mycel && cd mycel/kernel && npm i && npm run dev
 # → mycel-harness on http://localhost:4000  (prints an API key + owner login on first boot)
 
 # 2. drive it (server-to-server; the key stays server-side)
