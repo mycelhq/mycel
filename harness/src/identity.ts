@@ -32,16 +32,30 @@ export interface Project {
   wedges: string[];
   created_at: string;
 }
+export type AuthProvider = "password" | "google" | "github";
+
 export interface Member {
   id: string;
   org_id: string;
   email: string;
   role: Role;
   created_at: string;
+  /**
+   * How they signed in last. Shown on the sign-in screen so someone who used Google three months ago
+   * isn't left guessing which of five buttons was theirs — the single biggest cause of accidental
+   * duplicate accounts.
+   */
+  last_provider?: AuthProvider;
+  /** Providers this member has ever used. An account reached by two routes is still one account. */
+  providers?: AuthProvider[];
 }
 interface StoredMember extends Member {
+  /** Empty for accounts that have only ever used OAuth — there is no password to verify. */
   salt: string;
   hash: string;
+  /** Single-use password reset. Hashed, because a leaked database shouldn't hand out logins. */
+  reset_hash?: string;
+  reset_expires?: number;
 }
 export interface Session {
   token: string;
@@ -132,9 +146,14 @@ class IdentityStore {
     return m ? { kind: "key", org_id: m.org_id, project_id: m.project_id } : undefined;
   }
 
-  login(email: string, pw: string): { session: Session; member: Member; projects: Project[] } | undefined {
-    const member = [...this.members.values()].find((m) => m.email === email.toLowerCase());
-    if (!member || !verifyPassword(pw, member.salt, member.hash)) return undefined;
+  findMemberByEmail(email: string): StoredMember | undefined {
+    const wanted = email.trim().toLowerCase();
+    return [...this.members.values()].find((m) => m.email === wanted);
+  }
+
+  private issue(member: StoredMember, provider: AuthProvider) {
+    member.last_provider = provider;
+    member.providers = [...new Set([...(member.providers ?? []), provider])];
     const session: Session = {
       token: `msess_${randomBytes(24).toString("base64url")}`,
       member_id: member.id,
@@ -142,7 +161,95 @@ class IdentityStore {
       expires_at: Date.now() + SESSION_TTL_MS,
     };
     this.sessions.set(session.token, session);
+    if (this.pg) void this.pg.upsertMember(member).catch(() => {});
     return { session, member: this.publicMember(member), projects: this.listProjects(member.org_id) };
+  }
+
+  login(email: string, pw: string): { session: Session; member: Member; projects: Project[] } | undefined {
+    const member = this.findMemberByEmail(email);
+    // `!member.hash` means an OAuth-only account. Rejecting here rather than letting an empty
+    // password verify against an empty hash is the difference between a guard and a hole.
+    if (!member || !member.hash || !verifyPassword(pw, member.salt, member.hash)) return undefined;
+    return this.issue(member, "password");
+  }
+
+  /**
+   * Sign in (or up) someone whose identity a provider has already verified.
+   *
+   * The kernel never runs the OAuth dance itself — the product does, because that's where the
+   * redirect URIs and provider secrets live, and Auth.js already handles the provider zoo. The
+   * product then ASSERTS the verified email here, server-to-server with its API key.
+   *
+   * Which makes the caller's authentication the whole security boundary: this endpoint must never be
+   * reachable from a browser, or anyone could claim any email. It is deliberately NOT in the
+   * middleware's unauthenticated allowlist.
+   *
+   * Matching on email means an account reached by password and later by Google is still one account,
+   * rather than a silent duplicate the founder can't reconcile.
+   */
+  federated(args: {
+    email: string;
+    provider: AuthProvider;
+    orgName?: string;
+  }): { session: Session; member: Member; projects: Project[]; created: boolean } {
+    const existing = this.findMemberByEmail(args.email);
+    if (existing) return { ...this.issue(existing, args.provider), created: false };
+    const { org } = this.createOrgWithOwner(
+      args.orgName ?? args.email.split("@")[1] ?? "my business",
+      args.email,
+      // No password: this account has only ever been reached through a provider. `login()` refuses
+      // an empty hash, so this cannot become a password-less way in.
+      "",
+    );
+    const member = this.findMemberByEmail(args.email)!;
+    void org;
+    return { ...this.issue(member, args.provider), created: true };
+  }
+
+  /** Register a brand-new org with its own owner. Returns undefined if the email is taken. */
+  signup(args: {
+    email: string;
+    password: string;
+    orgName?: string;
+  }): { session: Session; member: Member; projects: Project[] } | undefined {
+    if (this.findMemberByEmail(args.email)) return undefined;
+    this.createOrgWithOwner(args.orgName ?? args.email.split("@")[1] ?? "my business", args.email, args.password);
+    return this.issue(this.findMemberByEmail(args.email)!, "password");
+  }
+
+  /**
+   * Begin a password reset. Returns the token for the product to email.
+   *
+   * Only the HASH is stored, so a stolen database yields no usable reset links. Returns undefined for
+   * an unknown email; the caller must still respond identically either way, or the endpoint becomes
+   * an account-enumeration oracle.
+   */
+  requestReset(email: string, ttlMs = 30 * 60_000): { token: string; email: string } | undefined {
+    const member = this.findMemberByEmail(email);
+    if (!member) return undefined;
+    const token = `mrst_${randomBytes(24).toString("base64url")}`;
+    member.reset_hash = createHash("sha256").update(token).digest("hex");
+    member.reset_expires = Date.now() + ttlMs;
+    if (this.pg) void this.pg.upsertMember(member).catch(() => {});
+    return { token, email: member.email };
+  }
+
+  /** Complete a reset. Single-use and time-bound; consuming it also signs them in. */
+  confirmReset(
+    token: string,
+    password: string,
+  ): { session: Session; member: Member; projects: Project[] } | undefined {
+    const digest = createHash("sha256").update(token).digest("hex");
+    const member = [...this.members.values()].find((m) => m.reset_hash === digest);
+    if (!member || !member.reset_expires || member.reset_expires < Date.now()) return undefined;
+    const { salt, hash } = hashPassword(password);
+    member.salt = salt;
+    member.hash = hash;
+    // Cleared immediately: a reset link that works twice is a reset link an attacker can reuse from
+    // a mailbox they briefly saw.
+    member.reset_hash = undefined;
+    member.reset_expires = undefined;
+    return this.issue(member, "password");
   }
 
   resolveSession(token: string): AuthScope | undefined {
@@ -227,7 +334,10 @@ class IdentityStore {
     const org: Org = { id: randomUUID(), name: orgName, created_at: new Date().toISOString() };
     this.orgs.set(org.id, org);
     const { project, apiKey } = this.createProject(org.id, "default");
-    const { salt, hash } = hashPassword(password);
+    // An empty password means "no password login", NOT "the password is the empty string".
+    // `hashPassword("")` returns a perfectly valid 64-byte hash, so without this an OAuth-only
+    // account created with `""` could be signed into by anyone submitting a blank password.
+    const { salt, hash } = password ? hashPassword(password) : { salt: "", hash: "" };
     const member: StoredMember = {
       id: randomUUID(), org_id: org.id, email: email.toLowerCase(), role: "owner",
       created_at: new Date().toISOString(), salt, hash,
@@ -239,9 +349,29 @@ class IdentityStore {
     }
     return { org, project, apiKey };
   }
+  /** Which provider this email used last — for the sign-in screen, before anyone is authenticated. */
+  lastProviderFor(email: string): AuthProvider | undefined {
+    return this.findMemberByEmail(email)?.last_provider;
+  }
+
+  /**
+   * The member as the API may return it.
+   *
+   * Allowlist, not denylist. This used to spread everything except salt/hash, so the reset-token
+   * hash and its expiry — added later — would have been served from /v1/me to anyone with a session.
+   * A subtractive filter silently leaks every field someone adds afterwards; naming the public ones
+   * fails safe instead.
+   */
   private publicMember(m: StoredMember): Member {
-    const { salt: _s, hash: _h, ...pub } = m;
-    return pub;
+    return {
+      id: m.id,
+      org_id: m.org_id,
+      email: m.email,
+      role: m.role,
+      created_at: m.created_at,
+      last_provider: m.last_provider,
+      providers: m.providers,
+    };
   }
 }
 

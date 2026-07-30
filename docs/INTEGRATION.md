@@ -17,6 +17,25 @@ opaque nonces), so the sandbox never needs the founder key.
 see — right for a fleet view, wrong for a per-business screen (two customers' work in one timeline).
 A project outside the caller's scope yields nothing; it never widens access.
 
+### Auth
+
+```
+POST /v1/auth/signup          public   → { token, member, projects }
+POST /v1/auth/login           public   → { token, member, projects }
+POST /v1/auth/hint            public   → { provider }  which provider this email used last
+POST /v1/auth/reset/request   public   → { ok, token? }  ALWAYS ok — never reveals who has an account
+POST /v1/auth/reset/confirm   public   → { token, … }  single-use, 30 min, signs you in
+POST /v1/auth/federated       KEY ONLY → { token, created }
+```
+
+`federated` is how OAuth works: your product runs the provider dance (that's where the redirect URIs
+and secrets live) and then asserts the verified email here, server-to-server. **It requires the
+product API key and refuses a member session** — if a browser could call it, anyone could claim any
+email. Matching is on email, so an account reached by password and later by Google stays one account.
+
+`reset/request` returns the token for *you* to email; the kernel stores only its hash and never sends
+mail itself.
+
 ## What the kernel exposes (`/v1`)
 
 Server-to-server. Everything a product needs is here:

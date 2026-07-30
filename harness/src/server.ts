@@ -141,6 +141,47 @@ export function createServer(store: Store): Hono {
   app.get("/health", (c) => c.json({ ok: true, service: "mycel-harness", version: "v0.1" }));
 
   // Member login (portal). No auth — it IS the auth. Returns a session token the portal forwards.
+  app.post("/v1/auth/signup", async (c) => {
+    const b = (await c.req.json().catch(() => ({}))) as { email?: string; password?: string; org_name?: string };
+    const email = (b.email ?? "").trim().toLowerCase();
+    const password = b.password ?? "";
+    if (!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(email)) return c.json({ error: "a valid email is required" }, 400);
+    if (password.length < 10) return c.json({ error: "password must be at least 10 characters" }, 400);
+    const out = getIdentityStore().signup({ email, password, orgName: b.org_name });
+    // Deliberately explicit: someone signing up with an email that exists needs to be told, unlike
+    // the reset flow where the same honesty would be an enumeration oracle for a stranger.
+    if (!out) return c.json({ error: "that email already has an account — sign in instead" }, 409);
+    return c.json({ token: out.session.token, member: out.member, projects: out.projects }, 201);
+  });
+
+  /**
+   * Which provider this email used last, so the sign-in screen can point at the right button.
+   *
+   * Answers identically for unknown emails — `{ provider: null }` — because a true/false answer here
+   * would let anyone check whether a given person has an account.
+   */
+  app.post("/v1/auth/hint", async (c) => {
+    const b = (await c.req.json().catch(() => ({}))) as { email?: string };
+    const provider = getIdentityStore().lastProviderFor((b.email ?? "").trim().toLowerCase());
+    return c.json({ provider: provider ?? null });
+  });
+
+  app.post("/v1/auth/reset/request", async (c) => {
+    const b = (await c.req.json().catch(() => ({}))) as { email?: string };
+    const out = getIdentityStore().requestReset((b.email ?? "").trim().toLowerCase());
+    // ALWAYS ok:true. Saying "no such account" would turn this into a way to enumerate customers,
+    // and the product sends the mail only when a token comes back.
+    return c.json({ ok: true, ...(out ? { token: out.token, email: out.email } : {}) });
+  });
+
+  app.post("/v1/auth/reset/confirm", async (c) => {
+    const b = (await c.req.json().catch(() => ({}))) as { token?: string; password?: string };
+    if ((b.password ?? "").length < 10) return c.json({ error: "password must be at least 10 characters" }, 400);
+    const out = getIdentityStore().confirmReset(b.token ?? "", b.password ?? "");
+    if (!out) return c.json({ error: "that reset link is invalid or has expired" }, 400);
+    return c.json({ token: out.session.token, member: out.member, projects: out.projects });
+  });
+
   app.post("/v1/auth/login", async (c) => {
     const b = (await c.req.json().catch(() => ({}))) as { email?: string; password?: string };
     if (!b.email || !b.password) return c.json({ error: "email and password required" }, 400);
@@ -151,8 +192,45 @@ export function createServer(store: Store): Hono {
 
   // Everything under /v1 EXCEPT /v1/internal/* and the login endpoint requires a credential.
   app.use("/v1/*", async (c, next) => {
-    if (c.req.path.startsWith("/v1/internal/") || c.req.path === "/v1/auth/login") return next();
+    // Public by necessity — these are how someone without a session gets one. `/v1/auth/federated`
+    // is deliberately absent: it asserts a verified identity, so it must stay behind the product key.
+    const PUBLIC_AUTH = new Set([
+      "/v1/auth/login",
+      "/v1/auth/signup",
+      "/v1/auth/hint",
+      "/v1/auth/reset/request",
+      "/v1/auth/reset/confirm",
+    ]);
+    if (c.req.path.startsWith("/v1/internal/") || PUBLIC_AUTH.has(c.req.path)) return next();
     return requireApiKey(c, next);
+  });
+
+  /**
+   * Federated sign-in. The PRODUCT asserts an email a provider already verified.
+   *
+   * Note where this sits: below the auth middleware, so it needs the product API key. That is the
+   * entire security boundary — if a browser could call it, anyone could claim any email. The kernel
+   * doesn't run OAuth itself because redirect URIs and provider secrets belong to the product, and
+   * Auth.js already handles the provider zoo far better than we would.
+   *
+   * Registered AFTER the auth middleware, deliberately. Hono applies middleware in registration
+   * order, so a route declared above `app.use("/v1/*")` never gets a scope — which is exactly what
+   * happened first time, and made this look permanently broken rather than permanently open. The
+   * public auth routes sit above it precisely because they need no scope.
+   */
+  app.post("/v1/auth/federated", async (c) => {
+    if (c.get("scope")?.kind !== "key") {
+      return c.json({ error: "federated sign-in requires the product API key" }, 403);
+    }
+    const b = (await c.req.json().catch(() => ({}))) as { email?: string; provider?: string; org_name?: string };
+    const email = (b.email ?? "").trim().toLowerCase();
+    const provider = b.provider === "google" || b.provider === "github" ? b.provider : undefined;
+    if (!email || !provider) return c.json({ error: "email and a supported provider are required" }, 400);
+    const out = getIdentityStore().federated({ email, provider, orgName: b.org_name });
+    return c.json(
+      { token: out.session.token, member: out.member, projects: out.projects, created: out.created },
+      out.created ? 201 : 200,
+    );
   });
 
   // Who am I — the portal renders itself from this (member, role, projects).
