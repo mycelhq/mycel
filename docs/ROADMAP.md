@@ -107,6 +107,35 @@ an unrecognised credential. Tested in both directions.
 
 This is also the identity primitive the generated business app will need, which is why it came first.
 
+### 0. What a second stress test found (2026-07-30)
+
+Five services that AI is *creating* rather than accelerating — AI Act conformity, security
+questionnaire response, generative engine optimisation, agent eval ops, prior authorisation — were
+modelled against the kernel. See `internal/WEDGE-STRESS-TEST-2027.md`.
+
+It confirmed the priority order below is wrong: **items 7 and 8 block three of the five** and are
+listed last. "Ask a third party for a document, wait, chase, receive a file" is the shape of most
+professional services, not an edge case.
+
+It also found three gaps not previously written down, and one hard boundary:
+
+- **No fan-out/fan-in.** A task cannot spawn N children and aggregate. Blocks eval ops entirely, and
+  the bookkeeping wedge already wants it — chasing 40 receipts runs serially inside one task today.
+  Highest-leverage missing primitive, and the Postgres queue makes it tractable now.
+- **Knowledge has no client scope.** `KnowledgeItem` is `{project_id, wedge, name}`. For any service
+  where the evidence base belongs to the customer, grounding one client's answer in another's
+  material isn't a quality bug, it's a confidentiality breach.
+- **Records are point-in-time, not a time series.** Unique on `(project, wedge, collection, key)` with
+  replace-on-upsert — right for "the current state of invoice #42", wrong for any service that sells
+  a measurement trending over time.
+- **No data classification anywhere.** Nothing distinguishes PHI/PII from a shipping address, so no
+  redaction, residency, or no-training assertion is possible. Regulated verticals are closed until
+  that's a deliberate project rather than a gap.
+
+Also: `geo-monitor` was built as a second non-financial wedge to check the primitives aren't
+bookkeeping-shaped. Intake, cases, schedules, policy envelopes and deterministic workflows all
+carried over unchanged.
+
 ### 7. External-party requests
 Ask the *client or candidate* for something, wait, remind, escalate. Distinct from founder approval
 (which is about permission, not information).

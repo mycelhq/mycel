@@ -197,3 +197,47 @@ test("intake: a gap can be dismissed when it isn't worth answering", async () =>
     "a dismissed question leaves the queue instead of nagging forever",
   );
 });
+
+test("geo-monitor: the second wedge proves intake and workflows aren't bookkeeping-shaped", async () => {
+  // The catalogue was two blueprints, both financial. If the primitives only fit accounting they
+  // aren't primitives — so this loads a wedge from a service that didn't exist in 2024 and checks
+  // the same machinery holds.
+  const { app } = makeApp();
+
+  const cov = await api(app, "wedges/geo-monitor/intake");
+  assert.equal(cov.status, 200, "the wedge loads and declares what it needs to know");
+  assert.equal(cov.json.total, 5);
+  assert.ok(
+    cov.json.questions.every((q: { example?: string }) => q.example),
+    "every question carries a real example — the thing that makes founders answer well",
+  );
+
+  // The most important question ranks first. For GEO that's the query set: get it wrong and every
+  // number afterwards measures something nobody is buying.
+  assert.equal(cov.json.questions[0].id, "queries");
+
+  const answered = await api(app, "wedges/geo-monitor/intake/queries", {
+    method: "POST",
+    body: JSON.stringify({ answer: '"best payroll for UK startups", "alternatives to Gusto"' }),
+  });
+  assert.equal(answered.status, 201);
+  assert.equal((await api(app, "wedges/geo-monitor/intake")).json.answered, 1);
+
+  // And the deterministic half runs. Share of voice is the number on the invoice, so it's computed
+  // rather than narrated — a model asked to summarise rounds toward the story it's telling.
+  const { default: shareOfVoice } = await import("../../wedges/geo-monitor/workflows/share_of_voice.mjs");
+  const sov = await shareOfVoice({
+    client: "Acme",
+    results: [
+      { query: "best payroll uk", cited: ["Acme Ltd", "Gusto"] },
+      { query: "gusto alternatives", cited: ["Gusto", "Deel"] },
+      { query: "eu contractors", cited: ["Deel"] },
+    ],
+  });
+  assert.equal(sov.share_of_voice_pct, 33.3);
+  // Matched loosely on purpose: models write "Acme", "Acme Ltd" and "Acme's" for one company, and an
+  // exact match would report zero visibility for a client who is in fact being cited.
+  assert.equal(sov.mentions, 1);
+  // The actionable half — who wins the queries we lose.
+  assert.equal(sov.top_competitors[0].name, "Deel");
+});

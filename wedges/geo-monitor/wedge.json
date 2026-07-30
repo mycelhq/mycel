@@ -1,0 +1,255 @@
+{
+  "wedge": "geo-monitor",
+  "title": "Generative engine optimisation \u2014 be the answer, not the tenth link",
+  "model": "anthropic/claude-opus-4-8",
+  "task_types": {
+    "sweep": {
+      "description": "Ask each tracked query across each model, record who gets cited.",
+      "output_schema": {
+        "type": "object",
+        "required": [
+          "queries_checked",
+          "mentions",
+          "gaps"
+        ],
+        "properties": {
+          "queries_checked": {
+            "type": "integer"
+          },
+          "mentions": {
+            "type": "integer",
+            "description": "How many answers named the client"
+          },
+          "share_of_voice_pct": {
+            "type": "number"
+          },
+          "gaps": {
+            "type": "array",
+            "description": "Queries where the client is absent or described wrongly. The product.",
+            "items": {
+              "type": "object",
+              "required": [
+                "query",
+                "problem"
+              ],
+              "properties": {
+                "query": {
+                  "type": "string"
+                },
+                "problem": {
+                  "type": "string",
+                  "enum": [
+                    "absent",
+                    "outdated",
+                    "wrong",
+                    "competitor_favoured"
+                  ]
+                },
+                "cited_instead": {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  }
+                },
+                "evidence": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "draft_fix": {
+      "description": "Write the page that would make the client the cited answer for one gap.",
+      "output_schema": {
+        "type": "object",
+        "required": [
+          "query",
+          "title",
+          "body",
+          "why_this_gets_cited"
+        ],
+        "properties": {
+          "query": {
+            "type": "string"
+          },
+          "title": {
+            "type": "string"
+          },
+          "body": {
+            "type": "string"
+          },
+          "why_this_gets_cited": {
+            "type": "string",
+            "description": "The reasoning, so the founder can disagree with it rather than just approve prose."
+          }
+        }
+      }
+    },
+    "weekly_report": {
+      "description": "What moved, what didn't, what we're doing about it.",
+      "output_schema": {
+        "type": "object",
+        "required": [
+          "summary",
+          "share_of_voice_pct",
+          "direction"
+        ],
+        "properties": {
+          "summary": {
+            "type": "string"
+          },
+          "share_of_voice_pct": {
+            "type": "number"
+          },
+          "direction": {
+            "type": "string",
+            "enum": [
+              "up",
+              "flat",
+              "down"
+            ]
+          },
+          "wins": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "still_losing": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          }
+        }
+      }
+    }
+  },
+  "cases": {
+    "stages": [
+      "baselining",
+      "fixing",
+      "monitoring",
+      "reporting"
+    ],
+    "initial": "baselining"
+  },
+  "connections": [
+    "cms"
+  ],
+  "workflows": [
+    {
+      "name": "share_of_voice",
+      "description": "Share of voice from raw mentions. Deterministic, because it is the number the client is billed against and a model must not be free to round it favourably.",
+      "input_schema": {
+        "type": "object",
+        "required": [
+          "results"
+        ],
+        "properties": {
+          "results": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "required": [
+                "query",
+                "cited"
+              ],
+              "properties": {
+                "query": {
+                  "type": "string"
+                },
+                "cited": {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  }
+                }
+              }
+            }
+          },
+          "client": {
+            "type": "string"
+          }
+        }
+      },
+      "output_schema": {
+        "type": "object",
+        "required": [
+          "share_of_voice_pct",
+          "queries",
+          "mentions"
+        ],
+        "properties": {
+          "share_of_voice_pct": {
+            "type": "number"
+          },
+          "queries": {
+            "type": "integer"
+          },
+          "mentions": {
+            "type": "integer"
+          },
+          "top_competitors": {
+            "type": "array",
+            "items": {
+              "type": "object"
+            }
+          }
+        }
+      }
+    }
+  ],
+  "policy": {
+    "auto_approve": [
+      {
+        "action": "prefix:read",
+        "max_per_day": 500
+      }
+    ]
+  },
+  "intake": [
+    {
+      "id": "queries",
+      "ask": "Which questions should someone be asking an AI when they're about to buy what you sell?",
+      "why": "These are what we track. Get them wrong and every number after is measuring the wrong thing.",
+      "example": "\"best payroll software for UK startups\", \"alternatives to Gusto for a 20-person company\", \"is Deel or Remote better for EU contractors\" \u2014 buying-intent questions, not brand searches. Nobody asks an AI \"what is Acme Ltd\" unless they already know you.",
+      "kind": "fact",
+      "weight": 10
+    },
+    {
+      "id": "competitors",
+      "ask": "Who gets recommended instead of you, and what do they have that you don't?",
+      "why": "Share of voice is relative. We also need to know when a model is comparing you unfairly versus fairly.",
+      "example": "Gusto (better known, worse for non-US), Deel (huge content budget), Remote. We beat all three on EU contractor compliance and nobody knows it.",
+      "kind": "fact",
+      "weight": 9
+    },
+    {
+      "id": "claims",
+      "ask": "What can you defensibly claim that a model could verify?",
+      "why": "Models cite sources they can check. Unverifiable superlatives get dropped; specific, checkable facts get quoted.",
+      "example": "SOC2 Type II since 2024. 190 countries. Average onboarding 4 days, measured. Named in the FT's 2026 list. Not \"the leading platform\".",
+      "kind": "document",
+      "weight": 9
+    },
+    {
+      "id": "publishing",
+      "ask": "Where does content go, and who signs it off?",
+      "why": "Decides whether we publish for you or hand you a draft \u2014 and who gets the approval.",
+      "example": "Webflow CMS, /resources. I approve anything that names a competitor; everything else can go straight up.",
+      "kind": "correction",
+      "weight": 8
+    },
+    {
+      "id": "tone",
+      "ask": "Paste a page you're proud of.",
+      "why": "A real example teaches voice far better than adjectives, and everything we publish carries your name.",
+      "example": "(paste the URL or the text of a page that sounds like you)",
+      "kind": "example",
+      "weight": 7
+    }
+  ]
+}
