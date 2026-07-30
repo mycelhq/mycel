@@ -63,6 +63,10 @@ export class IdentityPg {
       ALTER TABLE members ADD COLUMN IF NOT EXISTS providers jsonb NOT NULL DEFAULT '[]';
       ALTER TABLE members ADD COLUMN IF NOT EXISTS reset_hash text;
       ALTER TABLE members ADD COLUMN IF NOT EXISTS reset_expires bigint;
+      ALTER TABLE orgs ADD COLUMN IF NOT EXISTS plan text NOT NULL DEFAULT 'self_hosted';
+      ALTER TABLE orgs ADD COLUMN IF NOT EXISTS plan_status text NOT NULL DEFAULT 'active';
+      ALTER TABLE orgs ADD COLUMN IF NOT EXISTS billing_ref text;
+      ALTER TABLE orgs ADD COLUMN IF NOT EXISTS plan_renews_at timestamptz;
     `);
     return self;
   }
@@ -82,7 +86,13 @@ export class IdentityPg {
       this.pool.query(`SELECT * FROM invites`),
     ]);
     return {
-      orgs: o.rows.map((r: any) => ({ id: r.id, name: r.name, created_at: iso(r.created_at) })),
+      orgs: o.rows.map((r: any) => ({
+        id: r.id, name: r.name, created_at: iso(r.created_at),
+        plan: r.plan ?? "self_hosted",
+        plan_status: r.plan_status ?? "active",
+        billing_ref: r.billing_ref ?? undefined,
+        plan_renews_at: r.plan_renews_at ? iso(r.plan_renews_at) : undefined,
+      })),
       projects: p.rows.map((r: any) => ({ id: r.id, org_id: r.org_id, name: r.name, wedges: r.wedges ?? [], created_at: iso(r.created_at) })),
       members: m.rows.map((r: any) => ({
         id: r.id, org_id: r.org_id, email: r.email, role: r.role as Role,
@@ -106,8 +116,11 @@ export class IdentityPg {
 
   async upsertOrg(o: Org): Promise<void> {
     await this.pool.query(
-      `INSERT INTO orgs (id, name) VALUES ($1,$2) ON CONFLICT (id) DO UPDATE SET name=EXCLUDED.name`,
-      [o.id, o.name],
+      `INSERT INTO orgs (id, name, plan, plan_status, billing_ref, plan_renews_at) VALUES ($1,$2,$3,$4,$5,$6)
+       ON CONFLICT (id) DO UPDATE SET name=EXCLUDED.name, plan=EXCLUDED.plan,
+         plan_status=EXCLUDED.plan_status, billing_ref=EXCLUDED.billing_ref,
+         plan_renews_at=EXCLUDED.plan_renews_at`,
+      [o.id, o.name, o.plan ?? "self_hosted", o.plan_status ?? "active", o.billing_ref ?? null, o.plan_renews_at ?? null],
     );
   }
   async upsertProject(p: Project): Promise<void> {

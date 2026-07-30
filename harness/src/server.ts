@@ -37,8 +37,8 @@ import type {
 } from "./contract";
 import { getDomainStore } from "./domain";
 import { emitEvent } from "./events";
-import { canManageMembers, getIdentityStore } from "./identity";
-import type { Role } from "./identity";
+import { canManageMembers, getIdentityStore, PLAN_LIMITS } from "./identity";
+import type { Plan, PlanStatus, Role } from "./identity";
 import { fireSchedule, firstRun } from "./scheduler";
 import { enqueueTask } from "./queue";
 import { getGrant } from "./proxygrants";
@@ -604,6 +604,13 @@ export function createServer(store: Store): Hono {
     }
     const b = (await c.req.json().catch(() => ({}))) as { name?: string; wedges?: string[] };
     if (!b.name) return c.json({ error: "name is required" }, 400);
+    const maxProjects = identity.limitsFor(scope.org_id).projects;
+    if (maxProjects !== null && identity.listProjects(scope.org_id).length >= maxProjects) {
+      return c.json(
+        { error: `your plan includes ${maxProjects} project${maxProjects === 1 ? "" : "s"}`, code: "project_limit" },
+        402,
+      );
+    }
     const { project, apiKey } = identity.createProject(scope.org_id, b.name, Array.isArray(b.wedges) ? b.wedges : []);
     return c.json({ project, api_key: apiKey }, 201);
   });
@@ -618,6 +625,79 @@ export function createServer(store: Store): Hono {
   // member — a key is a machine credential that lives in an environment variable, and one leaking
   // should not be a route to a human login.
   // -----------------------------------------------------------------------------------------------
+
+  // -----------------------------------------------------------------------------------------------
+  // Plan & usage
+  //
+  // The kernel knows what a plan allows. It does not know what it costs or who took the money —
+  // that is the commercial control plane's business, and it talks to `PUT /v1/org/plan` with a
+  // product key. Anyone running this themselves stays on `self_hosted`, whose limits are all null.
+  // -----------------------------------------------------------------------------------------------
+
+  /** Tasks created this calendar month, for the metered limit. */
+  const tasksThisMonth = async (set: Set<string>) => {
+    const from = new Date();
+    const since = Date.UTC(from.getUTCFullYear(), from.getUTCMonth(), 1);
+    const all = await store.listTasks({ limit: 20_000 });
+    return all.filter((t) => inScope(set, t.project_id) && Date.parse(t.created_at) >= since).length;
+  };
+
+  app.get("/v1/org", async (c) => {
+    const scope = c.get("scope");
+    const org = identity.getOrg(scope.org_id);
+    if (!org) return c.json({ error: "not found" }, 404);
+    const limits = identity.limitsFor(scope.org_id);
+    const projects = identity.listProjects(scope.org_id);
+    return c.json({
+      org: {
+        id: org.id,
+        name: org.name,
+        created_at: org.created_at,
+        plan: org.plan ?? "self_hosted",
+        plan_status: org.plan_status ?? "active",
+        plan_renews_at: org.plan_renews_at,
+        // The provider's customer id is echoed only to a member — a product key that leaked should
+        // not also hand over the billing account it can be used against.
+        billing_ref: scope.kind === "member" ? org.billing_ref : undefined,
+      },
+      limits,
+      usage: {
+        seats: identity.seatsUsed(scope.org_id),
+        projects: projects.length,
+        tasks_this_month: await tasksThisMonth(identity.accessibleProjectIds(scope)),
+      },
+    });
+  });
+
+  /**
+   * Set the plan. Product key only.
+   *
+   * This is the one write in the kernel that a member cannot make, and the asymmetry is the point:
+   * a session belongs to someone who benefits from a bigger number here.
+   */
+  app.put("/v1/org/plan", async (c) => {
+    const scope = c.get("scope");
+    if (scope.kind !== "key") return c.json({ error: "the plan is set by the control plane" }, 403);
+    const b = (await c.req.json().catch(() => ({}))) as {
+      plan?: string;
+      status?: string;
+      billing_ref?: string;
+      renews_at?: string;
+    };
+    const plan = b.plan as Plan | undefined;
+    if (plan && !(plan in PLAN_LIMITS)) return c.json({ error: `unknown plan: ${b.plan}` }, 400);
+    const status = b.status as PlanStatus | undefined;
+    if (status && !["active", "trialing", "past_due", "cancelled"].includes(status)) {
+      return c.json({ error: `unknown status: ${b.status}` }, 400);
+    }
+    const org = identity.setPlan(scope.org_id, {
+      plan,
+      status,
+      billing_ref: b.billing_ref,
+      renews_at: b.renews_at,
+    });
+    return org ? c.json({ org, limits: identity.limitsFor(scope.org_id) }) : c.json({ error: "not found" }, 404);
+  });
 
   /** Guard for the team-management routes. Returns an error response, or null when allowed. */
   const requireManager = (c: Parameters<typeof accessible>[0]) => {
@@ -657,6 +737,15 @@ export function createServer(store: Store): Hono {
     const role = (b.role ?? "operator") as Role;
     if (!["admin", "operator", "viewer"].includes(role)) {
       return c.json({ error: "role must be admin, operator or viewer — an org has one owner" }, 400);
+    }
+    // Counted before sending, including outstanding invitations — otherwise the limit lands on
+    // twenty confused recipients at accept time instead of once, here, on the person who set it up.
+    const seats = identity.limitsFor(scope.org_id).seats;
+    if (seats !== null && identity.seatsUsed(scope.org_id) >= seats) {
+      return c.json(
+        { error: `your plan includes ${seats} seat${seats === 1 ? "" : "s"}`, code: "seat_limit" },
+        402,
+      );
     }
     const out = identity.invite({ orgId: scope.org_id, email, role, invitedBy: scope.member_id! });
     if ("error" in out) {
@@ -739,6 +828,29 @@ export function createServer(store: Store): Hono {
     const types = wedge.manifest.task_types;
     if (types && Object.keys(types).length && !types[body.task_type]) {
       return c.json({ error: `unknown task_type "${body.task_type}" for wedge "${body.wedge}"` }, 400);
+    }
+
+    /**
+     * The metered limit.
+     *
+     * Checked here rather than at execution because a queued task that dies on a quota is worse
+     * than one that was never accepted: the customer's email has already arrived, and the founder
+     * finds out from a status page.
+     *
+     * `past_due` is deliberately NOT blocked — see PlanStatus. A bookkeeping service that stops
+     * answering its customers because a card expired does more damage to the founder than the
+     * unpaid invoice does to us.
+     */
+    const scope = c.get("scope");
+    const monthly = identity.limitsFor(scope.org_id).tasks_per_month;
+    if (monthly !== null) {
+      const used = await tasksThisMonth(identity.accessibleProjectIds(scope));
+      if (used >= monthly) {
+        return c.json(
+          { error: `your plan includes ${monthly} jobs a month, and ${used} have run`, code: "task_limit" },
+          402,
+        );
+      }
     }
 
     // Tenancy: land the task in a project the caller owns, and only if that project runs this wedge.

@@ -19,10 +19,52 @@ function stableUuid(name: string): string {
 
 export type Role = "owner" | "admin" | "operator" | "viewer";
 
+/**
+ * Plans and limits.
+ *
+ * The kernel knows what a plan ALLOWS. It does not know what a plan costs, who took the payment, or
+ * that Stripe exists — that lives in the commercial control plane, which calls `PUT /v1/org/plan`
+ * with a product key. Two reasons. Anyone running the kernel themselves should never meet a
+ * paywall, which is why `self_hosted` is the default and its limits are all null. And a billing
+ * provider in the open core would be a commercial dependency in an Apache-2.0 licence.
+ */
+export type Plan = "self_hosted" | "free" | "starter" | "growth" | "scale";
+
+/** `null` means unmetered. Not zero, not Infinity — a number nobody has to remember the meaning of. */
+export interface Limits {
+  seats: number | null;
+  projects: number | null;
+  tasks_per_month: number | null;
+}
+
+export const PLAN_LIMITS: Record<Plan, Limits> = {
+  self_hosted: { seats: null, projects: null, tasks_per_month: null },
+  free: { seats: 1, projects: 1, tasks_per_month: 100 },
+  starter: { seats: 3, projects: 2, tasks_per_month: 2_000 },
+  growth: { seats: 10, projects: 10, tasks_per_month: 20_000 },
+  scale: { seats: null, projects: null, tasks_per_month: null },
+};
+
+/**
+ * What happens when a subscription lapses.
+ *
+ * `past_due` deliberately does NOT stop the business. A bookkeeping service that silently stops
+ * answering its customers because a card expired does far more damage to the founder than the
+ * unpaid invoice does to us; the product nags instead. `cancelled` drops to free limits, which
+ * keeps the data readable and the work stopped.
+ */
+export type PlanStatus = "active" | "trialing" | "past_due" | "cancelled";
+
 export interface Org {
   id: string;
   name: string;
   created_at: string;
+  plan?: Plan;
+  plan_status?: PlanStatus;
+  /** The billing provider's customer id. Opaque here — stored, echoed, never interpreted. */
+  billing_ref?: string;
+  /** When the current period ends, for the UI to render. Set by the control plane. */
+  plan_renews_at?: string;
 }
 export interface Project {
   id: string;
@@ -540,6 +582,54 @@ class IdentityStore {
       expires_at: i.expires_at,
       accepted_at: i.accepted_at,
     };
+  }
+
+  // ---------------------------------------------------------------------------------------------
+  // Plan & limits
+  // ---------------------------------------------------------------------------------------------
+
+  getOrg(id: string): Org | undefined {
+    return this.orgs.get(id);
+  }
+
+  /** The limits in force. `cancelled` falls back to free rather than to nothing — the data stays
+   *  readable, the work stops. */
+  limitsFor(orgId: string): Limits {
+    const org = this.orgs.get(orgId);
+    const plan = org?.plan ?? "self_hosted";
+    if (org?.plan_status === "cancelled") return PLAN_LIMITS.free;
+    return PLAN_LIMITS[plan] ?? PLAN_LIMITS.self_hosted;
+  }
+
+  /** Set by the commercial control plane after a payment event. The kernel takes it on trust,
+   *  which is why the route behind it demands a product key. */
+  setPlan(
+    orgId: string,
+    patch: { plan?: Plan; status?: PlanStatus; billing_ref?: string; renews_at?: string },
+  ): Org | undefined {
+    const org = this.orgs.get(orgId);
+    if (!org) return undefined;
+    if (patch.plan) org.plan = patch.plan;
+    if (patch.status) org.plan_status = patch.status;
+    if (patch.billing_ref) org.billing_ref = patch.billing_ref;
+    if (patch.renews_at) org.plan_renews_at = patch.renews_at;
+    if (this.pg) void this.pg.upsertOrg(org).catch(() => {});
+    return org;
+  }
+
+  /**
+   * Seats in use: members plus outstanding invitations.
+   *
+   * Counting invites is the difference between a seat limit and a suggestion — otherwise you send
+   * twenty invites on a three-seat plan and the enforcement happens to twenty confused people at
+   * accept time instead of once, to you, at invite time.
+   */
+  seatsUsed(orgId: string): number {
+    const members = [...this.members.values()].filter((m) => m.org_id === orgId).length;
+    const pending = [...this.invites.values()].filter(
+      (i) => i.org_id === orgId && !i.accepted_at && i.expires_at > Date.now(),
+    ).length;
+    return members + pending;
   }
 
   /** Which provider this email used last — for the sign-in screen, before anyone is authenticated. */
