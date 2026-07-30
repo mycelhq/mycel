@@ -164,6 +164,36 @@ kernel gains no dependency and the whole thing is testable offline against a fak
 Still hand-rolled: `stripe`/`sms`/`whatsapp`/`calendar` executors remain stubs, and Composio auth
 configs are created once in their dashboard rather than through our API.
 
+### Intake — getting what's in the founder's head into the harness  ✅ shipped
+The part that actually decides output quality. The harness is generic and the wedge is config; what
+makes a bookkeeping agent good at *your* bookkeeping is a hundred small judgments the founder already
+holds. Asking them to sit down and write markdown produces nothing or filler, so the harness asks
+instead. Two sources, one queue:
+
+- **Declared** — a wedge ships `intake: [{ id, ask, why, example }]`. The `example` does most of the
+  work: asked "how do you chase a client?" people write "politely but firmly"; shown a real chase
+  email they paste one of their own, which is what actually teaches tone.
+- **Discovered** — `POST /v1/internal/knowledge/gap`. The agent reports what it needed and didn't
+  have, mid-run, and carries on with a stated assumption. Ungated and cheap on purpose: an agent that
+  must ask permission to admit ignorance will just guess, and a silent guess is the failure this
+  removes. Recurrence ranks the queue — a gap that stopped three real jobs outranks one nobody hit.
+
+An answer becomes a knowledge item, idempotent on the question id so a correction replaces rather
+than sitting beside the old one. Answering closes a gap; the agent hitting it again reopens it, which
+is the honest signal that the answer didn't cover the case. Nothing paraphrases the founder's words —
+a summary that drops the one clause that mattered would be invisible to the person best placed to
+notice it.
+
+`GET /v1/wedges/:wedge/intake` returns coverage; the cloud app surfaces it as a Teach page and a
+dashboard nudge.
+
+### Connection kinds — consolidated on Composio  ✅ shipped
+`stripe`, `sms`, `whatsapp` and `calendar` were removed. All four returned "not implemented yet" at
+run time: a menu advertising four dishes the kitchen couldn't cook. Composio covers those and ~250
+more through one executor that's actually written, so the honest list is `email`, `webhook`, `custom`
+and `composio`. The invoice-chaser blueprint's Stripe connection is now a Composio toolkit, so it
+went from a stub to something that runs.
+
 ### Security posture (shipped alongside)
 - **Write destinations are connection-bound.** `postWebhook` used to prefer an agent-supplied
   `payload.url` over the connection's configured host, which — since the connection's secret is sent

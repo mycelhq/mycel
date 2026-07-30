@@ -51,6 +51,7 @@ import {
   listTools as composioListTools,
   slugToolkit,
 } from "./composio";
+import { buildCoverage, gapId, isGapId, recordAnswer } from "./intake";
 import { langfuseState, traceLlmCall } from "./tracing";
 import { loadWedge, wedgesDir } from "./wedge";
 import { runWorkflow } from "./workflows";
@@ -1141,6 +1142,104 @@ export function createServer(store: Store): Hono {
         live: live.map((k) => ({ id: k.id, name: k.name, kind: k.kind, source: k.source })),
       },
     });
+  });
+
+
+  // ── Intake: what the business knows, and what it still needs to be told ──
+  // The queue merges the wedge's declared questions with gaps the agent hit on real jobs. An answer
+  // becomes a knowledge item the agent is grounded on — same store as everything else.
+  app.get("/v1/wedges/:wedge/intake", async (c) => {
+    const wedgeSlug = c.req.param("wedge") ?? "";
+    const projectId = writeProjectId(c);
+    if (!projectId) return c.json({ error: "specify a project (X-Mycel-Project header)" }, 400);
+    const wedge = loadWedge(wedgeSlug);
+    if (!wedge) return c.json({ error: `unknown wedge: ${wedgeSlug}` }, 404);
+    const [gaps, knowledge] = await Promise.all([
+      domain.listGaps(projectId, wedgeSlug),
+      domain.listKnowledge(wedgeSlug),
+    ]);
+    return c.json(
+      buildCoverage(
+        wedgeSlug,
+        wedge.manifest.intake ?? [],
+        gaps,
+        knowledge.filter((k) => k.project_id === projectId),
+      ),
+    );
+  });
+
+  app.post("/v1/wedges/:wedge/intake/:question", async (c) => {
+    const wedgeSlug = c.req.param("wedge") ?? "";
+    const questionId = c.req.param("question") ?? "";
+    const projectId = writeProjectId(c);
+    if (!projectId) return c.json({ error: "specify a project (X-Mycel-Project header)" }, 400);
+    const wedge = loadWedge(wedgeSlug);
+    if (!wedge) return c.json({ error: `unknown wedge: ${wedgeSlug}` }, 404);
+
+    const b = (await c.req.json().catch(() => ({}))) as { answer?: string; ask?: string };
+    const answer = typeof b.answer === "string" ? b.answer.trim() : "";
+    if (!answer) return c.json({ error: "answer is required" }, 400);
+
+    const declared = (wedge.manifest.intake ?? []).find((q) => q.id === questionId);
+    const gap = isGapId(questionId)
+      ? (await domain.listGaps(projectId, wedgeSlug)).find((g) => g.id === questionId)
+      : undefined;
+    const ask = declared?.ask ?? gap?.question ?? b.ask;
+    if (!ask) return c.json({ error: "unknown question" }, 404);
+
+    const item = await recordAnswer(domain, {
+      projectId,
+      wedge: wedgeSlug,
+      questionId,
+      ask,
+      answer,
+      kind: declared?.kind,
+    });
+    // Answering closes the gap, but recordGap reopens it if the agent hits it again — which is the
+    // signal that the answer didn't actually cover the case.
+    if (gap) await domain.setGapStatus(gap.id, projectId, "answered");
+    return c.json({ ok: true, knowledge_id: item.id, name: item.name }, 201);
+  });
+
+  app.post("/v1/wedges/:wedge/intake/:question/dismiss", async (c) => {
+    const projectId = writeProjectId(c);
+    if (!projectId) return c.json({ error: "specify a project (X-Mycel-Project header)" }, 400);
+    const g = await domain.setGapStatus(c.req.param("question") ?? "", projectId, "dismissed");
+    return g ? c.json({ ok: true }) : c.json({ error: "not found" }, 404);
+  });
+
+  // Internal: the agent reporting what it did NOT know.
+  //
+  // This is the half of intake that's worth the most, because it's evidence-backed — the question
+  // came up on a real job, not from someone imagining what might matter. Ungated and cheap on
+  // purpose: an agent that has to ask permission to admit ignorance will simply guess instead, and a
+  // silent guess is the failure mode this whole system exists to remove.
+  app.post("/v1/internal/knowledge/gap", async (c) => {
+    const nonce = (c.req.header("authorization") ?? "").replace(/^Bearer\s+/i, "");
+    const grant = getActionGrant(nonce);
+    if (!grant) return c.json({ ok: false, error: "invalid action token" }, 401);
+    const b = (await c.req.json().catch(() => ({}))) as { question?: string; fallback?: string };
+    const question = typeof b.question === "string" ? b.question.trim() : "";
+    if (!question) return c.json({ ok: false, error: "question is required" }, 400);
+
+    const task = await store.getTask(grant.task_id);
+    if (!task?.project_id) return c.json({ ok: false, error: "task has no project" }, 400);
+
+    const gap = await domain.recordGap({
+      id: gapId(question),
+      project_id: task.project_id,
+      wedge: task.wedge,
+      question,
+      fallback: typeof b.fallback === "string" ? b.fallback : undefined,
+      task_id: task.id,
+    });
+    // On the timeline too, so the founder sees it in context rather than only in a queue.
+    await emitEvent(store, grant.task_id, "progress", {
+      note: `Missing knowledge: ${question}`,
+      gap_id: gap.id,
+      hits: gap.hits,
+    });
+    return c.json({ ok: true, recorded: gap.id, hits: gap.hits });
   });
 
   app.get("/v1/wedges/:wedge/knowledge", async (c) => {

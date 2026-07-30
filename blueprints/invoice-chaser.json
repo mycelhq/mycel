@@ -3,26 +3,47 @@
   "title": "Accounts-receivable chaser",
   "summary": "Chase overdue invoices politely and on policy. Picks the right dunning step deterministically, drafts the message, and only sends what you approve (or what your policy envelope allows).",
   "wedge": "invoice-chaser",
-  "sells_as": "AR recovery, 2–5% of recovered value or £300+/mo",
+  "sells_as": "AR recovery, 2\u20135% of recovered value or \u00a3300+/mo",
   "requires_connections": [
     {
       "name": "billing-email",
       "kind": "email",
       "why": "Send the reminders.",
-      "config": { "api_url": "https://api.postmarkapp.com/email", "from": "billing@yourdomain.com" },
+      "config": {
+        "api_url": "https://api.postmarkapp.com/email",
+        "from": "billing@yourdomain.com"
+      },
       "secret_hint": "Your transactional email provider's server token."
     },
     {
       "name": "stripe",
-      "kind": "stripe",
+      "kind": "composio",
       "why": "Read invoice status; charging always requires your approval.",
-      "config": { "api_url": "https://api.stripe.com/v1" },
-      "secret_hint": "A Stripe restricted key. Stored encrypted; never sent to the agent."
+      "config": {
+        "toolkit": "stripe",
+        "read_tools": [
+          "STRIPE_LIST_INVOICES",
+          "STRIPE_LIST_CUSTOMERS",
+          "STRIPE_RETRIEVE_INVOICE"
+        ]
+      },
+      "secret_hint": "One OAuth click through Composio \u2014 no restricted key to create, and nothing to rotate."
     }
   ],
   "schedules": [
-    { "name": "daily overdue sweep", "task_type": "chase_invoice", "cadence": { "kind": "daily", "hour": 9, "minute": 30 } }
+    {
+      "name": "daily overdue sweep",
+      "task_type": "chase_invoice",
+      "cadence": {
+        "kind": "daily",
+        "hour": 9,
+        "minute": 30
+      }
+    }
   ],
   "seed_knowledge": [],
-  "first_case": { "title": "Overdue — {client}", "stage": "outstanding" }
+  "first_case": {
+    "title": "Overdue \u2014 {client}",
+    "stage": "outstanding"
+  }
 }

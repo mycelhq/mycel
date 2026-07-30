@@ -105,13 +105,20 @@ export interface CreateTaskInput {
 //    every outward action passes the human approval gate. ──
 
 /** An external capability with server-held secrets. The secret is referenced, never returned. */
+/**
+ * What a connection speaks.
+ *
+ * Deliberately short. There used to be `stripe`, `sms`, `whatsapp` and `calendar` here, and all four
+ * returned "not implemented yet" at run time — a menu advertising four dishes the kitchen couldn't
+ * cook. Composio covers those and ~250 more through one executor that is actually written, so the
+ * honest list is: the two transports the kernel implements itself, and the broker.
+ */
 export type ConnectionKind =
+  /** Generic provider-over-HTTP send (Postmark/Resend-shaped). Also what channels reply through. */
   | "email"
-  | "sms"
-  | "whatsapp"
-  | "stripe"
-  | "calendar"
+  /** Outbound POST to a host fixed by the connection. */
   | "webhook"
+  /** Read-only HTTP against a host fixed by the connection; no write executor. */
   | "custom"
   /** Composio-brokered: OAuth and 250+ toolkits. `config.toolkit` names which. See composio.ts. */
   | "composio";

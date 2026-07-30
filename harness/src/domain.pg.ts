@@ -3,6 +3,7 @@
 // parsed by node-pg. Selected automatically when MYCEL_DATABASE_URL is set.
 import { randomUUID } from "node:crypto";
 import pg from "pg";
+import type { KnowledgeGap } from "./intake";
 import type { Cadence, Case, CaseEvent, Record_, Channel, Client, Connection, ConnectionKind, ConnectionOwner, KnowledgeItem, Message, Schedule, Thread } from "./contract";
 import { normalizeHandle, type DomainStore } from "./domain";
 
@@ -84,6 +85,22 @@ export class PostgresDomainStore implements DomainStore {
         updated_at timestamptz NOT NULL DEFAULT now()
       );
       CREATE INDEX IF NOT EXISTS knowledge_wedge_idx ON knowledge (wedge);
+      -- What the agent discovered it did not know, on real jobs. The hit count is the ranking
+      -- signal, so the key is (project, id) and a repeat is an increment, not a new row.
+      CREATE TABLE IF NOT EXISTS knowledge_gaps (
+        id text NOT NULL,
+        project_id text NOT NULL,
+        wedge text NOT NULL,
+        question text NOT NULL,
+        fallback text,
+        hits int NOT NULL DEFAULT 1,
+        task_ids text[] NOT NULL DEFAULT '{}',
+        status text NOT NULL DEFAULT 'open',
+        first_seen timestamptz NOT NULL DEFAULT now(),
+        last_seen timestamptz NOT NULL DEFAULT now(),
+        PRIMARY KEY (project_id, id)
+      );
+      CREATE INDEX IF NOT EXISTS knowledge_gaps_wedge_idx ON knowledge_gaps (project_id, wedge, status);
       CREATE TABLE IF NOT EXISTS schedules (
         id uuid PRIMARY KEY,
         project_id text,
@@ -168,6 +185,53 @@ export class PostgresDomainStore implements DomainStore {
       [id, patch.name ?? null, patch.config ? JSON.stringify(patch.config) : null, patch.secret_ref ?? null],
     );
     return r.rows[0] ? this.toConn(r.rows[0]) : undefined;
+  }
+  async recordGap(
+    g: Omit<KnowledgeGap, "hits" | "task_ids" | "status" | "first_seen" | "last_seen"> & { task_id?: string },
+  ): Promise<KnowledgeGap> {
+    // One statement so two replicas hitting the same gap can't race into two rows or a lost hit.
+    // A gap resurfacing after it was answered reopens it: the answer evidently didn't cover this.
+    const r = await this.pool.query(
+      `INSERT INTO knowledge_gaps (id, project_id, wedge, question, fallback, task_ids)
+       VALUES ($1,$2,$3,$4,$5,$6)
+       ON CONFLICT (project_id, id) DO UPDATE SET
+         hits      = knowledge_gaps.hits + 1,
+         last_seen = now(),
+         fallback  = COALESCE(EXCLUDED.fallback, knowledge_gaps.fallback),
+         task_ids  = (SELECT ARRAY(SELECT DISTINCT unnest(knowledge_gaps.task_ids || EXCLUDED.task_ids))),
+         status    = CASE WHEN knowledge_gaps.status = 'answered' THEN 'open' ELSE knowledge_gaps.status END
+       RETURNING *`,
+      [g.id, g.project_id, g.wedge, g.question, g.fallback ?? null, g.task_id ? [g.task_id] : []],
+    );
+    return this.toGap(r.rows[0]);
+  }
+  async listGaps(projectId: string, wedge: string): Promise<KnowledgeGap[]> {
+    const r = await this.pool.query(
+      `SELECT * FROM knowledge_gaps WHERE project_id=$1 AND wedge=$2 ORDER BY hits DESC`,
+      [projectId, wedge],
+    );
+    return r.rows.map((x) => this.toGap(x));
+  }
+  async setGapStatus(id: string, projectId: string, status: KnowledgeGap["status"]): Promise<KnowledgeGap | undefined> {
+    const r = await this.pool.query(
+      `UPDATE knowledge_gaps SET status=$3 WHERE project_id=$2 AND id=$1 RETURNING *`,
+      [id, projectId, status],
+    );
+    return r.rows[0] ? this.toGap(r.rows[0]) : undefined;
+  }
+  private toGap(r: Record<string, unknown>): KnowledgeGap {
+    return {
+      id: String(r.id),
+      project_id: String(r.project_id),
+      wedge: String(r.wedge),
+      question: String(r.question),
+      fallback: (r.fallback as string) ?? undefined,
+      hits: Number(r.hits),
+      task_ids: (r.task_ids as string[]) ?? [],
+      status: r.status as KnowledgeGap["status"],
+      first_seen: new Date(r.first_seen as string).toISOString(),
+      last_seen: new Date(r.last_seen as string).toISOString(),
+    };
   }
   async listConnections(): Promise<Connection[]> {
     const r = await this.pool.query(`SELECT * FROM connections ORDER BY created_at`);

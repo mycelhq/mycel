@@ -8,6 +8,7 @@
 import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import type { Risk } from "./contract";
+import type { IntakeQuestion } from "./intake";
 
 export interface WedgeTaskType {
   description?: string;
@@ -38,6 +39,9 @@ export interface WedgeManifest {
   /** Policy-bounded autonomy: envelopes inside which actions auto-approve (see policy.ts).
    *  Absent means every action is gated — the safe default. */
   policy?: { auto_approve?: Array<{ action: string; max_amount_usd?: number; max_per_task?: number; max_per_day?: number }> };
+  /** What this wedge needs to be told before it can do the job well. Answered once per project;
+   *  each answer becomes a knowledge file the agent is grounded on. See intake.ts. */
+  intake?: IntakeQuestion[];
   /** Skill filenames under skills/ (with or without .md). Omit to load all. */
   skills?: string[];
   /** Knowledge filenames under knowledge/. Omit to load all. */

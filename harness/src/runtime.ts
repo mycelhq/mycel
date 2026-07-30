@@ -189,6 +189,7 @@ export async function runOpenCodeTask(
     MYCEL_READS_URL: `${cfg.publicUrl}/v1/internal/reads`,
     MYCEL_CASE_URL: `${cfg.publicUrl}/v1/internal/case`,
     MYCEL_WORKFLOWS_URL: `${cfg.publicUrl}/v1/internal/workflows`,
+    MYCEL_GAPS_URL: `${cfg.publicUrl}/v1/internal/knowledge/gap`,
     MYCEL_RECORDS_URL: `${cfg.publicUrl}/v1/internal/records`,
     MYCEL_ACTION_TOKEN: actionNonce,
   })
@@ -367,6 +368,22 @@ function buildAgentsMd(task: Task, wedge: LoadedWedge | null, connections: Conne
     );
     for (const c of connections) parts.push(`- **${c.name}** (${c.kind}) — id \`${c.id}\``);
   }
+  // Taught unconditionally, not only when connections exist: the most valuable gaps are about
+  // judgment (pricing, tone, when to escalate), which has nothing to do with having a connection.
+  parts.push("");
+  parts.push(`## When you don't know something`);
+  parts.push(
+    `If you need a fact about THIS business that you weren't given — a price, a policy, a\n` +
+      `preference, how they'd word something — say so instead of inventing it:\n` +
+      "```bash\n" +
+      `curl -s "$MYCEL_GAPS_URL" \\\n` +
+      `  -H "authorization: Bearer $MYCEL_ACTION_TOKEN" -H "content-type: application/json" \\\n` +
+      `  -d '{"question":"What is the late-payment fee?","fallback":"assumed none"}'\n` +
+      "```\n" +
+      `Then carry on with your best assumption and state it in the output. The founder is shown\n` +
+      `these questions and answers them once; the answer becomes knowledge you're given next time.\n` +
+      `Ask about things specific to this business, not general knowledge. One call per distinct gap.`,
+  );
   if (wedge?.skills.length) {
     parts.push("");
     parts.push(`## Procedures`);

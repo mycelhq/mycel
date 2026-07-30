@@ -148,16 +148,13 @@ export async function executeAction(
         return await postWebhook(conn, payload, secret);
       case "composio":
         return await runComposioTool(conn, capability, payload);
-      case "stripe":
-      case "sms":
-      case "whatsapp":
-      case "calendar":
+      default:
+        // Anything else is a config mistake, and saying so beats a stub that pretends to work.
+        // Stripe, SMS, WhatsApp and calendars all live behind `composio` now.
         return {
           ok: false,
-          detail: `executor for "${conn.kind}" is not implemented yet — wire the provider call in actions.ts (security model unchanged)`,
+          detail: `no executor for connection kind "${conn.kind}" — use kind "composio" with the matching toolkit`,
         };
-      default:
-        return { ok: false, detail: `unknown connection kind: ${conn.kind}` };
     }
   } catch (e) {
     return { ok: false, detail: String((e as Error)?.message ?? e) };

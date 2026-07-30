@@ -8,19 +8,41 @@
       "output_schema": {
         "type": "object",
         "properties": {
-          "pulled": { "type": "number" },
-          "categorized": { "type": "number" },
-          "flagged": { "type": "array", "items": { "type": "string" } }
+          "pulled": {
+            "type": "number"
+          },
+          "categorized": {
+            "type": "number"
+          },
+          "flagged": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          }
         },
-        "required": ["pulled", "categorized"]
+        "required": [
+          "pulled",
+          "categorized"
+        ]
       }
     },
     "chase_receipts": {
       "description": "Ask the client for the receipts still missing for this period.",
       "output_schema": {
         "type": "object",
-        "properties": { "missing": { "type": "number" }, "message": { "type": "string" } },
-        "required": ["missing", "message"]
+        "properties": {
+          "missing": {
+            "type": "number"
+          },
+          "message": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "missing",
+          "message"
+        ]
       }
     },
     "monthly_close": {
@@ -28,60 +50,168 @@
       "output_schema": {
         "type": "object",
         "properties": {
-          "reconciled": { "type": "boolean" },
-          "difference_pence": { "type": "number" },
-          "anomalies": { "type": "array", "items": { "type": "string" } }
+          "reconciled": {
+            "type": "boolean"
+          },
+          "difference_pence": {
+            "type": "number"
+          },
+          "anomalies": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          }
         },
-        "required": ["reconciled", "difference_pence"]
+        "required": [
+          "reconciled",
+          "difference_pence"
+        ]
       }
     },
     "file_vat": {
       "description": "Submit the VAT return for the quarter. Always human-approved.",
       "output_schema": {
         "type": "object",
-        "properties": { "period": { "type": "string" }, "vat_due_pence": { "type": "number" } },
-        "required": ["period", "vat_due_pence"]
+        "properties": {
+          "period": {
+            "type": "string"
+          },
+          "vat_due_pence": {
+            "type": "number"
+          }
+        },
+        "required": [
+          "period",
+          "vat_due_pence"
+        ]
       }
     }
   },
   "cases": {
-    "stages": ["open", "collecting", "reconciling", "review", "filed"],
+    "stages": [
+      "open",
+      "collecting",
+      "reconciling",
+      "review",
+      "filed"
+    ],
     "initial": "open"
   },
-  "connections": ["bank-feed", "books-email"],
+  "connections": [
+    "bank-feed",
+    "books-email"
+  ],
   "workflows": [
     {
       "name": "reconcile",
-      "description": "Reconcile bank transactions against the ledger to the penny and compute VAT. ALWAYS use this — never do the arithmetic yourself.",
+      "description": "Reconcile bank transactions against the ledger to the penny and compute VAT. ALWAYS use this \u2014 never do the arithmetic yourself.",
       "input_schema": {
         "type": "object",
         "properties": {
-          "bank_transactions": { "type": "array" },
-          "ledger_entries": { "type": "array" },
-          "vat_rate_pct": { "type": "number" }
+          "bank_transactions": {
+            "type": "array"
+          },
+          "ledger_entries": {
+            "type": "array"
+          },
+          "vat_rate_pct": {
+            "type": "number"
+          }
         },
-        "required": ["bank_transactions", "ledger_entries"]
+        "required": [
+          "bank_transactions",
+          "ledger_entries"
+        ]
       },
       "output_schema": {
         "type": "object",
         "properties": {
-          "reconciled": { "type": "boolean" },
-          "difference_pence": { "type": "number" },
-          "vat_due_pence": { "type": "number" }
+          "reconciled": {
+            "type": "boolean"
+          },
+          "difference_pence": {
+            "type": "number"
+          },
+          "vat_due_pence": {
+            "type": "number"
+          }
         },
-        "required": ["reconciled", "difference_pence", "vat_due_pence"]
+        "required": [
+          "reconciled",
+          "difference_pence",
+          "vat_due_pence"
+        ]
       }
     }
   ],
   "policy": {
     "auto_approve": [
-      { "action": "email:send_receipt_chase", "max_per_task": 1, "max_per_day": 20 }
+      {
+        "action": "email:send_receipt_chase",
+        "max_per_task": 1,
+        "max_per_day": 20
+      }
     ]
   },
   "approvals": [
-    { "action": "file_vat", "risk": "high", "required": true },
-    { "action": "send", "risk": "medium", "required": true }
+    {
+      "action": "file_vat",
+      "risk": "high",
+      "required": true
+    },
+    {
+      "action": "send",
+      "risk": "medium",
+      "required": true
+    }
   ],
-  "skills": ["close-the-month"],
-  "knowledge": ["close-policy.md"]
+  "skills": [
+    "close-the-month"
+  ],
+  "knowledge": [
+    "close-policy.md"
+  ],
+  "intake": [
+    {
+      "id": "engagement-scope",
+      "ask": "What exactly do you deliver each month, and by when?",
+      "why": "The agent uses this to decide when a month is actually finished, and what to tell a client who asks.",
+      "example": "Bank reconciled, receipts chased, P&L and balance sheet issued by the 7th working day. VAT prepared quarterly for my approval \u2014 I file it, not you.",
+      "kind": "document",
+      "weight": 10
+    },
+    {
+      "id": "pricing",
+      "ask": "What do you charge, and what's outside the fee?",
+      "why": "So it can answer a pricing question without you, and knows when to stop and ask instead.",
+      "example": "\u00a3450/month up to 300 transactions. Above that \u00a30.40 each. Company formation, payroll and R&D claims are quoted separately.",
+      "kind": "fact",
+      "weight": 9
+    },
+    {
+      "id": "chase-tone",
+      "ask": "How do you chase a client for a missing receipt? Paste one you've actually sent.",
+      "why": "A real example teaches tone far better than adjectives. This becomes the model for every chase it drafts.",
+      "example": "Hi Sam \u2014 closing March and I'm missing receipts for 4 card payments (\u00a3212.40 total). Could you forward them when you get a minute? Happy to close without them and treat as disallowable if easier.",
+      "kind": "example",
+      "weight": 9
+    },
+    {
+      "id": "escalate",
+      "ask": "When must the agent stop and come to you rather than deciding?",
+      "why": "Draws the line for policy-bounded autonomy. Everything outside it stops at the approval gate.",
+      "example": "Anything HMRC-facing. Any transaction over \u00a32,000 it can't match. Any client asking whether something is tax deductible. Anything that smells like a director's loan.",
+      "kind": "correction",
+      "weight": 10
+    },
+    {
+      "id": "quirks",
+      "ask": "What do you know about these clients that a competent stranger wouldn't?",
+      "why": "This is the knowledge that actually separates you from a generic bookkeeper.",
+      "example": "Acme's Stripe payouts land net of fees, so gross always has to be rebuilt. Their Amazon settlements are 14 days behind. The director expenses his own phone bill every month and it's always allowable.",
+      "kind": "fact",
+      "weight": 8
+    }
+  ]
 }

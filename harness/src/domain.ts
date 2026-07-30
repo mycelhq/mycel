@@ -5,6 +5,7 @@
 // v0.1 ships an in-memory reference implementation (zero setup). Postgres backing mirrors the
 // task tables and is the next step; the task engine itself is already durable (store.pg.ts).
 import { randomUUID } from "node:crypto";
+import type { KnowledgeGap } from "./intake";
 import type { Case, CaseEvent, Channel, Record_, Client, Connection, KnowledgeItem, Message, Schedule, Thread } from "./contract";
 
 export interface DomainStore {
@@ -81,6 +82,11 @@ export interface DomainStore {
   listKnowledge(wedge: string): Promise<KnowledgeItem[]>;
   updateKnowledge(id: string, patch: Partial<Pick<KnowledgeItem, "name" | "content" | "metadata">>): Promise<KnowledgeItem | undefined>;
   deleteKnowledge(id: string): Promise<boolean>;
+
+  // knowledge gaps — what the agent discovered it doesn't know, on real jobs
+  recordGap(g: Omit<KnowledgeGap, "hits" | "task_ids" | "status" | "first_seen" | "last_seen"> & { task_id?: string }): Promise<KnowledgeGap>;
+  listGaps(projectId: string, wedge: string): Promise<KnowledgeGap[]>;
+  setGapStatus(id: string, projectId: string, status: KnowledgeGap["status"]): Promise<KnowledgeGap | undefined>;
 }
 
 const now = () => new Date().toISOString();
@@ -327,6 +333,46 @@ export class InMemoryDomainStore implements DomainStore {
     if (patch.metadata !== undefined) k.metadata = patch.metadata;
     k.updated_at = now();
     return k;
+  }
+  private gaps = new Map<string, KnowledgeGap>();
+  private gapKey(projectId: string, id: string) {
+    return `${projectId}::${id}`;
+  }
+  async recordGap(
+    g: Omit<KnowledgeGap, "hits" | "task_ids" | "status" | "first_seen" | "last_seen"> & { task_id?: string },
+  ): Promise<KnowledgeGap> {
+    const key = this.gapKey(g.project_id, g.id);
+    const existing = this.gaps.get(key);
+    const ts = now();
+    if (existing) {
+      // Recurrence is the ranking signal, so the same gap hit twice increments rather than duplicates.
+      existing.hits += 1;
+      existing.last_seen = ts;
+      if (g.task_id && !existing.task_ids.includes(g.task_id)) existing.task_ids.push(g.task_id);
+      if (g.fallback) existing.fallback = g.fallback;
+      // Something the founder already answered has come up again — the answer didn't cover it.
+      if (existing.status === "answered") existing.status = "open";
+      return existing;
+    }
+    const created: KnowledgeGap = {
+      ...g,
+      hits: 1,
+      task_ids: g.task_id ? [g.task_id] : [],
+      status: "open",
+      first_seen: ts,
+      last_seen: ts,
+    };
+    this.gaps.set(key, created);
+    return created;
+  }
+  async listGaps(projectId: string, wedge: string): Promise<KnowledgeGap[]> {
+    return [...this.gaps.values()].filter((g) => g.project_id === projectId && g.wedge === wedge);
+  }
+  async setGapStatus(id: string, projectId: string, status: KnowledgeGap["status"]): Promise<KnowledgeGap | undefined> {
+    const g = this.gaps.get(this.gapKey(projectId, id));
+    if (!g) return undefined;
+    g.status = status;
+    return g;
   }
   async deleteKnowledge(id: string): Promise<boolean> {
     return this.knowledge.delete(id);
