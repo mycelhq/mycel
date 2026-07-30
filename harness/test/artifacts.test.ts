@@ -184,7 +184,7 @@ test("artifacts: a client sends a document through the portal and work starts", 
   } as never);
 
   const link = mintPortalLink({ project_id: projectId, client_id: clientRow.id });
-  const session = exchangePortalLink(link.token)!.token;
+  const session = (await exchangePortalLink(link.token))!.token;
 
   const fd = new FormData();
   fd.append("file", new File([PNG as unknown as BlobPart], "july.png", { type: "image/png" }));
@@ -212,7 +212,7 @@ test("artifacts: a client sends a document through the portal and work starts", 
 
   // …and nobody else's. A second client's session must not resolve this artifact at all.
   const other = await domain.createClient({ project_id: projectId, display_name: "Someone Else" } as never);
-  const otherSession = exchangePortalLink(mintPortalLink({ project_id: projectId, client_id: other.id }).token)!.token;
+  const otherSession = (await exchangePortalLink(mintPortalLink({ project_id: projectId, client_id: other.id }).token))!.token;
   const stolen = await app.request(`/v1/portal/artifacts/${out.artifact.id}`, {
     headers: { authorization: `Bearer ${otherSession}` },
   });
@@ -238,7 +238,7 @@ test("artifacts: a client session cannot upload to someone else's thread", async
     project_id: projectId, client_id: a.id, channel_id: channel.id, status: "open",
   } as never);
 
-  const session = exchangePortalLink(mintPortalLink({ project_id: projectId, client_id: b.id }).token)!.token;
+  const session = (await exchangePortalLink(mintPortalLink({ project_id: projectId, client_id: b.id }).token))!.token;
   const fd = new FormData();
   fd.append("file", new File(["x"], "x.txt", { type: "text/plain" }));
   const res = await app.request(`/v1/portal/threads/${theirThread.id}/attachments`, {
@@ -302,7 +302,7 @@ test("artifacts: a customer can list their thread's files without waiting for a 
   const thread = await domain.createThread({
     project_id: projectId, client_id: clientRow.id, channel_id: channel.id, status: "open",
   } as never);
-  const session = exchangePortalLink(mintPortalLink({ project_id: projectId, client_id: clientRow.id }).token)!.token;
+  const session = (await exchangePortalLink(mintPortalLink({ project_id: projectId, client_id: clientRow.id }).token))!.token;
 
   assert.deepEqual((await api(app, `portal/threads/${thread.id}/artifacts`, {}, session)).json, []);
 
@@ -323,6 +323,6 @@ test("artifacts: a customer can list their thread's files without waiting for a 
 
   // And another customer's session sees nothing on that thread at all.
   const other = await domain.createClient({ project_id: projectId, display_name: "Other" } as never);
-  const otherSession = exchangePortalLink(mintPortalLink({ project_id: projectId, client_id: other.id }).token)!.token;
+  const otherSession = (await exchangePortalLink(mintPortalLink({ project_id: projectId, client_id: other.id }).token))!.token;
   assert.equal((await api(app, `portal/threads/${thread.id}/artifacts`, {}, otherSession)).status, 404);
 });

@@ -135,3 +135,32 @@ test("blueprints: provisioning is recorded in the tamper-evident audit chain", a
   assert.ok(chain.some((e) => e.action === "project.created" && e.entity_id === BP), "provisioning is auditable");
   assert.equal((await api(app, `audit/verify?project_id=${projectId}`)).json.ok, true);
 });
+
+test("blueprints: activating runs one job now instead of promising tomorrow", async () => {
+  // next_run_at is the next strictly-future occurrence, computed at provision time. A founder who
+  // finished setting up at 10:00 on a wedge that runs daily at 06:00 saw "your business is running"
+  // and then nothing for twenty hours — right after being asked for credentials and taught the
+  // thing their trade.
+  const { app } = makeApp();
+  const slug = "books-keeper";
+
+  await api(app, `blueprints/${slug}/provision`, { method: "POST", body: "{}" });
+  const checklist = (await api(app, `blueprints/${slug}/readiness`)).json;
+  for (const item of checklist.checklist.filter((i: { connection_id?: string }) => i.connection_id)) {
+    await api(app, `connections/${item.connection_id}/secret`, {
+      method: "POST",
+      body: JSON.stringify({ secret: "test-credential" }),
+    });
+  }
+
+  const before = (await api(app, "tasks")).json.length;
+  const activated = await api(app, `blueprints/${slug}/activate`, { method: "POST", body: "{}" });
+  assert.equal(activated.status, 200, activated.text);
+  assert.ok(activated.json.activated.length > 0, "schedules are on");
+
+  // The point of the change: something to look at on the very next screen.
+  assert.ok(activated.json.first_task_id, "activation returns the run it started");
+  const after = (await api(app, "tasks")).json;
+  assert.equal(after.length, before + 1);
+  assert.ok(after.some((t: { id: string }) => t.id === activated.json.first_task_id));
+});

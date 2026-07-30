@@ -258,7 +258,7 @@ export function createServer(store: Store): Hono {
   // other than the founder, and it can only ever answer about them.
   app.post("/v1/portal/session", async (c) => {
     const b = (await c.req.json().catch(() => ({}))) as { token?: string };
-    const out = exchangePortalLink(b.token ?? "");
+    const out = await exchangePortalLink(b.token ?? "");
     // One message for expired, used and forged alike: distinguishing them tells someone holding a
     // stale link whether it was ever real.
     if (!out) return c.json({ error: "that link is invalid or has expired" }, 401);
@@ -272,7 +272,7 @@ export function createServer(store: Store): Hono {
 
   app.use("/v1/portal/*", async (c, next) => {
     if (c.req.path === "/v1/portal/session") return next();
-    const scope = resolveClientSession(bearer(c));
+    const scope = await resolveClientSession(bearer(c));
     if (!scope) return c.json({ error: "unauthorized" }, 401);
     c.set("client", scope);
     await next();
@@ -1747,7 +1747,7 @@ export function createServer(store: Store): Hono {
   app.post("/v1/clients/:id/portal-revoke", async (c) => {
     const row = await domain.getClient(c.req.param("id") ?? "");
     if (!row || !inScope(accessible(c), row.project_id)) return c.json({ error: "not found" }, 404);
-    return c.json({ ok: true, revoked: revokeClientSessions(row.id) });
+    return c.json({ ok: true, revoked: await revokeClientSessions(row.id) });
   });
 
   app.get("/v1/threads/:id", async (c) => {
@@ -1829,7 +1829,25 @@ export function createServer(store: Store): Hono {
     const names = new Set((b.schedules ?? []).map((s) => s.name));
     const mine = (await domain.listSchedules()).filter((s) => s.project_id === projectId && names.has(s.name));
     for (const s of mine) await domain.updateSchedule(s.id, { enabled: true });
-    return c.json({ ok: true, activated: mine.map((s) => s.name) });
+
+    /**
+     * Run one now.
+     *
+     * `next_run_at` was computed at provision time as the next strictly-future occurrence, so a
+     * founder who finished setting up at 10:00 on a wedge that runs daily at 06:00 saw "your
+     * business is running" and then nothing at all for twenty hours. They had just been asked for
+     * credentials and taught the thing their trade; the product's answer was a promise about
+     * tomorrow.
+     *
+     * One immediate run, so the next screen has something real on it. The rest of the schedule is
+     * untouched — this doesn't shift the cadence, it just doesn't make them wait to see it work.
+     */
+    let firstTask: string | undefined;
+    const lead = mine[0];
+    if (lead) {
+      firstTask = (await fireSchedule(store, domain, lead)).id;
+    }
+    return c.json({ ok: true, activated: mine.map((s) => s.name), first_task_id: firstTask });
   });
 
   // ── Audit: the tamper-evident record of consequential decisions ──

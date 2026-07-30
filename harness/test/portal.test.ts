@@ -2,7 +2,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { api, makeApp, waitTask, KEY } from "./helpers";
 import { getDomainStore } from "../src/domain";
-import { _resetPortal } from "../src/portal";
+import { _resetPortal, exchangePortalLink, mintPortalLink, resolveClientSession } from "../src/portal";
 
 /** Two clients in one project, each with a thread — the shape every isolation claim is tested on. */
 async function twoClients() {
@@ -228,4 +228,45 @@ test("portal: a client's reply starts work, and their stream hides the operator'
     404,
     "a run that isn't theirs doesn't exist as far as they're concerned",
   );
+});
+
+test("portal: a session outlives the process that minted it", async () => {
+  // These were in-process Maps. A deploy silently signed out every customer — they clicked the link
+  // in their inbox and were told it was no longer valid — and on two replicas a link minted by one
+  // could not be exchanged on the other. The cache is still there for speed; the point of this test
+  // is that a miss is no longer the same as "invalid".
+  const { app } = makeApp();
+  const domain = getDomainStore();
+  const projectId = (await api(app, "me")).json.projects[0].id;
+  const clientRow = await domain.createClient({ project_id: projectId, display_name: "Durable Co" } as never);
+
+  const link = mintPortalLink({ project_id: projectId, client_id: clientRow.id });
+  const session = (await exchangePortalLink(link.token))!;
+  assert.ok(await resolveClientSession(session.token), "resolves while cached");
+
+  // Simulate the replica that never saw it: clear the process-local cache only.
+  _resetPortal();
+  const after = await resolveClientSession(session.token);
+  if (process.env.MYCEL_DATABASE_URL) {
+    assert.ok(after, "a durable install resolves it from the database");
+    assert.equal(after!.client_id, clientRow.id);
+  } else {
+    // Without a database there is nowhere else to look, and saying so plainly is the honest
+    // behaviour — this is the single-process development default.
+    assert.equal(after, undefined);
+  }
+});
+
+test("portal: a link is single-use even when two clicks race", async () => {
+  // A forwarded email produces exactly this: two people opening the same link at once. With a
+  // database the claim is one UPDATE … WHERE used = false, so only one can win.
+  const { app } = makeApp();
+  const domain = getDomainStore();
+  const projectId = (await api(app, "me")).json.projects[0].id;
+  const clientRow = await domain.createClient({ project_id: projectId, display_name: "Race Co" } as never);
+  const link = mintPortalLink({ project_id: projectId, client_id: clientRow.id });
+
+  const [a, b] = await Promise.all([exchangePortalLink(link.token), exchangePortalLink(link.token)]);
+  const winners = [a, b].filter(Boolean);
+  assert.equal(winners.length, 1, "exactly one exchange succeeds");
 });

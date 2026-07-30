@@ -5,6 +5,7 @@ import { closeDomainStore, getDomainStore, initDomainStore } from "./domain";
 import { getIdentityStore, initIdentityStore } from "./identity";
 import { recoverTasks } from "./recovery";
 import { closeSecretStore, initSecretStore } from "./secrets";
+import { closePortalStore, initPortalStore } from "./portal";
 import { startScheduler } from "./scheduler";
 import { closeQueue, initQueue, startWorker } from "./queue";
 import { createServer } from "./server";
@@ -16,6 +17,9 @@ await initDomainStore(); // durable service surface when MYCEL_DATABASE_URL is s
 await initIdentityStore(); // durable tenants (stable default ids either way)
 await initSecretStore(); // encrypted-at-rest vault (AES-256-GCM)
 await initAuditStore(); // tamper-evident audit chain
+// Client portal links and sessions. In-memory they died on every deploy, silently — a customer
+// clicked the link in their inbox and was told it was no longer valid.
+await initPortalStore();
 const identity = getIdentityStore();
 const recovered = await recoverTasks(store);
 const app = createServer(store);
@@ -71,6 +75,7 @@ async function shutdown(signal: string): Promise<void> {
     await closeDomainStore();
     await closeSecretStore();
     await closeAuditStore();
+    await closePortalStore();
     // Queued JSONL lines are still in memory (appends are non-blocking by design), so drain them
     // before exiting or the tail of an in-flight run is lost.
     await flushLogs();

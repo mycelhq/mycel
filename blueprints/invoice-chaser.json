@@ -3,7 +3,7 @@
   "title": "Accounts-receivable chaser",
   "summary": "Chase overdue invoices politely and on policy. Picks the right dunning step deterministically, drafts the message, and only sends what you approve (or what your policy envelope allows).",
   "wedge": "invoice-chaser",
-  "sells_as": "AR recovery, 2\u20135% of recovered value or \u00a3300+/mo",
+  "sells_as": "AR recovery, 2–5% of recovered value or £300+/mo",
   "requires_connections": [
     {
       "name": "billing-email",
@@ -27,7 +27,7 @@
           "STRIPE_RETRIEVE_INVOICE"
         ]
       },
-      "secret_hint": "One OAuth click through Composio \u2014 no restricted key to create, and nothing to rotate."
+      "secret_hint": "One OAuth click through Composio — no restricted key to create, and nothing to rotate."
     }
   ],
   "schedules": [
@@ -41,9 +41,5 @@
       }
     }
   ],
-  "seed_knowledge": [],
-  "first_case": {
-    "title": "Overdue \u2014 {client}",
-    "stage": "outstanding"
-  }
+  "seed_knowledge": []
 }

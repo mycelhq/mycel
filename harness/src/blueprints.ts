@@ -38,7 +38,6 @@ export interface Blueprint {
   requires_connections: BlueprintConnection[];
   schedules: { name: string; task_type: string; cadence: Cadence; input?: Record<string, unknown> }[];
   seed_knowledge: { name: string; content: string; kind?: string }[];
-  first_case?: { title: string; stage?: string };
 }
 
 export function blueprintsDir(): string {

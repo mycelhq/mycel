@@ -1,9 +1,9 @@
 {
   "blueprint": "books-keeper",
-  "title": "Bookkeeping agency \u2014 UK e-commerce monthly close",
+  "title": "Bookkeeping agency — UK e-commerce monthly close",
   "summary": "Reconcile a client's books to the penny every month. Pulls the bank feed daily, chases missing receipts, closes the month, prepares VAT for your approval.",
   "wedge": "books-keeper",
-  "sells_as": "Monthly bookkeeping, \u00a3400\u2013900/mo per client",
+  "sells_as": "Monthly bookkeeping, £400–900/mo per client",
   "requires_connections": [
     {
       "name": "bank-feed",
@@ -27,7 +27,7 @@
     {
       "name": "xero",
       "kind": "composio",
-      "why": "The client's accounting ledger \u2014 where the reconciled month actually gets posted.",
+      "why": "The client's accounting ledger — where the reconciled month actually gets posted.",
       "secret_hint": "One OAuth click. Composio holds the grant and refreshes it, so nothing to paste and nothing to rotate.",
       "config": {
         "toolkit": "xero",
@@ -75,9 +75,5 @@
       "kind": "fact",
       "content": "# Engagement terms\n\nEdit this with your actual terms. Example:\n- Monthly close delivered by the 7th working day.\n- VAT returns prepared, never filed without founder approval.\n- Receipts chased up to 3 times, then escalated to the founder."
     }
-  ],
-  "first_case": {
-    "title": "First close \u2014 {client}",
-    "stage": "open"
-  }
+  ]
 }
