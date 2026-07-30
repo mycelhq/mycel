@@ -64,6 +64,34 @@ export interface Session {
   expires_at: number;
 }
 
+/**
+ * An outstanding invitation to join an org.
+ *
+ * Only the token's hash is stored, exactly as for password resets: an invite link is a credential
+ * that creates an account with a role, so a stolen database must not hand out working ones.
+ */
+export interface Invite {
+  id: string;
+  org_id: string;
+  email: string;
+  role: Role;
+  /** The member who sent it. Shown in the UI so "who let this person in" has an answer. */
+  invited_by: string;
+  created_at: string;
+  expires_at: number;
+  accepted_at?: string;
+}
+interface StoredInvite extends Invite {
+  token_hash: string;
+}
+
+const INVITE_TTL_MS = 7 * 24 * 60 * 60 * 1000;
+
+/** Roles that may change who else is in the org. Deliberately short. */
+const CAN_MANAGE_MEMBERS: Role[] = ["owner", "admin"];
+export const canManageMembers = (role?: Role | string): boolean =>
+  CAN_MANAGE_MEMBERS.includes(role as Role);
+
 const SESSION_TTL_MS = 12 * 60 * 60 * 1000;
 
 function hashPassword(pw: string): { salt: string; hash: string } {
@@ -126,11 +154,13 @@ class IdentityStore {
   /** Attach a durable backend: load persisted tenants into the read cache, then mirror writes. */
   async attach(pg: import("./identity.pg").IdentityPg): Promise<void> {
     this.pg = pg;
-    const { orgs, projects, members, apiKeys } = await pg.loadAll();
+    const { orgs, projects, members, apiKeys, invites } = await pg.loadAll();
     for (const o of orgs) this.orgs.set(o.id, o);
     for (const p of projects) this.projects.set(p.id, p);
     for (const m of members) this.members.set(m.id, m);
     for (const [k, v] of apiKeys) this.apiKeys.set(k, v);
+    // Invites outlive a restart deliberately: a link emailed on Friday must still work on Monday.
+    for (const i of invites) this.invites.set(i.id, i);
     // persist the bootstrap tenant (idempotent — stable ids)
     for (const o of this.orgs.values()) await pg.upsertOrg(o);
     for (const p of this.projects.values()) await pg.upsertProject(p);
@@ -349,6 +379,169 @@ class IdentityStore {
     }
     return { org, project, apiKey };
   }
+  // ---------------------------------------------------------------------------------------------
+  // Team
+  //
+  // A member belongs to exactly one org. That's the constraint everything below is shaped by: an
+  // invite doesn't "add an org" to an existing account, it creates an account. An email that already
+  // exists anywhere is therefore refused rather than silently moved, because moving someone between
+  // orgs would take their old org's data access away without anyone asking for that.
+  // ---------------------------------------------------------------------------------------------
+
+  private invites = new Map<string, StoredInvite>();
+
+  listMembers(orgId: string): Member[] {
+    return [...this.members.values()]
+      .filter((m) => m.org_id === orgId)
+      .map((m) => this.publicMember(m))
+      .sort((a, b) => a.created_at.localeCompare(b.created_at));
+  }
+
+  /**
+   * Invite someone. Returns the raw token exactly once — the product emails it and cannot recover
+   * it afterwards, which is the point.
+   *
+   * Re-inviting the same address replaces the outstanding invite instead of accumulating a pile of
+   * live links to the same mailbox.
+   */
+  invite(args: {
+    orgId: string;
+    email: string;
+    role: Role;
+    invitedBy: string;
+    ttlMs?: number;
+  }): { invite: Invite; token: string } | { error: "taken" | "already_invited_elsewhere" } {
+    const email = args.email.trim().toLowerCase();
+    if (this.findMemberByEmail(email)) return { error: "taken" };
+    const clash = [...this.invites.values()].find(
+      (i) => i.email === email && !i.accepted_at && i.org_id !== args.orgId && i.expires_at > Date.now(),
+    );
+    if (clash) return { error: "already_invited_elsewhere" };
+
+    for (const [id, i] of this.invites) {
+      if (i.org_id === args.orgId && i.email === email && !i.accepted_at) this.invites.delete(id);
+    }
+    const token = `minv_${randomBytes(24).toString("base64url")}`;
+    const invite: StoredInvite = {
+      id: randomUUID(),
+      org_id: args.orgId,
+      email,
+      // Nobody can mint a second owner by invitation. There is one owner per org and it is the
+      // account that created it; an invited administrator can do everything else.
+      role: args.role === "owner" ? "admin" : args.role,
+      invited_by: args.invitedBy,
+      created_at: new Date().toISOString(),
+      expires_at: Date.now() + (args.ttlMs ?? INVITE_TTL_MS),
+      token_hash: createHash("sha256").update(token).digest("hex"),
+    };
+    this.invites.set(invite.id, invite);
+    if (this.pg) void this.pg.upsertInvite(invite).catch(() => {});
+    return { invite: this.publicInvite(invite), token };
+  }
+
+  /** Outstanding invitations, newest first. Expired ones are shown — the fix is to resend, and
+   *  hiding them makes "I never got it" impossible to diagnose. */
+  listInvites(orgId: string): (Invite & { expired: boolean })[] {
+    return [...this.invites.values()]
+      .filter((i) => i.org_id === orgId && !i.accepted_at)
+      .sort((a, b) => b.created_at.localeCompare(a.created_at))
+      .map((i) => ({ ...this.publicInvite(i), expired: i.expires_at < Date.now() }));
+  }
+
+  revokeInvite(orgId: string, id: string): boolean {
+    const i = this.invites.get(id);
+    // Scoped by org, not just by id: an id from another tenant must miss, not delete.
+    if (!i || i.org_id !== orgId) return false;
+    this.invites.delete(id);
+    if (this.pg) void this.pg.deleteInvite(id).catch(() => {});
+    return true;
+  }
+
+  /** What an invite link shows before anyone commits to anything — no session required. */
+  peekInvite(token: string): { email: string; org_name: string; role: Role } | undefined {
+    const i = this.findInvite(token);
+    if (!i) return undefined;
+    return { email: i.email, org_name: this.orgs.get(i.org_id)?.name ?? "a team", role: i.role };
+  }
+
+  /**
+   * Accept an invitation.
+   *
+   * `password` may be empty for someone arriving via OAuth — `login()` refuses an empty hash, so
+   * that cannot become a password-less way in.
+   */
+  acceptInvite(
+    token: string,
+    password: string,
+    provider: AuthProvider = "password",
+  ): { session: Session; member: Member; projects: Project[] } | undefined {
+    const invite = this.findInvite(token);
+    if (!invite) return undefined;
+    // Between sending and accepting, someone may have signed up with that address directly.
+    if (this.findMemberByEmail(invite.email)) return undefined;
+    const { salt, hash } = password ? hashPassword(password) : { salt: "", hash: "" };
+    const member: StoredMember = {
+      id: randomUUID(),
+      org_id: invite.org_id,
+      email: invite.email,
+      role: invite.role,
+      created_at: new Date().toISOString(),
+      salt,
+      hash,
+    };
+    this.members.set(member.id, member);
+    invite.accepted_at = new Date().toISOString();
+    if (this.pg) {
+      const pg = this.pg;
+      void pg.upsertMember(member).then(() => pg.upsertInvite(invite)).catch(() => {});
+    }
+    return this.issue(member, provider);
+  }
+
+  /** Change a member's role. The org's owner cannot be demoted — that would leave it unadministrable. */
+  setMemberRole(orgId: string, memberId: string, role: Role): Member | { error: string } {
+    const m = this.members.get(memberId);
+    if (!m || m.org_id !== orgId) return { error: "no such member" };
+    if (m.role === "owner") return { error: "the owner's role cannot be changed" };
+    if (role === "owner") return { error: "an org has one owner" };
+    m.role = role;
+    if (this.pg) void this.pg.upsertMember(m).catch(() => {});
+    return this.publicMember(m);
+  }
+
+  /** Remove a member and every session they hold, so revoking access takes effect now. */
+  removeMember(orgId: string, memberId: string): { ok: true } | { error: string } {
+    const m = this.members.get(memberId);
+    if (!m || m.org_id !== orgId) return { error: "no such member" };
+    if (m.role === "owner") return { error: "the owner cannot be removed" };
+    this.members.delete(memberId);
+    for (const [token, s] of this.sessions) if (s.member_id === memberId) this.sessions.delete(token);
+    if (this.pg) void this.pg.deleteMember(memberId).catch(() => {});
+    return { ok: true };
+  }
+
+  private findInvite(token: string): StoredInvite | undefined {
+    const digest = createHash("sha256").update(token).digest("hex");
+    const i = [...this.invites.values()].find((x) => x.token_hash === digest);
+    if (!i || i.accepted_at || i.expires_at < Date.now()) return undefined;
+    return i;
+  }
+
+  /** Allowlist, for the same reason `publicMember` is one: a subtractive spread leaks whatever
+   *  field someone adds to StoredInvite next, and the next one is as likely to be a secret. */
+  private publicInvite(i: StoredInvite): Invite {
+    return {
+      id: i.id,
+      org_id: i.org_id,
+      email: i.email,
+      role: i.role,
+      invited_by: i.invited_by,
+      created_at: i.created_at,
+      expires_at: i.expires_at,
+      accepted_at: i.accepted_at,
+    };
+  }
+
   /** Which provider this email used last — for the sign-in screen, before anyone is authenticated. */
   lastProviderFor(email: string): AuthProvider | undefined {
     return this.findMemberByEmail(email)?.last_provider;
@@ -391,4 +584,4 @@ export async function initIdentityStore(): Promise<{ backend: string }> {
   return { backend: "postgres" };
 }
 
-export type { StoredMember };
+export type { StoredInvite, StoredMember };

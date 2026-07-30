@@ -12,7 +12,8 @@ import type {
   TaskEvent,
   TaskStatus,
 } from "./contract";
-import type { Store } from "./store";
+import { stripContent } from "./store";
+import type { NewArtifact, Store } from "./store";
 
 const { Pool } = pg;
 
@@ -78,6 +79,16 @@ export class PostgresStore implements Store {
     await this.pool.query(`ALTER TABLE tasks ADD COLUMN IF NOT EXISTS event_seq int NOT NULL DEFAULT 0;`);
     await this.pool.query(`ALTER TABLE tasks ADD COLUMN IF NOT EXISTS project_id text;`);
     await this.pool.query(`ALTER TABLE tasks ADD COLUMN IF NOT EXISTS case_id uuid;`);
+    // Uploads. Additive so an existing install keeps every artifact it already has, and the
+    // defaults are what those rows always were: agent-written UTF-8 text.
+    await this.pool.query(`
+      ALTER TABLE artifacts ADD COLUMN IF NOT EXISTS encoding text NOT NULL DEFAULT 'utf8';
+      ALTER TABLE artifacts ADD COLUMN IF NOT EXISTS size_bytes bigint;
+      ALTER TABLE artifacts ADD COLUMN IF NOT EXISTS source text NOT NULL DEFAULT 'agent';
+      ALTER TABLE artifacts ADD COLUMN IF NOT EXISTS client_id text;
+      ALTER TABLE artifacts ADD COLUMN IF NOT EXISTS uploaded_by text;
+      CREATE INDEX IF NOT EXISTS artifacts_task_idx ON artifacts (task_id);
+    `);
     await this.pool.query(`ALTER TABLE approvals ADD COLUMN IF NOT EXISTS policy_reason text;`);
     // Additive migrations, so an existing deployment keeps its approvals. Rows that predate this
     // simply have a null created_at and are excluded from the latency stat rather than skewing it.
@@ -278,23 +289,16 @@ export class PostgresStore implements Store {
     return r.rows.map((row: any) => this.rowToApproval(row));
   }
 
-  async addArtifact(a: {
-    task_id: string;
-    name: string;
-    content_type: string;
-    content: string;
-  }): Promise<Artifact> {
-    const art: Artifact = {
-      id: crypto.randomUUID(),
-      task_id: a.task_id,
-      name: a.name,
-      content_type: a.content_type,
-      content: a.content,
-      created_at: new Date().toISOString(),
-    };
+  async addArtifact(a: NewArtifact): Promise<Artifact> {
+    const art: Artifact = { ...a, id: crypto.randomUUID(), created_at: new Date().toISOString() };
     await this.pool.query(
-      `INSERT INTO artifacts (id, task_id, name, content_type, content) VALUES ($1,$2,$3,$4,$5)`,
-      [art.id, art.task_id, art.name, art.content_type, art.content],
+      `INSERT INTO artifacts (id, task_id, name, content_type, content, encoding, size_bytes, source, client_id, uploaded_by)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)`,
+      [
+        art.id, art.task_id, art.name, art.content_type, art.content,
+        art.encoding ?? "utf8", art.size_bytes ?? Buffer.byteLength(art.content),
+        art.source ?? "agent", art.client_id ?? null, art.uploaded_by ?? null,
+      ],
     );
     return art;
   }
@@ -302,14 +306,33 @@ export class PostgresStore implements Store {
   async getArtifact(id: string): Promise<Artifact | undefined> {
     const r = await this.pool.query(`SELECT * FROM artifacts WHERE id=$1`, [id]);
     const row = r.rows[0];
-    if (!row) return undefined;
+    return row ? this.rowToArtifact(row) : undefined;
+  }
+
+  async listArtifacts(taskId: string): Promise<Omit<Artifact, "content">[]> {
+    // Content is excluded in SQL, not stripped afterwards: reading a 30MB column out of the
+    // database and throwing it away is the same cost as serving it.
+    const r = await this.pool.query(
+      `SELECT id, task_id, name, content_type, created_at, encoding, size_bytes, source, client_id, uploaded_by
+       FROM artifacts WHERE task_id=$1 ORDER BY created_at`,
+      [taskId],
+    );
+    return r.rows.map((row: any) => stripContent(this.rowToArtifact({ ...row, content: "" })));
+  }
+
+  private rowToArtifact(row: any): Artifact {
     return {
       id: row.id,
       task_id: row.task_id,
       name: row.name,
       content_type: row.content_type,
-      content: row.content,
+      content: row.content ?? "",
       created_at: new Date(row.created_at).toISOString(),
+      encoding: (row.encoding ?? "utf8") as Artifact["encoding"],
+      size_bytes: row.size_bytes === null || row.size_bytes === undefined ? undefined : Number(row.size_bytes),
+      source: (row.source ?? "agent") as Artifact["source"],
+      client_id: row.client_id ?? undefined,
+      uploaded_by: row.uploaded_by ?? undefined,
     };
   }
 

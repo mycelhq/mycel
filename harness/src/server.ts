@@ -21,6 +21,7 @@ import { markCancelled } from "./cancel";
 import { loadConfig } from "./config";
 import type {
   Approval,
+  Artifact,
   Constraints,
   Connection,
   ConnectionKind,
@@ -36,11 +37,14 @@ import type {
 } from "./contract";
 import { getDomainStore } from "./domain";
 import { emitEvent } from "./events";
-import { getIdentityStore } from "./identity";
+import { canManageMembers, getIdentityStore } from "./identity";
+import type { Role } from "./identity";
 import { fireSchedule, firstRun } from "./scheduler";
 import { enqueueTask } from "./queue";
 import { getGrant } from "./proxygrants";
 import { hasSecret, setSecret } from "./secrets";
+import { stripContent as stripArtifactContent } from "./store";
+import { taskClientId } from "./runtime";
 import type { Store } from "./store";
 import {
   connConfig as composioConnConfig,
@@ -146,6 +150,105 @@ export function createServer(store: Store): Hono {
     return { id: (byToolkit ?? byKind)?.id };
   };
 
+  // ── file uploads ──
+  //
+  // Two rules govern everything below.
+  //
+  // 1. Never serve an upload as something a browser will execute. An HTML file uploaded by a
+  //    customer and served back with `text/html` from the app's own origin is stored XSS against
+  //    the founder — the classic way a file feature becomes an account takeover. So: forced
+  //    download, `nosniff`, and executable-ish types rewritten to octet-stream.
+  // 2. The size ceiling is enforced before anything is stored, not after. A 2GB body that gets
+  //    rejected at the end has already been in memory.
+
+  const MAX_UPLOAD_BYTES = Number(process.env.MYCEL_MAX_UPLOAD_MB ?? 25) * 1024 * 1024;
+
+  /** Types a browser will run. Rewritten on the way out; still stored exactly as received. */
+  const EXECUTABLE_TYPES = /^(text\/html|image\/svg\+xml|application\/xhtml|text\/xml|application\/xml)/i;
+
+  /** Text stays text so an artifact can still be read as prose; everything else is base64. */
+  const isTextual = (type: string) =>
+    /^text\/plain|^text\/csv|^text\/markdown|^application\/json|^application\/x-ndjson/i.test(type);
+
+  /**
+   * Read a multipart upload and store it.
+   *
+   * Returns a discriminated result rather than throwing, because every caller wants to turn the
+   * failure into a specific status code and message.
+   */
+  const ingestUpload = async (
+    c: import("hono").Context,
+    taskId: string,
+    opts: { uploadedBy: string; clientId?: string },
+  ): Promise<{ artifact: Artifact } | { error: string; status: number }> => {
+    let form: Record<string, unknown>;
+    try {
+      form = await c.req.parseBody();
+    } catch {
+      return { error: "expected a multipart/form-data upload", status: 400 };
+    }
+    const file = form.file;
+    if (!(file instanceof File)) return { error: "a 'file' part is required", status: 400 };
+    if (file.size > MAX_UPLOAD_BYTES) {
+      return { error: `file is larger than ${Math.round(MAX_UPLOAD_BYTES / 1024 / 1024)}MB`, status: 413 };
+    }
+    const bytes = Buffer.from(await file.arrayBuffer());
+    // Trust the length we actually read, not the one the client declared.
+    if (bytes.byteLength > MAX_UPLOAD_BYTES) {
+      return { error: `file is larger than ${Math.round(MAX_UPLOAD_BYTES / 1024 / 1024)}MB`, status: 413 };
+    }
+    if (bytes.byteLength === 0) return { error: "the file is empty", status: 400 };
+
+    const type = file.type || "application/octet-stream";
+    const textual = isTextual(type);
+    const artifact = await store.addArtifact({
+      task_id: taskId,
+      // Basename only. A name like "../../etc/passwd" is harmless to the database and lethal to
+      // any consumer that writes it to disk, and the fs artifact backend is one.
+      name: (file.name || "upload").split(/[\\/]/).pop()!.slice(0, 200),
+      content_type: type,
+      content: textual ? bytes.toString("utf8") : bytes.toString("base64"),
+      encoding: textual ? "utf8" : "base64",
+      size_bytes: bytes.byteLength,
+      source: "upload",
+      client_id: opts.clientId,
+      uploaded_by: opts.uploadedBy,
+    });
+    const backend = await getArtifactBackend();
+    if (!backend.inline) await backend.put(artifact.id, artifact.content);
+    await emitEvent(store, taskId, "artifact.created", {
+      artifact_id: artifact.id,
+      name: artifact.name,
+      content_type: artifact.content_type,
+      size_bytes: artifact.size_bytes,
+      source: "upload",
+    });
+    return { artifact };
+  };
+
+  /** Fill in content from the artifact backend when it isn't stored inline. */
+  const withContent = async (a: Artifact): Promise<Artifact> => {
+    if (a.content) return a;
+    const backend = await getArtifactBackend();
+    return { ...a, content: (await backend.get(a.id)) ?? "" };
+  };
+
+  /** Serve the bytes, defensively. See the two rules above. */
+  const serveArtifact = (a: Artifact): Response => {
+    const body: Buffer | string =
+      a.encoding === "base64" ? Buffer.from(a.content, "base64") : a.content;
+    const type = EXECUTABLE_TYPES.test(a.content_type) ? "application/octet-stream" : a.content_type;
+    return new Response(body as unknown as ReadableStream | string, {
+      headers: {
+        "content-type": type,
+        // Quoted and stripped of quotes/newlines: an unescaped filename here is header injection.
+        "content-disposition": `attachment; filename="${a.name.replace(/["\r\n]/g, "")}"`,
+        "x-content-type-options": "nosniff",
+        "content-security-policy": "default-src 'none'; sandbox",
+      },
+    });
+  };
+
   app.get("/health", (c) => c.json({ ok: true, service: "mycel-harness", version: "v0.1" }));
 
   // Member login (portal). No auth — it IS the auth. Returns a session token the portal forwards.
@@ -223,12 +326,75 @@ export function createServer(store: Store): Hono {
       status: "sent",
     });
 
-    // …and the business actually does something about it.
-    //
-    // Recording the message and stopping there made the portal a suggestion box: the founder had to
-    // notice and act. A reply now spawns a run on the thread's own channel, exactly as an inbound
-    // email would — same wedge, same task type, same approval gate. The client didn't get a new
-    // capability, they got a faster path to the one that already existed.
+    // …and the business actually does something about it. See `spawnFromThread`.
+    const taskId = await spawnFromThread(thread, sc, body);
+    return c.json({ ...msg, task_id: taskId }, 201);
+  });
+
+  /**
+   * A customer sending in a document.
+   *
+   * The whole reason binary artifacts exist: "here is my bank statement" is the opening move of
+   * most service businesses, and until now the portal could only carry prose. The upload spawns a
+   * run exactly as a message does — same wedge, same approval gate — with the file attached to it,
+   * because an attachment with no work attached to it is a filing cabinet, not a service.
+   */
+  app.post("/v1/portal/threads/:id/attachments", async (c) => {
+    const sc = client(c);
+    const thread = await domain.getThread(c.req.param("id") ?? "");
+    if (!thread || thread.client_id !== sc.client_id) return c.json({ error: "not found" }, 404);
+
+    const form = await c.req.parseBody().catch(() => ({}) as Record<string, unknown>);
+    const note = typeof form.body === "string" ? form.body.trim().slice(0, 10_000) : "";
+    const filename = form.file instanceof File ? form.file.name : "a file";
+    const msg = await domain.addMessage({
+      thread_id: thread.id,
+      direction: "inbound",
+      author: sc.client_id,
+      body: note || `Sent a file: ${filename}`,
+      status: "sent",
+    });
+    const taskId = await spawnFromThread(thread, sc, note || `Attached ${filename}`);
+    if (!taskId) {
+      // No channel or no wedge — the message is recorded, but there is nowhere to put the file,
+      // and inventing a task to hang it on would be worse than saying so.
+      return c.json({ ...msg, error: "this thread has no live channel, so the file was not stored" }, 409);
+    }
+    const up = await ingestUpload(c, taskId, { uploadedBy: sc.client_id, clientId: sc.client_id });
+    if ("error" in up) return c.json({ error: up.error }, up.status as 400);
+    return c.json({ message: msg, task_id: taskId, artifact: stripArtifactContent(up.artifact) }, 201);
+  });
+
+  /**
+   * A customer downloading a file from their own thread.
+   *
+   * Two conditions, both required: the artifact's task belongs to this client, in this project.
+   * Checking the task alone would let a client read a file the founder attached to someone else's
+   * run that happened to reference them.
+   */
+  app.get("/v1/portal/artifacts/:id", async (c) => {
+    const sc = client(c);
+    const a = await store.getArtifact(c.req.param("id"));
+    if (!a) return c.json({ error: "not found" }, 404);
+    const t = await store.getTask(a.task_id);
+    if (!t || t.project_id !== sc.project_id || taskClientId(t) !== sc.client_id) {
+      return c.json({ error: "not found" }, 404);
+    }
+    return serveArtifact(await withContent(a));
+  });
+
+  /**
+   * Spawn the run a client's inbound message deserves.
+   *
+   * Extracted so an attachment and a reply take the same path. Returns the task id, or undefined
+   * when the thread's channel is gone or its wedge no longer loads — in which case the message is
+   * still recorded and a human can pick it up.
+   */
+  async function spawnFromThread(
+    thread: { id: string; channel_id: string; subject?: string },
+    sc: { client_id: string; project_id: string },
+    body: string,
+  ): Promise<string | undefined> {
     let taskId: string | undefined;
     const channel = (await domain.listChannels()).find((ch) => ch.id === thread.channel_id);
     if (channel && loadWedge(channel.wedge)) {
@@ -262,11 +428,10 @@ export function createServer(store: Store): Hono {
       };
       await store.createTask(task);
       taskId = task.id;
-    await enqueueTask(store, task.id);
+      await enqueueTask(store, task.id);
     }
-
-    return c.json({ ...msg, task_id: taskId }, 201);
-  });
+    return taskId;
+  }
 
   /**
    * A client watching their own run.
@@ -368,7 +533,15 @@ export function createServer(store: Store): Hono {
       "/v1/auth/reset/request",
       "/v1/auth/reset/confirm",
     ]);
-    if (c.req.path.startsWith("/v1/internal/") || PUBLIC_AUTH.has(c.req.path)) return next();
+    // `/v1/invites/<token>` is public for the same reason: the person holding the link has no
+    // account yet, and the token IS the credential. Prefix rather than exact match because the
+    // token is in the path.
+    if (
+      c.req.path.startsWith("/v1/internal/") ||
+      c.req.path.startsWith("/v1/invites/") ||
+      PUBLIC_AUTH.has(c.req.path)
+    )
+      return next();
     return requireApiKey(c, next);
   });
 
@@ -433,6 +606,120 @@ export function createServer(store: Store): Hono {
     if (!b.name) return c.json({ error: "name is required" }, 400);
     const { project, apiKey } = identity.createProject(scope.org_id, b.name, Array.isArray(b.wedges) ? b.wedges : []);
     return c.json({ project, api_key: apiKey }, 201);
+  });
+
+  // -----------------------------------------------------------------------------------------------
+  // Team
+  //
+  // A second pair of hands is the point at which a founder stops being the only approver, so these
+  // routes are about one thing: who may approve, and who may let someone else approve.
+  //
+  // Every write here is member-only and role-gated. A product API key must NOT be able to add a
+  // member — a key is a machine credential that lives in an environment variable, and one leaking
+  // should not be a route to a human login.
+  // -----------------------------------------------------------------------------------------------
+
+  /** Guard for the team-management routes. Returns an error response, or null when allowed. */
+  const requireManager = (c: Parameters<typeof accessible>[0]) => {
+    const scope = c.get("scope");
+    if (scope.kind !== "member") return c.json({ error: "team management requires a member session" }, 403);
+    if (!canManageMembers(scope.role)) return c.json({ error: "only an owner or admin can change the team" }, 403);
+    return null;
+  };
+
+  app.get("/v1/team", async (c) => {
+    const scope = c.get("scope");
+    return c.json({
+      members: identity.listMembers(scope.org_id),
+      // Pending invitations are only the manager's business — an operator seeing them can't act on
+      // them, and each row names an email address that hasn't agreed to anything yet.
+      invites: canManageMembers(scope.role) ? identity.listInvites(scope.org_id) : [],
+      can_manage: scope.kind === "member" && canManageMembers(scope.role),
+    });
+  });
+
+  /**
+   * Invite someone.
+   *
+   * Returns the raw token ONCE. The kernel does not send email — the product does, because that's
+   * where the mail provider and the branded template live. Anything the product doesn't send is
+   * unrecoverable, which is the correct failure mode for a credential.
+   */
+  app.post("/v1/team/invites", async (c) => {
+    const denied = requireManager(c);
+    if (denied) return denied;
+    const scope = c.get("scope");
+    const b = (await c.req.json().catch(() => ({}))) as { email?: string; role?: string };
+    const email = (b.email ?? "").trim().toLowerCase();
+    if (!email.includes("@")) return c.json({ error: "a valid email is required" }, 400);
+    // Explicit rather than coerced. Silently downgrading an unrecognised role would hand someone an
+    // operator when they asked for an admin, and report success.
+    const role = (b.role ?? "operator") as Role;
+    if (!["admin", "operator", "viewer"].includes(role)) {
+      return c.json({ error: "role must be admin, operator or viewer — an org has one owner" }, 400);
+    }
+    const out = identity.invite({ orgId: scope.org_id, email, role, invitedBy: scope.member_id! });
+    if ("error" in out) {
+      return c.json(
+        {
+          error:
+            out.error === "taken"
+              ? "that email already has a Mycel account"
+              : "that email has a pending invitation to another team",
+        },
+        409,
+      );
+    }
+    return c.json({ invite: out.invite, token: out.token }, 201);
+  });
+
+  app.delete("/v1/team/invites/:id", async (c) => {
+    const denied = requireManager(c);
+    if (denied) return denied;
+    const ok = identity.revokeInvite(c.get("scope").org_id, c.req.param("id"));
+    return ok ? c.json({ ok: true }) : c.json({ error: "not found" }, 404);
+  });
+
+  app.patch("/v1/team/members/:id", async (c) => {
+    const denied = requireManager(c);
+    if (denied) return denied;
+    const b = (await c.req.json().catch(() => ({}))) as { role?: string };
+    if (!["admin", "operator", "viewer"].includes(b.role ?? "")) {
+      return c.json({ error: "role must be admin, operator or viewer" }, 400);
+    }
+    const out = identity.setMemberRole(c.get("scope").org_id, c.req.param("id"), b.role as Role);
+    return "error" in out ? c.json(out, 400) : c.json(out);
+  });
+
+  app.delete("/v1/team/members/:id", async (c) => {
+    const denied = requireManager(c);
+    if (denied) return denied;
+    const scope = c.get("scope");
+    // Removing yourself would log you out mid-request and, if you were the last admin, strand the
+    // org. Leaving is a different feature and it doesn't exist yet.
+    if (c.req.param("id") === scope.member_id) return c.json({ error: "you cannot remove yourself" }, 400);
+    const out = identity.removeMember(scope.org_id, c.req.param("id"));
+    return "error" in out ? c.json(out, 400) : c.json(out);
+  });
+
+  // What the invite link shows before anyone commits. Public — the token is the credential.
+  app.get("/v1/invites/:token", async (c) => {
+    const peek = identity.peekInvite(c.req.param("token"));
+    // One message for expired, revoked and never-existed. Distinguishing them tells someone holding
+    // a guessed token that they guessed close.
+    return peek ? c.json(peek) : c.json({ error: "this invitation is no longer valid" }, 404);
+  });
+
+  app.post("/v1/invites/:token/accept", async (c) => {
+    const b = (await c.req.json().catch(() => ({}))) as { password?: string };
+    const pw = b.password ?? "";
+    if (pw.length < 8) return c.json({ error: "a password of at least 8 characters is required" }, 400);
+    const out = identity.acceptInvite(c.req.param("token"), pw);
+    if (!out) return c.json({ error: "this invitation is no longer valid" }, 404);
+    return c.json(
+      { token: out.session.token, member: out.member, projects: out.projects, expires_at: out.session.expires_at },
+      201,
+    );
   });
 
   // POST /v1/tasks — create + kick off a task
@@ -537,10 +824,20 @@ export function createServer(store: Store): Hono {
     );
     const terminal = tasks.filter((t) => TERMINAL.has(t.status));
     const succeeded = tasks.filter((t) => t.status === "succeeded");
+    // Blocked on a human and busy on a machine are opposite problems, and lumping them into
+    // "in flight" hid the one this product is supposed to be measuring.
+    const blocked = tasks.filter((t) => t.status === "awaiting_approval");
 
     // Bucket by day so a caller can draw a line without re-deriving it. Keyed by ISO date, which
     // sorts lexicographically — no date parsing on the other end.
-    const byDay = new Map<string, { tasks: number; cost_usd: number; failed: number }>();
+    // Every day in the window, including the empty ones. Emitting only the days that had work makes
+    // a quiet fortnight render as a dense chart, which reads as "we were busy" — the opposite of
+    // the truth. The kernel knows the window; the caller shouldn't have to reconstruct it.
+    type DayRow = { tasks: number; cost_usd: number; failed: number };
+    const byDay = new Map<string, DayRow>();
+    for (let i = days - 1; i >= 0; i--) {
+      byDay.set(new Date(Date.now() - i * 86400_000).toISOString().slice(0, 10), { tasks: 0, cost_usd: 0, failed: 0 });
+    }
     for (const t of tasks) {
       const day = t.created_at.slice(0, 10);
       const row = byDay.get(day) ?? { tasks: 0, cost_usd: 0, failed: 0 };
@@ -569,7 +866,11 @@ export function createServer(store: Store): Hono {
         return t && inScope(set, t.project_id) ? a : null;
       }),
     );
-    const approvals = owned.filter((a): a is NonNullable<typeof a> => a !== null);
+    // Windowed like everything else. It wasn't, so the approvals block silently described all time
+    // while sitting under a header that said "last 30 days".
+    const approvals = owned
+      .filter((a): a is NonNullable<typeof a> => a !== null)
+      .filter((a) => Date.parse(a.created_at) >= since);
     const decided = approvals.filter((a) => a.decided_at && a.created_at);
     const waits = decided
       .map((a) => Date.parse(a.decided_at!) - Date.parse(a.created_at))
@@ -579,21 +880,49 @@ export function createServer(store: Store): Hono {
 
     const clients = (await domain.listClients()).filter((x) => inScope(set, x.project_id));
 
+    /**
+     * The same window, one window earlier.
+     *
+     * A success rate with no direction is a number, not a signal — 82% is good news or a crisis
+     * depending on last month. Computed from the rows already in hand rather than a second query.
+     */
+    const prevSince = since - days * 86400_000;
+    const prior = (await store.listTasks({ limit: 5000 })).filter(
+      (t) => inScope(set, t.project_id) && Date.parse(t.created_at) >= prevSince && Date.parse(t.created_at) < since,
+    );
+    const priorTerminal = prior.filter((t) => TERMINAL.has(t.status));
+    const priorSucceeded = prior.filter((t) => t.status === "succeeded");
+
     return c.json({
       window_days: days,
+      previous: {
+        tasks: prior.length,
+        success_rate: priorTerminal.length
+          ? Math.round((priorSucceeded.length / priorTerminal.length) * 100)
+          : null,
+        cost_usd: Number(prior.reduce((n, t) => n + (t.cost_usd || 0), 0).toFixed(4)),
+      },
       tasks: {
         total: tasks.length,
         succeeded: succeeded.length,
         // Of FINISHED work only. Counting in-flight tasks as failures would make the number sag
         // every time the business is busy, which is exactly backwards.
         success_rate: terminal.length ? Math.round((succeeded.length / terminal.length) * 100) : null,
-        in_flight: tasks.length - terminal.length,
+        in_flight: tasks.length - terminal.length - blocked.length,
+        awaiting_approval: blocked.length,
+        // "The agent broke", "you said no" and "you never answered" are three different businesses.
+        // Expiry in particular is the strongest signal that the human is the bottleneck.
+        failed: tasks.filter((t) => t.status === "failed").length,
+        rejected: tasks.filter((t) => t.status === "rejected").length,
+        expired: tasks.filter((t) => t.status === "expired").length,
+        cancelled: tasks.filter((t) => t.status === "cancelled").length,
       },
       cost_usd: Number(tasks.reduce((n, t) => n + (t.cost_usd || 0), 0).toFixed(4)),
       approvals: {
         total: approvals.length,
         auto_approved: approvals.filter((a) => a.status === "auto_approved").length,
         pending: approvals.filter((a) => a.status === "pending").length,
+        expired: approvals.filter((a) => a.status === "expired").length,
         median_wait_seconds: median === null ? null : Math.round(median / 1000),
       },
       clients: { total: clients.length },
@@ -875,9 +1204,30 @@ export function createServer(store: Store): Hono {
     if (!a) return c.json({ error: "not found" }, 404);
     const at = await store.getTask(a.task_id);
     if (!at || !inScope(accessible(c), at.project_id)) return c.json({ error: "not found" }, 404);
-    let content = a.content;
-    if (!content) content = (await getArtifactBackend().then((b) => b.get(a.id))) ?? "";
-    return new Response(content, { headers: { "content-type": a.content_type } });
+    return serveArtifact(await withContent(a));
+  });
+
+  /** What a run produced or was given, metadata only. The list is cheap; the bytes are not. */
+  app.get("/v1/tasks/:id/artifacts", async (c) => {
+    const t = await store.getTask(c.req.param("id"));
+    if (!t || !inScope(accessible(c), t.project_id)) return c.json({ error: "not found" }, 404);
+    return c.json(await store.listArtifacts(t.id));
+  });
+
+  /**
+   * Hand a file to a run.
+   *
+   * The founder forwarding a bank statement, a signed contract, the spreadsheet a client emailed
+   * them. Multipart, because that is what a browser file input produces and asking a product to
+   * base64 a 20MB PDF into JSON doubles the memory for no reason.
+   */
+  app.post("/v1/tasks/:id/artifacts", async (c) => {
+    const t = await store.getTask(c.req.param("id"));
+    if (!t || !inScope(accessible(c), t.project_id)) return c.json({ error: "not found" }, 404);
+    const scope = c.get("scope");
+    const art = await ingestUpload(c, t.id, { uploadedBy: scope.member_id ?? "product-key" });
+    if ("error" in art) return c.json({ error: art.error }, art.status as 400);
+    return c.json(art.artifact, 201);
   });
 
   // ── The service surface: connections / channels / clients / threads ──
@@ -1385,6 +1735,40 @@ export function createServer(store: Store): Hono {
 
   // Internal: the agent reads and writes records for ITS OWN wedge/project. Data, not a real-world
   // side effect, so ungated — but scoped to the run and traced.
+  /**
+   * What files this run has, and their bytes.
+   *
+   * Without this the upload feature is decorative: a client sends a bank statement, a run starts,
+   * and the agent has no way to open it. Scoped to the grant's own task, so one run cannot read
+   * another's documents even inside the same project.
+   *
+   * Base64 in JSON rather than raw bytes, because the sandbox talks to this over the same JSON
+   * client it uses for everything else, and a second transport is a second thing to get wrong.
+   * `?meta=1` returns the list without content, which is what a first look wants.
+   */
+  app.get("/v1/internal/artifacts", async (c) => {
+    const grant = getActionGrant((c.req.header("authorization") ?? "").replace(/^Bearer\s+/i, ""));
+    if (!grant) return c.json({ ok: false, error: "invalid action token" }, 401);
+    return c.json({ ok: true, artifacts: await store.listArtifacts(grant.task_id) });
+  });
+
+  app.get("/v1/internal/artifacts/:id", async (c) => {
+    const grant = getActionGrant((c.req.header("authorization") ?? "").replace(/^Bearer\s+/i, ""));
+    if (!grant) return c.json({ ok: false, error: "invalid action token" }, 401);
+    const a = await store.getArtifact(c.req.param("id"));
+    if (!a || a.task_id !== grant.task_id) return c.json({ ok: false, error: "not found" }, 404);
+    const full = await withContent(a);
+    return c.json({
+      ok: true,
+      id: full.id,
+      name: full.name,
+      content_type: full.content_type,
+      encoding: full.encoding ?? "utf8",
+      size_bytes: full.size_bytes,
+      content: full.content,
+    });
+  });
+
   app.post("/v1/internal/records/upsert", async (c) => {
     const grant = getActionGrant((c.req.header("authorization") ?? "").replace(/^Bearer\s+/i, ""));
     if (!grant) return c.json({ ok: false, error: "invalid action token" }, 401);

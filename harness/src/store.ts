@@ -33,17 +33,25 @@ export interface Store {
   setApproval(id: string, status: Approval["status"], policyReason?: string): Promise<Approval | undefined>;
   /** The approvals queue for the portal (optionally filtered by status, e.g. "pending"). */
   listApprovals(status?: Approval["status"]): Promise<Approval[]>;
-  addArtifact(a: {
-    task_id: string;
-    name: string;
-    content_type: string;
-    content: string;
-  }): Promise<Artifact>;
+  addArtifact(a: NewArtifact): Promise<Artifact>;
   getArtifact(id: string): Promise<Artifact | undefined>;
+  /** A task's artifacts, metadata only — `content` is stripped, because a list of 30MB PDFs
+   *  rendered into JSON is a way to run a server out of memory from a UI. */
+  listArtifacts(taskId: string): Promise<Omit<Artifact, "content">[]>;
   /** Non-terminal tasks (queued/provisioning/running/awaiting_approval/validating). */
   listUnfinished(): Promise<Task[]>;
   /** Release resources (e.g. the pg pool) on graceful shutdown. Optional. */
   close?(): Promise<void>;
+}
+
+/** Everything an artifact needs at creation. `id` and `created_at` belong to the store. */
+export type NewArtifact = Omit<Artifact, "id" | "created_at">;
+
+/** Metadata only. One helper so the memory and pg stores can't disagree about what "list" omits. */
+export function stripContent(a: Artifact): Omit<Artifact, "content"> {
+  const { content: _c, ...rest } = a;
+  void _c;
+  return rest;
 }
 
 const TERMINAL = new Set<TaskStatus>([
@@ -162,18 +170,10 @@ export class InMemoryStore implements Store {
     return all;
   }
 
-  async addArtifact(a: {
-    task_id: string;
-    name: string;
-    content_type: string;
-    content: string;
-  }): Promise<Artifact> {
+  async addArtifact(a: NewArtifact): Promise<Artifact> {
     const art: Artifact = {
+      ...a,
       id: randomUUID(),
-      task_id: a.task_id,
-      name: a.name,
-      content_type: a.content_type,
-      content: a.content,
       created_at: new Date().toISOString(),
     };
     this.artifacts.set(art.id, art);
@@ -182,6 +182,13 @@ export class InMemoryStore implements Store {
 
   async getArtifact(id: string): Promise<Artifact | undefined> {
     return this.artifacts.get(id);
+  }
+
+  async listArtifacts(taskId: string): Promise<Omit<Artifact, "content">[]> {
+    return [...this.artifacts.values()]
+      .filter((a) => a.task_id === taskId)
+      .sort((a, b) => a.created_at.localeCompare(b.created_at))
+      .map(stripContent);
   }
 
   async listUnfinished(): Promise<Task[]> {

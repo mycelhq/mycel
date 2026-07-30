@@ -86,6 +86,14 @@ export interface Approval {
   decided_at?: string;
 }
 
+/**
+ * A file produced by a run, or handed to one.
+ *
+ * `content` is a string either way, because every backend (inline, fs, S3) already speaks text and
+ * one representation is easier to reason about than two. Bytes are base64 in that string, which
+ * costs 33% in storage and buys a model that can't get half-decoded. Read `encoding` before doing
+ * anything with `content`; a PDF read as UTF-8 is silently corrupt rather than loudly broken.
+ */
 export interface Artifact {
   id: string;
   task_id: string;
@@ -93,6 +101,21 @@ export interface Artifact {
   content_type: string;
   content: string;
   created_at: string;
+  /** Absent means "utf8" — rows written before uploads existed are all text. */
+  encoding?: "utf8" | "base64";
+  /** Size of the DECODED bytes. What a human means by "how big is that file". */
+  size_bytes?: number;
+  /** How it got here. Absent means "agent", which is what every pre-upload row was. */
+  source?: "agent" | "upload";
+  /**
+   * Set when a customer uploaded it through the portal.
+   *
+   * This is the isolation dimension: a client may download an artifact only if this matches their
+   * session, or it belongs to a task run for them. Never filter on the task alone.
+   */
+  client_id?: string;
+  /** The member or client id that uploaded it. Absent for agent output. */
+  uploaded_by?: string;
 }
 
 export interface CreateTaskInput {
