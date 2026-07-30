@@ -22,6 +22,7 @@ import { loadConfig } from "./config";
 import type {
   Approval,
   Constraints,
+  Connection,
   ConnectionKind,
   ConnectionOwner,
   Cadence,
@@ -38,7 +39,7 @@ import { getIdentityStore } from "./identity";
 import { fireSchedule, firstRun } from "./scheduler";
 import { runTask } from "./orchestrator";
 import { getGrant } from "./proxygrants";
-import { setSecret } from "./secrets";
+import { hasSecret, setSecret } from "./secrets";
 import type { Store } from "./store";
 import { traceLlmCall } from "./tracing";
 import { loadWedge, wedgesDir } from "./wedge";
@@ -455,16 +456,24 @@ export function createServer(store: Store): Hono {
     });
     return c.json(conn, 201);
   });
+  // `has_secret` reports whether a credential EXISTS — never its value, never its length, never a
+  // prefix. Without it a UI cannot tell "connected" from "still owes a credential", so it either
+  // guesses (and lies) or stays silent about the one thing the founder needs to act on.
+  const withSecretFlag = async (conn: Connection) => ({
+    ...conn,
+    has_secret: !!conn.secret_ref || (await hasSecret(conn.id)),
+  });
   app.get("/v1/connections", async (c) => {
     const set = accessible(c);
     const clientId = c.req.query("client_id");
     const all = (await domain.listConnections()).filter((x) => inScope(set, x.project_id));
-    return c.json(clientId ? all.filter((x) => x.owner.kind === "client" && x.owner.id === clientId) : all);
+    const rows = clientId ? all.filter((x) => x.owner.kind === "client" && x.owner.id === clientId) : all;
+    return c.json(await Promise.all(rows.map(withSecretFlag)));
   });
   app.get("/v1/connections/:id", async (c) => {
     const conn = await domain.getConnection(c.req.param("id"));
     if (!conn || !inScope(accessible(c), conn.project_id)) return c.json({ error: "not found" }, 404);
-    return c.json(conn);
+    return c.json(await withSecretFlag(conn));
   });
   // Store a connection's secret in the vault (a client's OAuth token, a provider key). The value
   // is never returned; the connection then resolves it server-side at action time.

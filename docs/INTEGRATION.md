@@ -27,7 +27,8 @@ POST /v1/approvals/:id/reject     resolve an approval              → { ok, dec
 GET  /v1/artifacts/:id            fetch/download an artifact
 
 # Who the work is for + where it comes from/goes
-GET/POST /v1/connections          external capabilities (secrets referenced, never returned)
+GET/POST /v1/connections          external capabilities (`has_secret` says whether a credential
+                                  EXISTS; the value itself is never returned)
 GET/POST /v1/channels             a conversation surface bound to a connection
 POST     /v1/channels/:id/inbound webhook entry: resolve client → thread → spawn task
 GET/POST /v1/clients · GET :id    the customer + their task/thread history

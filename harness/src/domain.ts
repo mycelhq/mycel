@@ -79,6 +79,21 @@ export interface DomainStore {
 }
 
 const now = () => new Date().toISOString();
+
+/**
+ * Drop keys whose value is `undefined`.
+ *
+ * `Object.assign(row, patch)` assigns `undefined` over real data, so a PATCH-style route that builds
+ * `{enabled: true, name: undefined, cadence: undefined}` silently ERASES the name and cadence. That
+ * actually happened: pausing a schedule from the UI left it enabled with no cadence and no next run,
+ * so it could never fire again.
+ *
+ * The Postgres store already got this right via `COALESCE`, which made it worse than a plain bug —
+ * the two backends disagreed, so memory-backed tests couldn't catch it.
+ */
+function defined<T extends object>(patch: T): Partial<T> {
+  return Object.fromEntries(Object.entries(patch).filter(([, v]) => v !== undefined)) as Partial<T>;
+}
 export const normalizeHandle = (h: string): string => h.trim().toLowerCase();
 
 export class InMemoryDomainStore implements DomainStore {
@@ -230,7 +245,7 @@ export class InMemoryDomainStore implements DomainStore {
   ): Promise<Case | undefined> {
     const k = this.cases.get(id);
     if (!k) return undefined;
-    Object.assign(k, patch);
+    Object.assign(k, defined(patch));
     if (event) k.history = [...k.history, event];
     k.updated_at = now();
     return k;
@@ -268,7 +283,7 @@ export class InMemoryDomainStore implements DomainStore {
   ): Promise<Schedule | undefined> {
     const s = this.schedules.get(id);
     if (!s) return undefined;
-    Object.assign(s, patch);
+    Object.assign(s, defined(patch));
     return s;
   }
   async deleteSchedule(id: string): Promise<boolean> {
