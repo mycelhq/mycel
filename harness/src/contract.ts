@@ -79,6 +79,11 @@ export interface Approval {
   /** Set when a policy envelope resolved this instead of a human — the audit trail for batch review. */
   policy_reason?: string;
   expires_at: string;
+  /** When it was raised, and when a decision landed. Their difference is how long a customer waited
+   *  on a human — the number that decides whether the gate is a feature or the bottleneck, and the
+   *  one thing about a human-in-the-loop product you cannot improve without measuring. */
+  created_at: string;
+  decided_at?: string;
 }
 
 export interface Artifact {

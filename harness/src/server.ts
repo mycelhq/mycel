@@ -30,6 +30,7 @@ import type {
   KnowledgeItem,
   Risk,
   Task,
+  EventType,
   TaskEvent,
   TaskStatus,
 } from "./contract";
@@ -221,8 +222,73 @@ export function createServer(store: Store): Hono {
       body,
       status: "sent",
     });
-    return c.json(msg, 201);
+
+    // …and the business actually does something about it.
+    //
+    // Recording the message and stopping there made the portal a suggestion box: the founder had to
+    // notice and act. A reply now spawns a run on the thread's own channel, exactly as an inbound
+    // email would — same wedge, same task type, same approval gate. The client didn't get a new
+    // capability, they got a faster path to the one that already existed.
+    let taskId: string | undefined;
+    const channel = (await domain.listChannels()).find((ch) => ch.id === thread.channel_id);
+    if (channel && loadWedge(channel.wedge)) {
+      const history = await domain.listMessages(thread.id);
+      const clientRow = await domain.getClient(sc.client_id);
+      const cfg = loadConfig();
+      const now = new Date().toISOString();
+      const task: Task = {
+        id: randomUUID(),
+        project_id: sc.project_id,
+        wedge: channel.wedge,
+        task_type: channel.task_type,
+        // `kind: "user"` with the client's id, so `selectGrantableConnections` scopes the run to
+        // this client's connections and no one else's.
+        actor: { kind: "user", id: sc.client_id },
+        input: {
+          message: body,
+          subject: thread.subject,
+          thread_id: thread.id,
+          client_id: sc.client_id,
+          client: { id: sc.client_id, display_name: clientRow?.display_name },
+          history: history.map((m) => ({ direction: m.direction, body: m.body })),
+        },
+        constraints: clampConstraints({}, cfg.maxCostCeilingUsd, cfg.maxRuntimeCeilingS),
+        tools: [],
+        output_schema: loadWedge(channel.wedge)?.manifest.task_types?.[channel.task_type]?.output_schema,
+        status: "queued",
+        cost_usd: 0,
+        created_at: now,
+        updated_at: now,
+      };
+      await store.createTask(task);
+      taskId = task.id;
+      void runTask(store, task.id).catch((err) => console.error("[mycel] runTask error:", err));
+    }
+
+    return c.json({ ...msg, task_id: taskId }, 201);
   });
+
+  /**
+   * A client watching their own run.
+   *
+   * The founder-plane stream at `/v1/tasks/:id/events` is unreachable with a client session, which
+   * is correct — but it left a customer-facing product with no way to show work happening. This is
+   * the same stream, scoped: the task must belong to this client, in this project.
+   *
+   * Note what it does NOT forward. `tool.called` args can carry a customer's own data back to them
+   * harmlessly, but a run's internals — costs, model names, raw errors — are the operator's
+   * business, not the customer's. See `PORTAL_EVENTS`.
+   */
+  app.get("/v1/portal/tasks/:id/events", async (c) => {
+    const sc = client(c);
+    const task = await store.getTask(c.req.param("id") ?? "");
+    const belongs =
+      task && task.project_id === sc.project_id && task.actor.kind === "user" && task.actor.id === sc.client_id;
+    if (!belongs) return c.json({ error: "not found" }, 404);
+    return streamTaskEvents(c, task.id, PORTAL_EVENTS);
+  });
+
+
 
   app.get("/v1/portal/cases", async (c) => {
     const sc = client(c);
@@ -450,6 +516,95 @@ export function createServer(store: Store): Hono {
     return c.json(out);
   });
 
+  /**
+   * Analytics — what the business actually did, aggregated.
+   *
+   * No new capture layer and no third-party pixel: every number here already exists as task rows
+   * and events, because the kernel has been recording them since the first run. Bolting on an
+   * analytics SDK would mean a second source of truth that disagrees with the audit log by Tuesday.
+   *
+   * All of it is derived per request. That's fine at this size and honest about it — when it stops
+   * being fine, the fix is a rollup table, not a tracking script.
+   */
+  app.get("/v1/analytics", async (c) => {
+    const set = accessible(c);
+    const days = Math.min(Math.max(Number(c.req.query("days") ?? 30), 1), 365);
+    const since = Date.now() - days * 86400_000;
+
+    const tasks = (await store.listTasks({ limit: 5000 })).filter(
+      (t) => inScope(set, t.project_id) && Date.parse(t.created_at) >= since,
+    );
+    const terminal = tasks.filter((t) => TERMINAL.has(t.status));
+    const succeeded = tasks.filter((t) => t.status === "succeeded");
+
+    // Bucket by day so a caller can draw a line without re-deriving it. Keyed by ISO date, which
+    // sorts lexicographically — no date parsing on the other end.
+    const byDay = new Map<string, { tasks: number; cost_usd: number; failed: number }>();
+    for (const t of tasks) {
+      const day = t.created_at.slice(0, 10);
+      const row = byDay.get(day) ?? { tasks: 0, cost_usd: 0, failed: 0 };
+      row.tasks += 1;
+      row.cost_usd += t.cost_usd || 0;
+      if (["failed", "rejected", "expired", "cancelled"].includes(t.status)) row.failed += 1;
+      byDay.set(day, row);
+    }
+
+    const byWedge = new Map<string, { tasks: number; cost_usd: number }>();
+    for (const t of tasks) {
+      const row = byWedge.get(t.wedge) ?? { tasks: 0, cost_usd: 0 };
+      row.tasks += 1;
+      row.cost_usd += t.cost_usd || 0;
+      byWedge.set(t.wedge, row);
+    }
+
+    // How long a human takes to approve. The number that decides whether "human in the loop" is a
+    // feature or the bottleneck, and nothing else in the product surfaces it.
+    // `Array.filter` ignores a promise and keeps every element, so an async predicate here would
+    // have silently counted other tenants' approvals. Resolve first, then filter.
+    const all = await store.listApprovals();
+    const owned = await Promise.all(
+      all.map(async (a) => {
+        const t = await store.getTask(a.task_id);
+        return t && inScope(set, t.project_id) ? a : null;
+      }),
+    );
+    const approvals = owned.filter((a): a is NonNullable<typeof a> => a !== null);
+    const decided = approvals.filter((a) => a.decided_at && a.created_at);
+    const waits = decided
+      .map((a) => Date.parse(a.decided_at!) - Date.parse(a.created_at))
+      .filter((n) => Number.isFinite(n) && n >= 0)
+      .sort((x, y) => x - y);
+    const median = waits.length ? waits[Math.floor(waits.length / 2)] : null;
+
+    const clients = (await domain.listClients()).filter((x) => inScope(set, x.project_id));
+
+    return c.json({
+      window_days: days,
+      tasks: {
+        total: tasks.length,
+        succeeded: succeeded.length,
+        // Of FINISHED work only. Counting in-flight tasks as failures would make the number sag
+        // every time the business is busy, which is exactly backwards.
+        success_rate: terminal.length ? Math.round((succeeded.length / terminal.length) * 100) : null,
+        in_flight: tasks.length - terminal.length,
+      },
+      cost_usd: Number(tasks.reduce((n, t) => n + (t.cost_usd || 0), 0).toFixed(4)),
+      approvals: {
+        total: approvals.length,
+        auto_approved: approvals.filter((a) => a.status === "auto_approved").length,
+        pending: approvals.filter((a) => a.status === "pending").length,
+        median_wait_seconds: median === null ? null : Math.round(median / 1000),
+      },
+      clients: { total: clients.length },
+      by_day: [...byDay.entries()]
+        .sort(([a], [b]) => a.localeCompare(b))
+        .map(([day, v]) => ({ day, ...v, cost_usd: Number(v.cost_usd.toFixed(4)) })),
+      by_wedge: [...byWedge.entries()]
+        .sort((a, b) => b[1].tasks - a[1].tasks)
+        .map(([wedge, v]) => ({ wedge, ...v, cost_usd: Number(v.cost_usd.toFixed(4)) })),
+    });
+  });
+
   // GET /v1/meta — what a product needs to render itself: version, wedges, observability state.
   app.get("/v1/meta", async (c) => {
     const cfg = loadConfig();
@@ -478,14 +633,39 @@ export function createServer(store: Store): Hono {
     return c.json(t);
   });
 
-  // GET /v1/tasks/:id/events — SSE with Last-Event-ID replay
-  app.get("/v1/tasks/:id/events", async (c) => {
-    const taskId = c.req.param("id");
-    const guard = await store.getTask(taskId);
-    if (!guard || !inScope(accessible(c), guard.project_id)) return c.json({ error: "not found" }, 404);
+  /**
+   * What a CUSTOMER may see of a run.
+   *
+   * An allowlist, not a denylist: a new event type is invisible to clients until someone decides it
+   * should be, which is the right default when the alternative is leaking whatever gets added next.
+   * Excluded on purpose — `cost.charged` (your margins are not their business), `token.delta` (raw
+   * model output before validation), and the approval events (an internal control, and seeing
+   * "waiting for a human" invites "why is a human involved?").
+   */
+  const PORTAL_EVENTS: ReadonlySet<EventType> = new Set<EventType>([
+    "task.created",
+    "step.started",
+    "tool.called",
+    "tool.result",
+    "progress",
+    "output.validated",
+    "artifact.created",
+    "task.finished",
+  ]);
+
+  /**
+   * The task event stream, shared by both credential planes.
+   *
+   * Extracted so the client-facing stream can't drift from the operator one — replay semantics,
+   * queue bounds and terminal handling are subtle enough that a second copy would eventually be a
+   * second set of bugs. The caller has already decided the request is allowed; `allow` decides what
+   * this particular audience gets to see.
+   */
+  const streamTaskEvents = (c: import("hono").Context, taskId: string, allow?: ReadonlySet<EventType>) => {
     const raw = c.req.header("Last-Event-ID") ?? c.req.query("lastEventId") ?? "0";
     const parsed = Number(raw);
     const lastId = Number.isFinite(parsed) ? parsed : 0; // malformed header must not skip replay
+    const visible = (ev: TaskEvent) => !allow || allow.has(ev.type);
 
     return streamSSE(c, async (stream) => {
       let lastSent = lastId;
@@ -509,7 +689,7 @@ export function createServer(store: Store): Hono {
       try {
         // Replay persisted events first (we subscribed above, so nothing is lost in between).
         let finishedInReplay = false;
-        for (const ev of await store.eventsAfter(taskId, lastId)) {
+        for (const ev of (await store.eventsAfter(taskId, lastId)).filter(visible)) {
           await stream.writeSSE({ id: String(ev.id), event: ev.type, data: JSON.stringify(ev) });
           lastSent = ev.id;
           if (ev.type === "task.finished") finishedInReplay = true;
@@ -519,7 +699,7 @@ export function createServer(store: Store): Hono {
         // Already terminal (client reconnected after the end): flush anything remaining, then close.
         const t = await store.getTask(taskId);
         if (t && TERMINAL.has(t.status)) {
-          for (const ev of await store.eventsAfter(taskId, lastSent)) {
+          for (const ev of (await store.eventsAfter(taskId, lastSent)).filter(visible)) {
             await stream.writeSSE({ id: String(ev.id), event: ev.type, data: JSON.stringify(ev) });
             lastSent = ev.id;
           }
@@ -538,6 +718,9 @@ export function createServer(store: Store): Hono {
             const ev = queue.shift();
             if (!ev || ev.id <= lastSent) continue;
             lastSent = ev.id;
+            // Filtered here as well as in replay, or a customer would see a filtered history and
+            // then an unfiltered live tail — the leak arriving only for whoever kept the tab open.
+            if (!visible(ev)) continue;
             await stream.writeSSE({ id: String(ev.id), event: ev.type, data: JSON.stringify(ev) });
             if (ev.type === "task.finished") done = true;
           }
@@ -546,6 +729,14 @@ export function createServer(store: Store): Hono {
         unsub(); // always release the bus listener — no leak on client disconnect / error
       }
     });
+  };
+
+  // GET /v1/tasks/:id/events — SSE with Last-Event-ID replay
+  app.get("/v1/tasks/:id/events", async (c) => {
+    const taskId = c.req.param("id") ?? "";
+    const guard = await store.getTask(taskId);
+    if (!guard || !inScope(accessible(c), guard.project_id)) return c.json({ error: "not found" }, 404);
+    return streamTaskEvents(c, taskId);
   });
 
   app.post("/v1/tasks/:id/cancel", async (c) => {

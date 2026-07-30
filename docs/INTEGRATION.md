@@ -58,6 +58,32 @@ are derived from the session too, so a customer can't post a message that appear
 Links are single-use and hashed at rest; revoking kills live sessions *and* any link still sitting
 unopened in an inbox, because otherwise "revoke" leaves a working key in their email.
 
+### Watching work happen, and measuring it
+
+```
+GET /v1/tasks/:id/events          founder  full stream, Last-Event-ID replay
+GET /v1/portal/tasks/:id/events   CLIENT   the same stream, filtered for a customer
+GET /v1/analytics?days=30         founder  rollups: tasks, cost, approval latency, by day/wedge
+```
+
+The client stream is an **allowlist**, not a denylist — a new event type is invisible to customers
+until someone decides otherwise, which is the right default when the alternative leaks whatever gets
+added next. Excluded on purpose: `cost.charged` (your margins), `token.delta` (raw model output
+before validation) and the approval events (an internal control; "waiting for a human" invites "why
+is a human involved?").
+
+A client replying in the portal now **spawns a run** on the thread's channel — same wedge, same task
+type, same approval gate. Recording the message and stopping there made the portal a suggestion box.
+
+`/v1/analytics` derives everything from tasks and events that already exist. There is no capture
+layer and no third-party pixel, because a second source of truth disagrees with the audit log within
+a week. Note `success_rate` is over *finished* work — counting in-flight tasks as failures would make
+the number sag whenever the business is busy.
+
+**Consuming SSE from a browser:** `EventSource` cannot send an Authorization header, and putting the
+token in the query string leaks it into history, logs and Referer. Proxy the stream through your own
+server, same-origin, and add the credential there — see `business-template/app/portal/[thread]/stream`.
+
 ## What the kernel exposes (`/v1`)
 
 Server-to-server. Everything a product needs is here:

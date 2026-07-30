@@ -79,6 +79,10 @@ export class PostgresStore implements Store {
     await this.pool.query(`ALTER TABLE tasks ADD COLUMN IF NOT EXISTS project_id text;`);
     await this.pool.query(`ALTER TABLE tasks ADD COLUMN IF NOT EXISTS case_id uuid;`);
     await this.pool.query(`ALTER TABLE approvals ADD COLUMN IF NOT EXISTS policy_reason text;`);
+    // Additive migrations, so an existing deployment keeps its approvals. Rows that predate this
+    // simply have a null created_at and are excluded from the latency stat rather than skewing it.
+    await this.pool.query(`ALTER TABLE approvals ADD COLUMN IF NOT EXISTS created_at timestamptz NOT NULL DEFAULT now();`);
+    await this.pool.query(`ALTER TABLE approvals ADD COLUMN IF NOT EXISTS decided_at timestamptz;`);
   }
 
   private rowToTask(r: any): Task {
@@ -221,6 +225,7 @@ export class PostgresStore implements Store {
       risk: a.risk,
       preview: a.preview,
       status: "pending",
+      created_at: new Date().toISOString(),
       expires_at: new Date(Date.now() + (a.ttlMs ?? 300000)).toISOString(),
     };
     await this.pool.query(
@@ -248,6 +253,8 @@ export class PostgresStore implements Store {
       status: r.status,
       policy_reason: r.policy_reason ?? undefined,
       expires_at: r.expires_at ? new Date(r.expires_at).toISOString() : "",
+      created_at: r.created_at ? new Date(r.created_at).toISOString() : "",
+      decided_at: r.decided_at ? new Date(r.decided_at).toISOString() : undefined,
     };
   }
 
@@ -258,7 +265,7 @@ export class PostgresStore implements Store {
 
   async setApproval(id: string, status: Approval["status"], policyReason?: string): Promise<Approval | undefined> {
     const r = await this.pool.query(
-      `UPDATE approvals SET status=$2, policy_reason=COALESCE($3, policy_reason) WHERE approval_id=$1 RETURNING *`,
+      `UPDATE approvals SET status=$2, policy_reason=COALESCE($3, policy_reason), decided_at=now() WHERE approval_id=$1 RETURNING *`,
       [id, status, policyReason ?? null],
     );
     return r.rows[0] ? this.rowToApproval(r.rows[0]) : undefined;

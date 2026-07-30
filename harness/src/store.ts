@@ -135,6 +135,7 @@ export class InMemoryStore implements Store {
       risk: a.risk,
       preview: a.preview,
       status: "pending",
+      created_at: new Date().toISOString(),
       expires_at: new Date(Date.now() + (a.ttlMs ?? 300000)).toISOString(),
     };
     this.approvals.set(approval.approval_id, approval);
@@ -149,6 +150,7 @@ export class InMemoryStore implements Store {
     const a = this.approvals.get(id);
     if (a) {
       a.status = status;
+      a.decided_at = new Date().toISOString();
       if (policyReason !== undefined) a.policy_reason = policyReason;
     }
     return a;

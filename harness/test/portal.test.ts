@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { api, makeApp, KEY } from "./helpers";
+import { api, makeApp, waitTask, KEY } from "./helpers";
 import { getDomainStore } from "../src/domain";
 import { _resetPortal } from "../src/portal";
 
@@ -161,5 +161,71 @@ test("portal: minting a link is auditable, without recording the link", async ()
   assert.ok(
     !JSON.stringify(entry).includes(link.json.token),
     "but the audit log must not itself become a way in",
+  );
+});
+
+test("portal: a client's reply starts work, and their stream hides the operator's internals", async () => {
+  _resetPortal();
+  const { app } = makeApp();
+  const projectId = (await api(app, "me")).json.projects[0].id;
+  const domain = getDomainStore();
+
+  // A thread on a real channel, which is what makes a reply actionable rather than just recorded.
+  const conn = await domain.createConnection({
+    project_id: projectId, kind: "email", name: "mail",
+    owner: { kind: "founder", id: "founder" }, config: { api_url: "http://x", from: "a@b.c" },
+  });
+  const channel = await domain.createChannel({
+    project_id: projectId, connection_id: conn.id, kind: "email", address: "ops@x.test",
+    wedge: "enrollment-operator", task_type: "reply_to_lead",
+  });
+  const cl = await domain.createClient({ project_id: projectId, display_name: "acme", handles: ["a@x.test"], metadata: {} });
+  const thread = await domain.createThread({ project_id: projectId, client_id: cl.id, channel_id: channel.id, subject: "hi", status: "open" });
+
+  const link = await api(app, `clients/${cl.id}/portal-link`, { method: "POST" });
+  const tok = (await api(app, "portal/session", { method: "POST", body: JSON.stringify({ token: link.json.token }) })).json.token as string;
+
+  const sent = await api(app, `portal/threads/${thread.id}/messages`, {
+    method: "POST",
+    headers: { authorization: `Bearer ${tok}` },
+    body: JSON.stringify({ body: "can you check my March receipts?" }),
+  });
+  assert.equal(sent.status, 201);
+  // The whole point: recording the message and stopping there made the portal a suggestion box.
+  assert.ok(sent.json.task_id, "a reply starts a run rather than waiting for the founder to notice");
+
+  // The run is scoped to this client, so its connection grants are too.
+  const task = (await api(app, `tasks/${sent.json.task_id}`)).json;
+  assert.equal(task.actor.id, cl.id);
+  assert.equal(task.project_id, projectId);
+
+  await waitTask(app, sent.json.task_id as string);
+
+  // A customer may watch their own run…
+  const res = await app.request(`/v1/portal/tasks/${sent.json.task_id}/events`, {
+    headers: { authorization: `Bearer ${tok}` },
+  });
+  assert.equal(res.status, 200);
+  const body = await res.text();
+  assert.match(body, /task\.created/);
+  assert.match(body, /task\.finished/);
+
+  // …but not the operator's internals. An allowlist, so a new event type is invisible to clients
+  // until someone decides otherwise — the safe default when the alternative leaks whatever's added
+  // next. Costs are margins; token.delta is raw model output before validation.
+  assert.ok(!body.includes("cost.charged"), "a customer must not see what the run cost");
+  assert.ok(!body.includes("token.delta"), "nor unvalidated model output");
+  assert.ok(!body.includes("approval."), "nor that a human had to sign it off");
+
+  // And not someone else's run. The founder-plane stream stays unreachable with a client token.
+  assert.equal((await app.request(`/v1/tasks/${sent.json.task_id}/events`, { headers: { authorization: `Bearer ${tok}` } })).status, 401);
+  const other = await api(app, "tasks", {
+    method: "POST",
+    body: JSON.stringify({ wedge: "enrollment-operator", task_type: "reply_to_lead", input: {} }),
+  });
+  assert.equal(
+    (await app.request(`/v1/portal/tasks/${other.json.id}/events`, { headers: { authorization: `Bearer ${tok}` } })).status,
+    404,
+    "a run that isn't theirs doesn't exist as far as they're concerned",
   );
 });
