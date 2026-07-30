@@ -260,6 +260,93 @@ export async function executeTool(
   };
 }
 
+export interface Toolkit {
+  slug: string;
+  name: string;
+  /** Logo / description live under `meta`, which Composio types loosely. */
+  logo?: string;
+  description?: string;
+  categories: string[];
+  /** True when Composio supplies the OAuth app, so the founder registers nothing. */
+  composio_managed: boolean;
+  no_auth: boolean;
+}
+
+interface RawToolkit {
+  slug: string;
+  name: string;
+  no_auth?: boolean;
+  deprecated?: boolean;
+  composio_managed_auth_schemes?: string[];
+  meta?: { logo?: string; description?: string; categories?: Array<{ name?: string; slug?: string } | string> };
+}
+
+/** The app catalogue. What a founder browses when they want to connect something. */
+export async function listToolkits(
+  cfg: ComposioConfig,
+  args: { search?: string; category?: string; limit?: number; cursor?: string },
+): Promise<{ items: Toolkit[]; next_cursor?: string; total?: number }> {
+  const q = new URLSearchParams();
+  if (args.search) q.set("search", args.search);
+  if (args.category) q.set("category", args.category);
+  if (args.cursor) q.set("cursor", args.cursor);
+  q.set("limit", String(Math.min(args.limit ?? 40, 100)));
+  const body = await call<{ items?: RawToolkit[]; next_cursor?: string; total_items?: number }>(
+    cfg,
+    `/toolkits?${q}`,
+  );
+  const items = (body.items ?? [])
+    .filter((t) => !t.deprecated)
+    .map((t) => ({
+      slug: t.slug,
+      name: t.name,
+      logo: t.meta?.logo,
+      description: t.meta?.description,
+      categories: (t.meta?.categories ?? []).map((c) => (typeof c === "string" ? c : (c.name ?? c.slug ?? ""))).filter(Boolean),
+      // Composio-managed auth is what makes this one click: their OAuth app, not one the founder
+      // has to go and register with the provider first.
+      composio_managed: (t.composio_managed_auth_schemes ?? []).length > 0,
+      no_auth: !!t.no_auth,
+    }));
+  return { items, next_cursor: body.next_cursor, total: body.total_items };
+}
+
+export async function listCategories(cfg: ComposioConfig): Promise<{ slug: string; name: string }[]> {
+  const body = await call<{ items?: Array<{ slug?: string; id?: string; name?: string }> }>(
+    cfg,
+    "/toolkits/categories",
+  );
+  return (body.items ?? [])
+    .map((c) => ({ slug: String(c.slug ?? c.id ?? ""), name: String(c.name ?? c.slug ?? "") }))
+    .filter((c) => c.slug);
+}
+
+/**
+ * Create an auth config for a toolkit using COMPOSIO-MANAGED auth.
+ *
+ * This is what turns "connect Xero" into one click instead of a project. The alternative —
+ * `use_custom_auth` — means the founder registers an OAuth app with the provider, copies a client id
+ * and secret, and configures redirect URIs. Nobody running a bookkeeping practice is doing that, so
+ * the product default has to be the managed path.
+ *
+ * Idempotent by intent: created once per toolkit per project and then reused (see the caller).
+ */
+export async function createManagedAuthConfig(
+  cfg: ComposioConfig,
+  args: { toolkit: string; name?: string },
+): Promise<{ id: string }> {
+  const body = await call<{ auth_config?: { id?: string }; id?: string }>(cfg, "/auth_configs", {
+    method: "POST",
+    body: JSON.stringify({
+      toolkit: { slug: args.toolkit },
+      auth_config: { type: "use_composio_managed_auth", name: args.name ?? `mycel-${args.toolkit}` },
+    }),
+  });
+  const id = body.auth_config?.id ?? body.id;
+  if (!id) throw new ComposioError(502, "composio did not return an auth config id");
+  return { id };
+}
+
 /** A tool slug looks like TOOLKIT_ACTION. Used to match a capability to a Composio connection. */
 export function slugToolkit(slug: string): string | undefined {
   const m = /^([A-Za-z0-9]+)_/.exec(slug.trim());

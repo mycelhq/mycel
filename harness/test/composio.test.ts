@@ -43,6 +43,23 @@ async function fakeComposio(): Promise<{ url: string; seen: Seen[]; close: () =>
         res.end(JSON.stringify({ successful: true, data: { invoice_id: "INV-1" }, error: "", log_id: "log_1" }));
         return;
       }
+      if (req.url?.startsWith("/api/v3/auth_configs")) {
+        res.end(JSON.stringify({ auth_config: { id: "ac_managed_1" } }));
+        return;
+      }
+      if (req.url?.startsWith("/api/v3/toolkits")) {
+        res.end(
+          JSON.stringify({
+            items: [
+              { slug: "xero", name: "Xero", composio_managed_auth_schemes: ["OAUTH2"], meta: { description: "Accounting", categories: [{ name: "Accounting" }] } },
+              { slug: "gone", name: "Gone", deprecated: true },
+            ],
+            next_cursor: null,
+            total_items: 2,
+          }),
+        );
+        return;
+      }
       res.end(JSON.stringify({ items: [{ slug: "XERO_GET_INVOICES", name: "Get invoices" }] }));
     });
   });
@@ -247,4 +264,95 @@ test("composio: the approval preview carries no credential material", () => {
   assert.deepEqual(p.arguments, { amount: 12 });
   const text = JSON.stringify(p);
   assert.ok(!text.includes("ca_1"), "not even the connected-account reference belongs on a card");
+});
+
+test("composio: the catalogue hides deprecated apps, and connecting is one call and idempotent", async () => {
+  // The domain store is a process singleton, so earlier tests in this file may already have made a
+  // xero connection. Assert order-independent invariants rather than absolute counts.
+  const fake = await fakeComposio();
+  process.env.COMPOSIO_API_KEY = API_KEY;
+  process.env.COMPOSIO_BASE_URL = fake.url;
+  try {
+    const { app } = makeApp();
+    const list = (await api(app, "composio/toolkits")).json as {
+      items: { slug: string; composio_managed: boolean }[];
+    };
+    assert.deepEqual(list.items.map((t) => t.slug), ["xero"], "a deprecated toolkit isn't offered");
+    assert.equal(list.items[0].composio_managed, true, "one click is possible for this one");
+    assert.ok(!JSON.stringify(list).includes(API_KEY));
+
+    // Connect in ONE call: no auth config to create by hand, no client id or secret to obtain.
+    // A slug no other test in this file touches, so the process-singleton store can't hand us a
+    // connection that already has an auth config and make the managed-auth path look untaken.
+    const connect = await api(app, "composio/toolkits/hubspot/connect", { method: "POST" });
+    assert.equal(connect.status, 201);
+    assert.equal(connect.json.redirect_url, "https://auth.xero.test/authorize?x=1");
+    const connectionId = connect.json.connection_id as string;
+    assert.ok(connectionId);
+
+    const created = fake.seen.find((s) => s.path.startsWith("/api/v3/auth_configs"))!;
+    assert.equal(
+      (created.body.auth_config as { type: string }).type,
+      "use_composio_managed_auth",
+      "managed auth is the default — asking a founder to register an OAuth app is not a product",
+    );
+
+    const stored = ((await api(app, "connections")).json as {
+      id: string;
+      config: { toolkit?: string; connected_account_id?: string };
+    }[]).find((x) => x.config.toolkit === "hubspot")!;
+    assert.equal(stored.id, connectionId);
+    assert.equal(stored.config.connected_account_id, "ca_test_123", "the reference is stored, not a token");
+
+    // Clicking Connect again reuses everything instead of piling up duplicates — which is exactly
+    // what someone does when a tab gets closed mid-flow.
+    const authConfigsBefore = fake.seen.filter((s) => s.path.startsWith("/api/v3/auth_configs")).length;
+    const again = await api(app, "composio/toolkits/hubspot/connect", { method: "POST" });
+    assert.equal(again.json.connection_id, connectionId, "same connection");
+    assert.equal(
+      fake.seen.filter((s) => s.path.startsWith("/api/v3/auth_configs")).length,
+      authConfigsBefore,
+      "and the auth config is reused, not recreated per click",
+    );
+
+    const founderHubspot = ((await api(app, "connections")).json as {
+      kind: string;
+      owner: { kind: string };
+      config: { toolkit?: string };
+    }[]).filter((x) => x.kind === "composio" && x.config.toolkit === "hubspot" && x.owner.kind === "founder");
+    assert.equal(founderHubspot.length, 1, "one connection per toolkit, not one per click");
+  } finally {
+    delete process.env.COMPOSIO_API_KEY;
+    delete process.env.COMPOSIO_BASE_URL;
+    await fake.close();
+  }
+});
+
+test("composio: connecting for a client gives that client their own account", async () => {
+  const fake = await fakeComposio();
+  process.env.COMPOSIO_API_KEY = API_KEY;
+  process.env.COMPOSIO_BASE_URL = fake.url;
+  try {
+    const { app } = makeApp();
+    const projectId = (await api(app, "me")).json.projects[0].id;
+    await api(app, "composio/toolkits/quickbooks/connect", {
+      method: "POST",
+      body: JSON.stringify({ client_id: "acme-ltd", name: "acme-books" }),
+    });
+    const initiate = fake.seen.filter((s) => s.path === "/api/v3/connected_accounts").pop()!;
+    assert.equal(
+      (initiate.body.connection as { user_id: string }).user_id,
+      `${projectId}:client:acme-ltd`,
+      "each customer's Xero is a separate Composio account under the same key",
+    );
+    const conn = ((await api(app, "connections")).json as {
+      owner: { kind: string; id: string };
+      config: { toolkit?: string };
+    }[]).find((x) => x.config.toolkit === "quickbooks")!;
+    assert.deepEqual(conn.owner, { kind: "client", id: "acme-ltd" });
+  } finally {
+    delete process.env.COMPOSIO_API_KEY;
+    delete process.env.COMPOSIO_BASE_URL;
+    await fake.close();
+  }
 });

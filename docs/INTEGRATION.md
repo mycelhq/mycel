@@ -59,13 +59,19 @@ founder is re-pasting one every half hour. Set `COMPOSIO_API_KEY` and a connecti
 `composio` becomes a one-click authorisation instead.
 
 ```
-POST /v1/connections                     {"kind":"composio","name":"xero","client_id":"acme",
-                                          "config":{"toolkit":"xero","auth_config_id":"ac_…",
-                                                    "read_tools":["XERO_GET_INVOICES"]}}
-POST /v1/connections/:id/composio/connect → { redirect_url, connected_account_id, status }
-GET  /v1/connections/:id/composio/status  → { status, active }
-GET  /v1/composio/tools?toolkit=xero      → what you can call (for authoring, not for the agent)
+GET  /v1/composio/toolkits?search=xero      → the app catalogue, marked with what you already have
+GET  /v1/composio/categories                → category filter
+POST /v1/composio/toolkits/:toolkit/connect → auth config + connection + authorise URL, in ONE call
+GET  /v1/connections/:id/composio/status    → { status, active }
+GET  /v1/composio/tools?toolkit=xero        → what you can call (for authoring, not for the agent)
 ```
+
+`POST /v1/composio/toolkits/:toolkit/connect` is the one that matters. It creates a
+**Composio-managed** auth config, so there is no OAuth client for the founder to register with the
+provider — the alternative means obtaining a client id and secret and configuring redirect URIs, and
+nobody running a bookkeeping practice is doing that. It's idempotent on (project, toolkit, owner), so
+clicking Connect again after closing the tab reuses the connection and the auth config instead of
+accumulating duplicates. Pass `client_id` to connect on a specific customer's behalf.
 
 Send the founder to `redirect_url`, then poll `status` until `active`. **Composio owns the OAuth
 callback**, so Mycel exposes no public redirect route — one less internet-facing surface, and no

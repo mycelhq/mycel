@@ -49,6 +49,9 @@ import {
   initiateConnection as composioInitiate,
   isReadTool as isComposioReadTool,
   listTools as composioListTools,
+  listToolkits as composioListToolkits,
+  listCategories as composioCategories,
+  createManagedAuthConfig,
   slugToolkit,
 } from "./composio";
 import { buildCoverage, gapId, isGapId, recordAnswer } from "./intake";
@@ -582,6 +585,136 @@ export function createServer(store: Store): Hono {
     try {
       const st = await composioStatus(r.cfg, cc.connected_account_id);
       return c.json({ ...st, active: st.status === "ACTIVE" });
+    } catch (e) {
+      return c.json({ error: (e as Error).message }, 502);
+    }
+  });
+
+
+  // The app catalogue — 250+ toolkits, browsable. This is the surface that makes Composio visible as
+  // a capability rather than a config field only blueprints can reach.
+  app.get("/v1/composio/toolkits", async (c) => {
+    const cfg = composioConfig();
+    if (!cfg) return c.json({ error: "COMPOSIO_API_KEY is not set on the harness" }, 501);
+    try {
+      const [list, conns] = await Promise.all([
+        composioListToolkits(cfg, {
+          search: c.req.query("search") || undefined,
+          category: c.req.query("category") || undefined,
+          cursor: c.req.query("cursor") || undefined,
+          limit: c.req.query("limit") ? Number(c.req.query("limit")) : undefined,
+        }),
+        domain.listConnections(),
+      ]);
+      // Which of these the founder already has, so the catalogue can say "connected" instead of
+      // inviting them to connect Xero for the third time.
+      const set = accessible(c);
+      const mine = new Map(
+        conns
+          .filter((x) => x.kind === "composio" && inScope(set, x.project_id))
+          .map((x) => [composioConnConfig(x).toolkit, x]),
+      );
+      return c.json({
+        ...list,
+        items: list.items.map((t) => {
+          const conn = mine.get(t.slug);
+          return {
+            ...t,
+            connection_id: conn?.id,
+            connected: conn ? !!composioConnConfig(conn).connected_account_id : false,
+          };
+        }),
+      });
+    } catch (e) {
+      return c.json({ error: (e as Error).message }, 502);
+    }
+  });
+
+  app.get("/v1/composio/categories", async (c) => {
+    const cfg = composioConfig();
+    if (!cfg) return c.json({ error: "COMPOSIO_API_KEY is not set on the harness" }, 501);
+    try {
+      return c.json(await composioCategories(cfg));
+    } catch (e) {
+      return c.json({ error: (e as Error).message }, 502);
+    }
+  });
+
+  /**
+   * Connect an app in one call: auth config → connection → authorise URL.
+   *
+   * The founder picks an app and clicks. Everything that would otherwise be setup — registering an
+   * OAuth client with the provider, creating an auth config, creating a connection — happens here,
+   * using Composio-MANAGED auth so there is no client id or secret for them to obtain.
+   *
+   * Idempotent on (project, toolkit, owner): calling twice reuses the connection and re-initiates
+   * authorisation rather than accumulating duplicates, because "click Connect again" is what people
+   * do when a tab gets closed mid-flow.
+   */
+  app.post("/v1/composio/toolkits/:toolkit/connect", async (c) => {
+    const cfg = composioConfig();
+    if (!cfg) return c.json({ error: "COMPOSIO_API_KEY is not set on the harness" }, 501);
+    const projectId = writeProjectId(c);
+    if (!projectId) return c.json({ error: "specify a project (X-Mycel-Project header)" }, 400);
+    const toolkit = (c.req.param("toolkit") ?? "").toLowerCase();
+    if (!/^[a-z0-9_-]{1,64}$/.test(toolkit)) return c.json({ error: "invalid toolkit" }, 400);
+
+    const b = (await c.req.json().catch(() => ({}))) as {
+      client_id?: string;
+      name?: string;
+      read_tools?: string[];
+    };
+    const owner: ConnectionOwner = b.client_id
+      ? { kind: "client", id: b.client_id }
+      : { kind: "founder", id: "founder" };
+
+    try {
+      const existing = (await domain.listConnections()).find(
+        (x) =>
+          x.project_id === projectId &&
+          x.kind === "composio" &&
+          composioConnConfig(x).toolkit === toolkit &&
+          x.owner.kind === owner.kind &&
+          x.owner.id === owner.id,
+      );
+      const cc = existing ? composioConnConfig(existing) : undefined;
+      // Reuse the auth config — one per toolkit per project is the point; creating a fresh one per
+      // click would litter their Composio account.
+      const authConfigId =
+        cc?.auth_config_id ?? (await createManagedAuthConfig(cfg, { toolkit })).id;
+
+      const conn =
+        existing ??
+        (await domain.createConnection({
+          project_id: projectId,
+          kind: "composio",
+          name: b.name ?? toolkit,
+          owner,
+          config: { toolkit, auth_config_id: authConfigId, read_tools: b.read_tools ?? [] },
+        }));
+
+      const out = await composioInitiate(cfg, {
+        authConfigId,
+        userId: composioUserId(conn),
+      });
+      await domain.updateConnection(conn.id, {
+        config: {
+          ...conn.config,
+          toolkit,
+          auth_config_id: authConfigId,
+          connected_account_id: out.connected_account_id,
+          ...(b.read_tools ? { read_tools: b.read_tools } : {}),
+        },
+      });
+      await audit({
+        project_id: projectId,
+        actor: (c.get("scope").member_id ?? "system") as string,
+        action: "connection.linked",
+        entity: "connection",
+        entity_id: conn.id,
+        detail: { connection: conn.name, toolkit, connected_account_id: out.connected_account_id },
+      });
+      return c.json({ ...out, connection_id: conn.id, toolkit }, 201);
     } catch (e) {
       return c.json({ error: (e as Error).message }, 502);
     }

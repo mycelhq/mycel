@@ -187,6 +187,13 @@ notice it.
 `GET /v1/wedges/:wedge/intake` returns coverage; the cloud app surfaces it as a Teach page and a
 dashboard nudge.
 
+### App catalogue — 250+ toolkits, one click  ✅ shipped
+`GET /v1/composio/toolkits` is the browsable catalogue, annotated with what this project already has
+connected, and `POST /v1/composio/toolkits/:slug/connect` does auth config + connection + authorise
+URL in a single call using **Composio-managed auth** — so the founder never registers an OAuth app
+with the provider. Idempotent on (project, toolkit, owner), because "click Connect again" is what
+people do when a tab closes mid-flow. Surfaced in cloud as an Apps page with search.
+
 ### Connection kinds — consolidated on Composio  ✅ shipped
 `stripe`, `sms`, `whatsapp` and `calendar` were removed. All four returned "not implemented yet" at
 run time: a menu advertising four dishes the kitchen couldn't cook. Composio covers those and ~250
