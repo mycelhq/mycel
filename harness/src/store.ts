@@ -47,6 +47,13 @@ export interface Store {
 /** Everything an artifact needs at creation. `id` and `created_at` belong to the store. */
 export type NewArtifact = Omit<Artifact, "id" | "created_at">;
 
+/** Decoded size, whatever the encoding. Base64 length is a third larger and means nothing to anyone. */
+export function sizeOf(a: { content: string; encoding?: "utf8" | "base64" }): number {
+  return a.encoding === "base64"
+    ? Buffer.from(a.content, "base64").byteLength
+    : Buffer.byteLength(a.content, "utf8");
+}
+
 /** Metadata only. One helper so the memory and pg stores can't disagree about what "list" omits. */
 export function stripContent(a: Artifact): Omit<Artifact, "content"> {
   const { content: _c, ...rest } = a;
@@ -175,6 +182,10 @@ export class InMemoryStore implements Store {
       ...a,
       id: randomUUID(),
       created_at: new Date().toISOString(),
+      // Derived when the caller didn't say. Only uploads were setting it, so every artifact the
+      // agent produced showed a blank size in the UI — a column that is empty most of the time
+      // reads as broken rather than as absent.
+      size_bytes: a.size_bytes ?? sizeOf(a),
     };
     this.artifacts.set(art.id, art);
     return art;

@@ -12,7 +12,7 @@ import type {
   TaskEvent,
   TaskStatus,
 } from "./contract";
-import { stripContent } from "./store";
+import { sizeOf, stripContent } from "./store";
 import type { NewArtifact, Store } from "./store";
 
 const { Pool } = pg;
@@ -290,13 +290,18 @@ export class PostgresStore implements Store {
   }
 
   async addArtifact(a: NewArtifact): Promise<Artifact> {
-    const art: Artifact = { ...a, id: crypto.randomUUID(), created_at: new Date().toISOString() };
+    const art: Artifact = {
+      ...a,
+      id: crypto.randomUUID(),
+      created_at: new Date().toISOString(),
+      size_bytes: a.size_bytes ?? sizeOf(a),
+    };
     await this.pool.query(
       `INSERT INTO artifacts (id, task_id, name, content_type, content, encoding, size_bytes, source, client_id, uploaded_by)
        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)`,
       [
         art.id, art.task_id, art.name, art.content_type, art.content,
-        art.encoding ?? "utf8", art.size_bytes ?? Buffer.byteLength(art.content),
+        art.encoding ?? "utf8", art.size_bytes ?? sizeOf(art),
         art.source ?? "agent", art.client_id ?? null, art.uploaded_by ?? null,
       ],
     );

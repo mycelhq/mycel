@@ -248,3 +248,81 @@ test("artifacts: a client session cannot upload to someone else's thread", async
   });
   assert.equal(res.status, 404);
 });
+
+test("artifacts: a size is recorded whatever wrote the file", async () => {
+  // Only uploads used to set it, so every artifact the agent produced showed a blank size. A column
+  // that is empty most of the time reads as broken rather than as absent.
+  const { app, store } = makeApp();
+  const { id: taskId } = await aTask(app, store);
+
+  const text = await store.addArtifact({
+    task_id: taskId,
+    name: "summary.md",
+    content_type: "text/markdown",
+    content: "# Done\n",
+  });
+  assert.equal(text.size_bytes, Buffer.byteLength("# Done\n"));
+
+  const binary = await store.addArtifact({
+    task_id: taskId,
+    name: "chart.png",
+    content_type: "image/png",
+    content: PNG.toString("base64"),
+    encoding: "base64",
+  });
+  // Decoded bytes, not base64 length — the latter is a third larger and means nothing to anyone.
+  assert.equal(binary.size_bytes, PNG.byteLength);
+});
+
+test("artifacts: uploading answers with metadata, not with the file it was just sent", async () => {
+  const { app, store } = makeApp();
+  const { id: taskId } = await aTask(app, store);
+  const res = await app.request(`/v1/tasks/${taskId}/artifacts`, {
+    method: "POST",
+    headers: { authorization: `Bearer ${process.env.MYCEL_API_KEY || "testkey"}` },
+    body: upload("scan.png", "image/png", PNG),
+  });
+  const body = (await res.json()) as Record<string, unknown>;
+  assert.equal(body.content, undefined, "a 25MB upload should not be answered with 33MB of base64");
+  assert.equal(body.size_bytes, PNG.byteLength);
+});
+
+test("artifacts: a customer can list their thread's files without waiting for a reply", async () => {
+  // Artifacts hang off tasks, and a task id only reaches a customer when the agent posts an
+  // OUTBOUND message. Without this route the portal had to reconstruct the list from the run event
+  // stream, so a file sent five minutes ago stayed invisible until the agent answered.
+  const { app } = makeApp();
+  const domain = getDomainStore();
+  const projectId = (await api(app, "me")).json.projects[0].id;
+
+  const clientRow = await domain.createClient({ project_id: projectId, display_name: "Hartley" } as never);
+  const channel = await domain.createChannel({
+    project_id: projectId, kind: "email", wedge: "books-keeper", task_type: "daily_sync", address: "h@example.com",
+  } as never);
+  const thread = await domain.createThread({
+    project_id: projectId, client_id: clientRow.id, channel_id: channel.id, status: "open",
+  } as never);
+  const session = exchangePortalLink(mintPortalLink({ project_id: projectId, client_id: clientRow.id }).token)!.token;
+
+  assert.deepEqual((await api(app, `portal/threads/${thread.id}/artifacts`, {}, session)).json, []);
+
+  const fd = new FormData();
+  fd.append("file", new File([PNG as unknown as BlobPart], "statement.png", { type: "image/png" }));
+  await app.request(`/v1/portal/threads/${thread.id}/attachments`, {
+    method: "POST",
+    headers: { authorization: `Bearer ${session}` },
+    body: fd,
+  });
+
+  const listed = (await api(app, `portal/threads/${thread.id}/artifacts`, {}, session)).json as {
+    name: string; content?: string;
+  }[];
+  assert.equal(listed.length, 1, "visible immediately, before the agent has said anything");
+  assert.equal(listed[0].name, "statement.png");
+  assert.equal(listed[0].content, undefined, "metadata only");
+
+  // And another customer's session sees nothing on that thread at all.
+  const other = await domain.createClient({ project_id: projectId, display_name: "Other" } as never);
+  const otherSession = exchangePortalLink(mintPortalLink({ project_id: projectId, client_id: other.id }).token)!.token;
+  assert.equal((await api(app, `portal/threads/${thread.id}/artifacts`, {}, otherSession)).status, 404);
+});

@@ -366,6 +366,42 @@ export function createServer(store: Store): Hono {
   });
 
   /**
+   * The files on a customer's thread.
+   *
+   * Without this the portal could accept an upload and then had no way to list it: artifacts hang
+   * off tasks, and a task id only reaches a customer when the agent posts an outbound message. So
+   * the UI had to reconstruct the list from the run event stream, which meant a file the customer
+   * sent five minutes ago was invisible until the agent replied.
+   *
+   * Scoped twice, like the download below: the task must be in this project AND attributed to this
+   * client.
+   */
+  app.get("/v1/portal/threads/:id/artifacts", async (c) => {
+    const sc = client(c);
+    const thread = await domain.getThread(c.req.param("id") ?? "");
+    if (!thread || thread.client_id !== sc.client_id) return c.json({ error: "not found" }, 404);
+
+    // Every run this thread has spawned, via the messages that carry a task id, plus any task whose
+    // input names the thread — an upload's run is reachable either way.
+    const messages = await domain.listMessages(thread.id);
+    const ids = new Set(messages.map((m) => m.task_id).filter((x): x is string => !!x));
+    for (const t of await store.listTasks({ limit: 500 })) {
+      if (t.project_id === sc.project_id && (t.input as { thread_id?: string })?.thread_id === thread.id) {
+        ids.add(t.id);
+      }
+    }
+
+    const out: Omit<Artifact, "content">[] = [];
+    for (const id of ids) {
+      const t = await store.getTask(id);
+      if (!t || t.project_id !== sc.project_id || taskClientId(t) !== sc.client_id) continue;
+      out.push(...(await store.listArtifacts(id)));
+    }
+    out.sort((a, b) => a.created_at.localeCompare(b.created_at));
+    return c.json(out);
+  });
+
+  /**
    * A customer downloading a file from their own thread.
    *
    * Two conditions, both required: the artifact's task belongs to this client, in this project.
@@ -1355,7 +1391,9 @@ export function createServer(store: Store): Hono {
     const scope = c.get("scope");
     const art = await ingestUpload(c, t.id, { uploadedBy: scope.member_id ?? "product-key" });
     if ("error" in art) return c.json({ error: art.error }, art.status as 400);
-    return c.json(art.artifact, 201);
+    // Metadata only. Echoing the content back means a 25MB upload is answered with 33MB of base64
+    // the caller already has.
+    return c.json(stripArtifactContent(art.artifact), 201);
   });
 
   // ── The service surface: connections / channels / clients / threads ──
