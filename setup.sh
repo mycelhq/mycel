@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Mycel setup — the kernel for AI-native service businesses.
 # Renders the logo, checks/installs prerequisites, collects your keys, writes .env.
-# Works interactively or piped:  curl -fsSL https://mycel.dev/install | bash
+# Works interactively or piped:  curl -fsSL https://mycelai.dev/install | bash
 set -euo pipefail
 
 # ── pretty ──────────────────────────────────────────────────────────────────

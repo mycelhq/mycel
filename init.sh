@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Mycel bootstrap — clone + set up in one line:
-#   curl -fsSL https://mycel.dev/init | bash
-# (mycel.dev/init redirects to this file; or run it from a checkout with ./setup.sh)
+#   curl -fsSL https://mycelai.dev/init | bash
+# (mycelai.dev/init redirects to this file; or run it from a checkout with ./setup.sh)
 set -euo pipefail
 
 REPO="${MYCEL_REPO:-https://github.com/mycelhq/mycel.git}"

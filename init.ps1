@@ -1,6 +1,6 @@
 #!/usr/bin/env pwsh
 # Mycel bootstrap (Windows) — clone + set up in one line:
-#   irm https://mycel.dev/init.ps1 | iex
+#   irm https://mycelai.dev/init.ps1 | iex
 $ErrorActionPreference = "Stop"
 
 $Repo = if ($env:MYCEL_REPO) { $env:MYCEL_REPO } else { "https://github.com/mycelhq/mycel.git" }
