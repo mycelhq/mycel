@@ -68,6 +68,7 @@ import {
   type ClientScope,
 } from "./portal";
 import { langfuseState, traceLlmCall } from "./tracing";
+import { perProjectTracing, traceUrlFor } from "./langfuse.provision";
 import { loadWedge, wedgesDir } from "./wedge";
 import { runWorkflow } from "./workflows";
 
@@ -713,6 +714,23 @@ export function createServer(store: Store): Hono {
     });
   });
 
+  /**
+   * Where this business's traces live.
+   *
+   * Returns null until the project has actually run something, because provisioning is lazy — and
+   * a link to a Langfuse project that doesn't exist yet is the empty-dashboard failure the tracing
+   * state was added to prevent.
+   */
+  app.get("/v1/projects/:id/tracing", async (c) => {
+    const p = identity.getProject(c.req.param("id") ?? "");
+    if (!p || !inScope(accessible(c), p.id)) return c.json({ error: "not found" }, 404);
+    return c.json({
+      per_project: perProjectTracing(),
+      state: langfuseState(),
+      url: (await traceUrlFor(p.id)) ?? null,
+    });
+  });
+
   /** Where this business's portal lives, and the state of any custom domain. Members only. */
   app.get("/v1/projects/:id/domain", async (c) => {
     const scope = c.get("scope");
@@ -1263,6 +1281,10 @@ export function createServer(store: Store): Hono {
       version: "v0.1",
       wedges,
       langfuse_url: cfg.langfuse?.baseUrl ?? null,
+      // True when each business gets its OWN Langfuse project rather than a filtered view of a
+      // shared one. The difference matters: a filter is a promise about our query construction,
+      // a separate project is a boundary.
+      tracing_per_project: perProjectTracing(),
       // "configured" is not "working" — see langfuseState(). A UI that links to traces should check
       // this, not the url, or it sends people to an empty dashboard.
       tracing: langfuseState(),

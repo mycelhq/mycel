@@ -7,6 +7,7 @@ import { mkdirSync } from "node:fs";
 import { appendFile } from "node:fs/promises";
 import { join } from "node:path";
 import { loadConfig, type LangfuseConfig } from "./config";
+import { keysForProject, perProjectTracing } from "./langfuse.provision";
 import type { Task, TaskEvent } from "./contract";
 
 // Non-blocking JSONL appends, serialized per file so lines never interleave and the event loop is
@@ -194,9 +195,52 @@ export async function getObserver(): Promise<Observer> {
     const lf = await LangfuseObserver.create(cfg.langfuse);
     if (lf) observers.push(lf);
     tracingState = lf ? "active" : "unavailable";
+  } else if (perProjectTracing()) {
+    // Per-project tracing needs no shared keys, so `cfg.langfuse` is legitimately absent here.
+    tracingState = "active";
   }
   cached = new MultiObserver(observers);
   return cached;
+}
+
+/**
+ * The observer for one tenant.
+ *
+ * Traces contain a founder's customers' data, so each project writes to its OWN Langfuse project
+ * rather than to a shared one filtered by tag. A tag is a promise about our query construction; a
+ * separate project is a boundary — the founder's key reads their traces and nothing else, which is
+ * the posture the rest of the kernel already takes.
+ *
+ * Cached per project because building a client per run would open a connection pool per task.
+ * Falls back to the shared observer when per-project tracing isn't configured, which is what a
+ * self-hosted single-tenant install wants: one founder, one project, no indirection.
+ */
+const perProject = new Map<string, Observer>();
+
+export async function getObserverFor(projectId?: string, displayName?: string): Promise<Observer> {
+  if (!projectId || !perProjectTracing()) return getObserver();
+  const hit = perProject.get(projectId);
+  if (hit) return hit;
+
+  const cfg = loadConfig();
+  const observers: Observer[] = [new LocalLogObserver(cfg.logsDir)];
+  const keys = await keysForProject(projectId, displayName ?? "Mycel");
+  if (keys) {
+    const lf = await LangfuseObserver.create({
+      publicKey: keys.publicKey,
+      secretKey: keys.secretKey,
+      baseUrl: process.env.LANGFUSE_HOST ?? "https://cloud.langfuse.com",
+    });
+    if (lf) observers.push(lf);
+    tracingState = lf ? "active" : "unavailable";
+  } else {
+    // Provisioning failed or Langfuse is down. The run still happens and still writes its durable
+    // local log — losing a trace is never worth failing a customer's work.
+    tracingState = "unavailable";
+  }
+  const built = new MultiObserver(observers);
+  perProject.set(projectId, built);
+  return built;
 }
 
 // ── test seams ──
