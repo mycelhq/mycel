@@ -149,7 +149,17 @@ export type ConnectionKind =
   /** Read-only HTTP against a host fixed by the connection; no write executor. */
   | "custom"
   /** Composio-brokered: OAuth and 250+ toolkits. `config.toolkit` names which. See composio.ts. */
-  | "composio";
+  | "composio"
+  /**
+   * Self-hosted LinkedIn: a captured member session (linkedin/), messaging over Voyager.
+   *
+   * The exception that proves the rule above. Every other kind here is either implemented by the
+   * kernel or brokered by Composio; LinkedIn has no messaging API to broker, so this drives a real
+   * member session, and it is opt-in and ToS-grey for that reason. `config` holds the account
+   * email, the account's proxy HOST (its credentials are vaulted, never in config) and the inbox
+   * sync cursor; the session itself lives in the vault under the connection id.
+   */
+  | "linkedin";
 /** Who a connection belongs to. Founder-owned (his Stripe, his outreach domain) is shared across
  *  jobs; client-owned (a client's Gmail/calendar the founder operates on their behalf) is scoped
  *  to that client and only offered to tasks serving them. */

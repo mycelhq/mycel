@@ -1,7 +1,6 @@
 {
   "wedge": "geo-monitor",
-  "title": "Generative engine optimisation \u2014 be the answer, not the tenth link",
-  "model": "anthropic/claude-opus-4-8",
+  "title": "Generative engine optimisation — be the answer, not the tenth link",
   "task_types": {
     "sweep": {
       "description": "Ask each tracked query across each model, record who gets cited.",
@@ -215,7 +214,7 @@
       "id": "queries",
       "ask": "Which questions should someone be asking an AI when they're about to buy what you sell?",
       "why": "These are what we track. Get them wrong and every number after is measuring the wrong thing.",
-      "example": "\"best payroll software for UK startups\", \"alternatives to Gusto for a 20-person company\", \"is Deel or Remote better for EU contractors\" \u2014 buying-intent questions, not brand searches. Nobody asks an AI \"what is Acme Ltd\" unless they already know you.",
+      "example": "\"best payroll software for UK startups\", \"alternatives to Gusto for a 20-person company\", \"is Deel or Remote better for EU contractors\" — buying-intent questions, not brand searches. Nobody asks an AI \"what is Acme Ltd\" unless they already know you.",
       "kind": "fact",
       "weight": 10
     },
@@ -238,7 +237,7 @@
     {
       "id": "publishing",
       "ask": "Where does content go, and who signs it off?",
-      "why": "Decides whether we publish for you or hand you a draft \u2014 and who gets the approval.",
+      "why": "Decides whether we publish for you or hand you a draft — and who gets the approval.",
       "example": "Webflow CMS, /resources. I approve anything that names a competitor; everything else can go straight up.",
       "kind": "correction",
       "weight": 8

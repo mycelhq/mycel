@@ -1,7 +1,6 @@
 {
   "wedge": "invoice-chaser",
   "title": "Accounts-Receivable Chaser",
-  "model": "anthropic/claude-opus-4-8",
   "task_types": {
     "chase_invoice": {
       "description": "Given an overdue invoice and the client's history, draft the right next dunning step and (on approval) send it.",

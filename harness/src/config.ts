@@ -1,6 +1,7 @@
 // One place to configure the harness. Everything the founder tunes lives here:
 // which sandbox backend runs OpenCode, and which LLM it uses. Extensible — add a backend
 // by implementing Sandbox and registering it in createSandbox().
+import { TIER_MODELS } from "./models";
 import { randomBytes } from "node:crypto";
 
 export type SandboxBackend = "local" | "docker" | "daytona";
@@ -71,7 +72,11 @@ export function loadConfig(): MycelConfig {
 
   return {
     sandboxBackend: backend,
-    model: process.env.MYCEL_MODEL ?? "anthropic/claude-opus-4-8",
+    // The last-resort fallback only. Model choice normally comes from the tier ladder in models.ts,
+    // which is what the plan gates and what the margin maths assumes. This was still Anthropic after
+    // the move to OpenAI-via-LiteLLM, so a wedge that pinned it would have failed on every run with
+    // no provider key to reach.
+    model: process.env.MYCEL_MODEL ?? TIER_MODELS.standard,
     sandboxImage: process.env.MYCEL_SANDBOX_IMAGE ?? "mycel/sandbox:latest",
     opencodePort: Number(process.env.OPENCODE_PORT ?? 4444),
     logsDir: process.env.MYCEL_LOG_DIR ?? ".mycel/logs",

@@ -1,7 +1,6 @@
 {
   "wedge": "property-sourcer",
   "title": "UK BTL Property Sourcer",
-  "model": "anthropic/claude-opus-4-8",
   "task_types": {
     "source_property": {
       "description": "Given a buyer's brief and a candidate listing, decide if it's a deal and produce a sourcing report with the numbers.",

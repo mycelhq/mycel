@@ -51,11 +51,14 @@ async function fakeComposio(): Promise<{ url: string; seen: Seen[]; close: () =>
         res.end(
           JSON.stringify({
             items: [
-              { slug: "xero", name: "Xero", composio_managed_auth_schemes: ["OAUTH2"], meta: { description: "Accounting", categories: [{ name: "Accounting" }] } },
+              { slug: "xero", name: "Xero", composio_managed_auth_schemes: ["OAUTH2"], meta: { logo: "https://logos.test/xero", description: "Accounting", tools_count: 40, categories: [{ id: "accounting", name: "Accounting" }] } },
               { slug: "gone", name: "Gone", deprecated: true },
+              // The live API sends this shape for EVERY toolkit — a legacy id, not a flag. Reading
+              // it as a boolean hid the entire catalogue.
+              { slug: "live", name: "Live", meta: { categories: [{ id: "crm", name: "CRM" }] }, deprecated: { toolkitId: "abc-123" } },
             ],
             next_cursor: null,
-            total_items: 2,
+            total_items: 3,
           }),
         );
         return;
@@ -275,10 +278,19 @@ test("composio: the catalogue hides deprecated apps, and connecting is one call 
   try {
     const { app } = makeApp();
     const list = (await api(app, "composio/toolkits")).json as {
-      items: { slug: string; composio_managed: boolean }[];
+      items: { slug: string; composio_managed: boolean; logo?: string; tools_count?: number; categories: { slug: string; name: string }[] }[];
     };
-    assert.deepEqual(list.items.map((t) => t.slug), ["xero"], "a deprecated toolkit isn't offered");
+    assert.deepEqual(
+      list.items.map((t) => t.slug),
+      ["xero", "live"],
+      "a deprecated toolkit isn't offered — but `deprecated: { toolkitId }` is not a deprecation",
+    );
     assert.equal(list.items[0].composio_managed, true, "one click is possible for this one");
+    // The store needs an icon, a description and a category per app, all of which live under
+    // `meta` and were previously either dropped or flattened to a bare string.
+    assert.equal(list.items[0].logo, "https://logos.test/xero");
+    assert.deepEqual(list.items[0].categories, [{ slug: "accounting", name: "Accounting" }]);
+    assert.equal(list.items[0].tools_count, 40);
     assert.ok(!JSON.stringify(list).includes(API_KEY));
 
     // Connect in ONE call: no auth config to create by hand, no client id or secret to obtain.

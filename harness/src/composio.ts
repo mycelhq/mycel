@@ -271,13 +271,25 @@ export async function executeTool(
   };
 }
 
+/** A catalogue category, kept as (slug, display name) because the UI needs both: one to group and
+ *  link by, one to print. Composio calls the slug `id`. */
+export interface ToolkitCategory {
+  slug: string;
+  name: string;
+}
+
 export interface Toolkit {
   slug: string;
   name: string;
   /** Logo / description live under `meta`, which Composio types loosely. */
   logo?: string;
   description?: string;
-  categories: string[];
+  /** The provider's own site. Useful as the "what is this?" escape hatch on a card. */
+  app_url?: string;
+  categories: ToolkitCategory[];
+  /** How much surface this app has. A 4-tool toolkit and an 871-tool one are not the same offer. */
+  tools_count?: number;
+  triggers_count?: number;
   /** True when Composio supplies the OAuth app, so the founder registers nothing. */
   composio_managed: boolean;
   no_auth: boolean;
@@ -287,9 +299,59 @@ interface RawToolkit {
   slug: string;
   name: string;
   no_auth?: boolean;
-  deprecated?: boolean;
+  /**
+   * NOT a boolean in the live API, whatever the name suggests: every toolkit carries
+   * `deprecated: { toolkitId: "<uuid>" }`, which is a legacy id and truthy for all 1069 of them.
+   * Treating it as a flag emptied the entire catalogue. Only an explicit `true` (or a future
+   * `is_deprecated`) counts — see `isDeprecated`.
+   */
+  deprecated?: boolean | { toolkitId?: string; is_deprecated?: boolean };
   composio_managed_auth_schemes?: string[];
-  meta?: { logo?: string; description?: string; categories?: Array<{ name?: string; slug?: string } | string> };
+  meta?: {
+    logo?: string;
+    description?: string;
+    app_url?: string;
+    tools_count?: number;
+    triggers_count?: number;
+    categories?: Array<{ name?: string; slug?: string; id?: string } | string>;
+  };
+}
+
+function isDeprecated(t: RawToolkit): boolean {
+  const d = t.deprecated;
+  if (d === true) return true;
+  return typeof d === "object" && d !== null && d.is_deprecated === true;
+}
+
+function slugify(s: string): string {
+  return s.trim().toLowerCase().replace(/\s+/g, "-");
+}
+
+function normaliseToolkit(t: RawToolkit): Toolkit {
+  const seen = new Set<string>();
+  const categories: ToolkitCategory[] = [];
+  for (const raw of t.meta?.categories ?? []) {
+    const name = (typeof raw === "string" ? raw : (raw.name ?? raw.slug ?? raw.id ?? "")).trim();
+    if (!name) continue;
+    const slug = slugify(typeof raw === "string" ? raw : (raw.id ?? raw.slug ?? name));
+    if (seen.has(slug)) continue;
+    seen.add(slug);
+    categories.push({ slug, name });
+  }
+  return {
+    slug: t.slug,
+    name: t.name,
+    logo: t.meta?.logo,
+    description: t.meta?.description,
+    app_url: t.meta?.app_url,
+    categories,
+    tools_count: t.meta?.tools_count,
+    triggers_count: t.meta?.triggers_count,
+    // Composio-managed auth is what makes this one click: their OAuth app, not one the founder
+    // has to go and register with the provider first.
+    composio_managed: (t.composio_managed_auth_schemes ?? []).length > 0,
+    no_auth: !!t.no_auth,
+  };
 }
 
 /** The app catalogue. What a founder browses when they want to connect something. */
@@ -301,25 +363,50 @@ export async function listToolkits(
   if (args.search) q.set("search", args.search);
   if (args.category) q.set("category", args.category);
   if (args.cursor) q.set("cursor", args.cursor);
-  q.set("limit", String(Math.min(args.limit ?? 40, 100)));
+  // 500 is the largest page the live API honours; the previous cap of 100 meant eleven round trips
+  // to see a catalogue that fits in three.
+  q.set("limit", String(Math.min(args.limit ?? 40, 500)));
   const body = await call<{ items?: RawToolkit[]; next_cursor?: string; total_items?: number }>(
     cfg,
     `/toolkits?${q}`,
   );
-  const items = (body.items ?? [])
-    .filter((t) => !t.deprecated)
-    .map((t) => ({
-      slug: t.slug,
-      name: t.name,
-      logo: t.meta?.logo,
-      description: t.meta?.description,
-      categories: (t.meta?.categories ?? []).map((c) => (typeof c === "string" ? c : (c.name ?? c.slug ?? ""))).filter(Boolean),
-      // Composio-managed auth is what makes this one click: their OAuth app, not one the founder
-      // has to go and register with the provider first.
-      composio_managed: (t.composio_managed_auth_schemes ?? []).length > 0,
-      no_auth: !!t.no_auth,
-    }));
+  const items = (body.items ?? []).filter((t) => !isDeprecated(t)).map(normaliseToolkit);
   return { items, next_cursor: body.next_cursor, total: body.total_items };
+}
+
+/**
+ * The WHOLE catalogue, paged through.
+ *
+ * A store you can browse by category has to know every app before it can group them; a 60-item
+ * first page cannot tell you there are 26 accounting apps. Three requests at the API's real page
+ * size, hard-capped so a Composio pagination bug can't turn one page view into an infinite loop.
+ */
+export async function listAllToolkits(
+  cfg: ComposioConfig,
+  args: { search?: string; category?: string; max?: number } = {},
+): Promise<{ items: Toolkit[]; total?: number }> {
+  const max = Math.min(args.max ?? 2000, 5000);
+  const items: Toolkit[] = [];
+  const seen = new Set<string>();
+  let cursor: string | undefined;
+  let total: number | undefined;
+  for (let page = 0; page < 20 && items.length < max; page++) {
+    const res = await listToolkits(cfg, {
+      search: args.search,
+      category: args.category,
+      limit: 500,
+      cursor,
+    });
+    total = res.total ?? total;
+    for (const t of res.items) {
+      if (seen.has(t.slug)) continue;
+      seen.add(t.slug);
+      items.push(t);
+    }
+    if (!res.next_cursor || res.items.length === 0) break;
+    cursor = res.next_cursor;
+  }
+  return { items, total };
 }
 
 export async function listCategories(cfg: ComposioConfig): Promise<{ slug: string; name: string }[]> {

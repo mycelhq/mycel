@@ -13,6 +13,7 @@ import {
   executeTool,
 } from "./composio";
 import { resolveSecret } from "./secrets";
+import { sendLinkedInMessage } from "./linkedin/connect";
 
 export interface ActionResult {
   ok: boolean;
@@ -177,6 +178,30 @@ export async function executeRead(
   }
 }
 
+/**
+ * A LinkedIn DM over the captured member session (see linkedin/).
+ *
+ * It is here, in the executor, and not in a separate outbound path, precisely so it inherits what
+ * this file is: reached only after the human approval gate has said yes. Cold LinkedIn outreach is
+ * the textbook case for that gate — an unattended agent messaging strangers from a founder's real
+ * account is exactly the thing a human should sign off on, one message at a time.
+ *
+ * The connection's session never appears here; sendLinkedInMessage resolves it from the vault,
+ * applies pacing, and refuses to leave the box without the account's proxy.
+ */
+async function sendLinkedIn(conn: Connection, payload: Record<string, unknown>): Promise<ActionResult> {
+  const thread = String(payload.thread ?? payload.thread_id ?? payload.to ?? "");
+  const text = String(payload.body ?? payload.text ?? payload.message ?? "");
+  if (!thread) return { ok: false, detail: "linkedin send needs a `thread` (conversation urn)" };
+  if (!text) return { ok: false, detail: "linkedin send needs `body` text" };
+  const res = await sendLinkedInMessage(conn, thread, text);
+  return {
+    ok: res.ok,
+    detail: res.detail ?? (res.ok ? "sent" : "send failed"),
+    data: res.message_id ? { message_id: res.message_id } : undefined,
+  };
+}
+
 export async function executeAction(
   conn: Connection,
   capability: string,
@@ -192,6 +217,8 @@ export async function executeAction(
         return await postWebhook(conn, payload, secret);
       case "composio":
         return await runComposioTool(conn, capability, payload);
+      case "linkedin":
+        return await sendLinkedIn(conn, payload);
       default:
         // Anything else is a config mistake, and saying so beats a stub that pretends to work.
         // Stripe, SMS, WhatsApp and calendars all live behind `composio` now.

@@ -1,7 +1,6 @@
 {
   "wedge": "books-keeper",
   "title": "Monthly Close for UK E-commerce",
-  "model": "anthropic/claude-opus-4-8",
   "task_types": {
     "daily_sync": {
       "description": "Pull new transactions from the bank feed, categorize what's unambiguous, flag the rest.",
@@ -105,7 +104,7 @@
   "workflows": [
     {
       "name": "reconcile",
-      "description": "Reconcile bank transactions against the ledger to the penny and compute VAT. ALWAYS use this \u2014 never do the arithmetic yourself.",
+      "description": "Reconcile bank transactions against the ledger to the penny and compute VAT. ALWAYS use this — never do the arithmetic yourself.",
       "input_schema": {
         "type": "object",
         "properties": {
@@ -177,7 +176,7 @@
       "id": "engagement-scope",
       "ask": "What exactly do you deliver each month, and by when?",
       "why": "The agent uses this to decide when a month is actually finished, and what to tell a client who asks.",
-      "example": "Bank reconciled, receipts chased, P&L and balance sheet issued by the 7th working day. VAT prepared quarterly for my approval \u2014 I file it, not you.",
+      "example": "Bank reconciled, receipts chased, P&L and balance sheet issued by the 7th working day. VAT prepared quarterly for my approval — I file it, not you.",
       "kind": "document",
       "weight": 10
     },
@@ -185,7 +184,7 @@
       "id": "pricing",
       "ask": "What do you charge, and what's outside the fee?",
       "why": "So it can answer a pricing question without you, and knows when to stop and ask instead.",
-      "example": "\u00a3450/month up to 300 transactions. Above that \u00a30.40 each. Company formation, payroll and R&D claims are quoted separately.",
+      "example": "£450/month up to 300 transactions. Above that £0.40 each. Company formation, payroll and R&D claims are quoted separately.",
       "kind": "fact",
       "weight": 9
     },
@@ -193,7 +192,7 @@
       "id": "chase-tone",
       "ask": "How do you chase a client for a missing receipt? Paste one you've actually sent.",
       "why": "A real example teaches tone far better than adjectives. This becomes the model for every chase it drafts.",
-      "example": "Hi Sam \u2014 closing March and I'm missing receipts for 4 card payments (\u00a3212.40 total). Could you forward them when you get a minute? Happy to close without them and treat as disallowable if easier.",
+      "example": "Hi Sam — closing March and I'm missing receipts for 4 card payments (£212.40 total). Could you forward them when you get a minute? Happy to close without them and treat as disallowable if easier.",
       "kind": "example",
       "weight": 9
     },
@@ -201,7 +200,7 @@
       "id": "escalate",
       "ask": "When must the agent stop and come to you rather than deciding?",
       "why": "Draws the line for policy-bounded autonomy. Everything outside it stops at the approval gate.",
-      "example": "Anything HMRC-facing. Any transaction over \u00a32,000 it can't match. Any client asking whether something is tax deductible. Anything that smells like a director's loan.",
+      "example": "Anything HMRC-facing. Any transaction over £2,000 it can't match. Any client asking whether something is tax deductible. Anything that smells like a director's loan.",
       "kind": "correction",
       "weight": 10
     },

@@ -14,6 +14,7 @@ import { buildChecklist, listBlueprints, loadBlueprint, provision } from "./blue
 import { bearer, requireApiKey, safeEqual } from "./auth";
 import { awaitApproval, failWaitersForTask, resolveApproval } from "./approvals";
 import { actionPreview, executeAction, executeRead } from "./actions";
+import { mountLinkedIn } from "./linkedin/routes";
 import { getActionGrant } from "./actiongrants";
 import { getArtifactBackend } from "./artifacts";
 import { subscribe } from "./bus";
@@ -55,6 +56,7 @@ import {
   isReadTool as isComposioReadTool,
   listTools as composioListTools,
   listToolkits as composioListToolkits,
+  listAllToolkits as composioListAllToolkits,
   listCategories as composioCategories,
   createManagedAuthConfig,
   slugToolkit,
@@ -67,6 +69,7 @@ import {
   verifyWebhook as verifyComposioWebhook,
   WEBHOOK_HEADERS,
 } from "./composio";
+import type { Toolkit as ComposioToolkit } from "./composio";
 import { startRunFromTrigger } from "./triggers";
 import { buildCoverage, gapId, isGapId, recordAnswer } from "./intake";
 import {
@@ -1774,6 +1777,15 @@ export function createServer(store: Store): Hono {
     return c.json(await withSecretFlag(conn));
   });
 
+  // ── LinkedIn: self-hosted session, opt-in ── /v1/linkedin/* lives in linkedin/routes.ts. It gets
+  // the tenancy helpers rather than re-deriving them, so scoping has one definition.
+  mountLinkedIn(app, {
+    getConnection: (id) => domain.getConnection(id),
+    accessible,
+    writeProjectId,
+    inScope,
+  });
+
   // ── Composio: OAuth, brokered ──
   // The founder clicks once per toolkit; Composio owns the callback and the refresh cycle. Mycel
   // exposes no public redirect route, so there's no internet-facing OAuth surface here and no
@@ -1846,19 +1858,37 @@ export function createServer(store: Store): Hono {
   });
 
 
-  // The app catalogue — 250+ toolkits, browsable. This is the surface that makes Composio visible as
-  // a capability rather than a config field only blueprints can reach.
+  // The app catalogue — 1000+ toolkits, browsable. This is the surface that makes Composio visible
+  // as a capability rather than a config field only blueprints can reach.
+  //
+  // `?all=1` returns the whole catalogue in one response, which is what a store front-end needs:
+  // you cannot group by category, or say how many accounting apps there are, from a 60-item page.
+  // That costs three upstream requests, so it is cached — the catalogue changes on Composio's
+  // release schedule, not ours, and a founder scrolling the grid must not re-fetch 1000 toolkits
+  // per navigation.
+  const CATALOGUE_TTL_MS = 10 * 60_000;
+  let catalogue: { at: number; value: { items: ComposioToolkit[]; total?: number } } | undefined;
+  const fullCatalogue = async (cfg: ReturnType<typeof composioConfig> & {}) => {
+    if (catalogue && Date.now() - catalogue.at < CATALOGUE_TTL_MS) return catalogue.value;
+    const value = await composioListAllToolkits(cfg, {});
+    catalogue = { at: Date.now(), value };
+    return value;
+  };
+
   app.get("/v1/composio/toolkits", async (c) => {
     const cfg = composioConfig();
     if (!cfg) return c.json({ error: "COMPOSIO_API_KEY is not set on the harness" }, 501);
+    const all = ["1", "true", "yes"].includes((c.req.query("all") ?? "").toLowerCase());
     try {
       const [list, conns] = await Promise.all([
-        composioListToolkits(cfg, {
-          search: c.req.query("search") || undefined,
-          category: c.req.query("category") || undefined,
-          cursor: c.req.query("cursor") || undefined,
-          limit: c.req.query("limit") ? Number(c.req.query("limit")) : undefined,
-        }),
+        all
+          ? fullCatalogue(cfg)
+          : composioListToolkits(cfg, {
+              search: c.req.query("search") || undefined,
+              category: c.req.query("category") || undefined,
+              cursor: c.req.query("cursor") || undefined,
+              limit: c.req.query("limit") ? Number(c.req.query("limit")) : undefined,
+            }),
         domain.listConnections(),
       ]);
       // Which of these the founder already has, so the catalogue can say "connected" instead of
