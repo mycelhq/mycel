@@ -1,6 +1,8 @@
 // Durable vault. Stores ONLY sealed envelopes (AES-256-GCM ciphertext + iv + tag) — the plaintext
 // never reaches this layer, so a database dump is useless without MYCEL_SECRET_KEY.
 import pg from "pg";
+import { getPool } from "./pool";
+import { withSchemaLock } from "./schema-lock";
 import type { SealedSecret, SecretStore } from "./secrets";
 
 const { Pool } = pg;
@@ -9,19 +11,23 @@ export class PostgresSecretStore implements SecretStore {
   private constructor(private pool: pg.Pool) {}
 
   static async connect(url: string): Promise<PostgresSecretStore> {
-    const pool = new Pool({ connectionString: url });
+    const pool = getPool(url);
     const self = new PostgresSecretStore(pool);
-    await pool.query(`
-      CREATE TABLE IF NOT EXISTS secrets (
-        key text PRIMARY KEY,
-        v int NOT NULL,
-        kid text NOT NULL,
-        iv text NOT NULL,
-        tag text NOT NULL,
-        ct text NOT NULL,
-        updated_at timestamptz NOT NULL DEFAULT now()
-      );
-    `);
+      // Serialised across processes: `CREATE TABLE IF NOT EXISTS` is not concurrency-safe, and
+      // four kernel containers boot together on every deploy. See schema-lock.ts.
+    await withSchemaLock(pool, async (client) => {
+      await client.query(`
+        CREATE TABLE IF NOT EXISTS secrets (
+          key text PRIMARY KEY,
+          v int NOT NULL,
+          kid text NOT NULL,
+          iv text NOT NULL,
+          tag text NOT NULL,
+          ct text NOT NULL,
+          updated_at timestamptz NOT NULL DEFAULT now()
+        );
+      `);
+    });
     return self;
   }
 
@@ -45,6 +51,8 @@ export class PostgresSecretStore implements SecretStore {
   }
 
   async close(): Promise<void> {
-    await this.pool.end();
+    // No-op: the pool is shared process-wide. See pool.ts — the first store to end
+    // it would close the connections every other store is still using. Shutdown calls
+    // closeAllPools() once.
   }
 }

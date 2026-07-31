@@ -2,6 +2,7 @@
 //   InMemoryStore  — zero setup, the default (tasks vanish on restart)
 //   PostgresStore  — durable, selected when MYCEL_DATABASE_URL is set (see store.pg.ts)
 import { randomUUID } from "node:crypto";
+import { databaseUrl } from "./config";
 import type {
   Approval,
   Artifact,
@@ -209,7 +210,7 @@ export class InMemoryStore implements Store {
 
 // Backend selection: Postgres when MYCEL_DATABASE_URL is set, else in-memory.
 export async function createStore(): Promise<{ store: Store; backend: string }> {
-  const url = process.env.MYCEL_DATABASE_URL;
+  const url = databaseUrl();
   if (url) {
     const { PostgresStore } = await import("./store.pg");
     const store = await PostgresStore.connect(url);

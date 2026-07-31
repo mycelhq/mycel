@@ -3,6 +3,8 @@
 // parsed by node-pg. Selected automatically when MYCEL_DATABASE_URL is set.
 import { randomUUID } from "node:crypto";
 import pg from "pg";
+import { getPool } from "./pool";
+import { withSchemaLock } from "./schema-lock";
 import type { KnowledgeGap } from "./intake";
 import type { Cadence, Case, CaseEvent, Record_, Channel, Client, Connection, ConnectionKind, ConnectionOwner, KnowledgeItem, Message, Schedule, Thread } from "./contract";
 import { normalizeHandle, type DomainStore } from "./domain";
@@ -14,141 +16,145 @@ export class PostgresDomainStore implements DomainStore {
   private constructor(private pool: pg.Pool) {}
 
   static async connect(url: string): Promise<PostgresDomainStore> {
-    const pool = new Pool({ connectionString: url });
+    const pool = getPool(url);
     const self = new PostgresDomainStore(pool);
     await self.init();
     return self;
   }
 
   private async init(): Promise<void> {
-    await this.pool.query(`
-      CREATE TABLE IF NOT EXISTS connections (
-        id uuid PRIMARY KEY,
-        project_id text,
-        kind text NOT NULL,
-        name text NOT NULL,
-        owner jsonb NOT NULL DEFAULT '{}',
-        config jsonb NOT NULL DEFAULT '{}',
-        secret_ref text,
-        created_at timestamptz NOT NULL DEFAULT now()
-      );
-      CREATE TABLE IF NOT EXISTS channels (
-        id uuid PRIMARY KEY,
-        project_id text,
-        connection_id uuid NOT NULL,
-        kind text NOT NULL,
-        address text NOT NULL,
-        wedge text NOT NULL,
-        task_type text NOT NULL,
-        created_at timestamptz NOT NULL DEFAULT now()
-      );
-      CREATE TABLE IF NOT EXISTS clients (
-        id uuid PRIMARY KEY,
-        project_id text,
-        display_name text,
-        handles jsonb NOT NULL DEFAULT '[]',
-        metadata jsonb NOT NULL DEFAULT '{}',
-        created_at timestamptz NOT NULL DEFAULT now(),
-        updated_at timestamptz NOT NULL DEFAULT now()
-      );
-      CREATE TABLE IF NOT EXISTS threads (
-        id uuid PRIMARY KEY,
-        project_id text,
-        client_id uuid NOT NULL,
-        channel_id uuid NOT NULL,
-        subject text,
-        status text NOT NULL DEFAULT 'open',
-        created_at timestamptz NOT NULL DEFAULT now(),
-        updated_at timestamptz NOT NULL DEFAULT now()
-      );
-      CREATE TABLE IF NOT EXISTS messages (
-        id uuid PRIMARY KEY,
-        thread_id uuid NOT NULL,
-        direction text NOT NULL,
-        author text NOT NULL,
-        body text NOT NULL DEFAULT '',
-        status text,
-        task_id uuid,
-        created_at timestamptz NOT NULL DEFAULT now()
-      );
-      CREATE INDEX IF NOT EXISTS messages_thread_idx ON messages (thread_id, created_at);
-      CREATE TABLE IF NOT EXISTS knowledge (
-        id uuid PRIMARY KEY,
-        project_id text,
-        wedge text NOT NULL,
-        name text NOT NULL,
-        content text NOT NULL DEFAULT '',
-        kind text NOT NULL DEFAULT 'document',
-        source text NOT NULL DEFAULT 'uploaded',
-        metadata jsonb NOT NULL DEFAULT '{}',
-        created_at timestamptz NOT NULL DEFAULT now(),
-        updated_at timestamptz NOT NULL DEFAULT now()
-      );
-      CREATE INDEX IF NOT EXISTS knowledge_wedge_idx ON knowledge (wedge);
-      -- What the agent discovered it did not know, on real jobs. The hit count is the ranking
-      -- signal, so the key is (project, id) and a repeat is an increment, not a new row.
-      CREATE TABLE IF NOT EXISTS knowledge_gaps (
-        id text NOT NULL,
-        project_id text NOT NULL,
-        wedge text NOT NULL,
-        question text NOT NULL,
-        fallback text,
-        hits int NOT NULL DEFAULT 1,
-        task_ids text[] NOT NULL DEFAULT '{}',
-        status text NOT NULL DEFAULT 'open',
-        first_seen timestamptz NOT NULL DEFAULT now(),
-        last_seen timestamptz NOT NULL DEFAULT now(),
-        PRIMARY KEY (project_id, id)
-      );
-      CREATE INDEX IF NOT EXISTS knowledge_gaps_wedge_idx ON knowledge_gaps (project_id, wedge, status);
-      CREATE TABLE IF NOT EXISTS schedules (
-        id uuid PRIMARY KEY,
-        project_id text,
-        name text NOT NULL,
-        wedge text NOT NULL,
-        task_type text NOT NULL,
-        input jsonb NOT NULL DEFAULT '{}',
-        cadence jsonb NOT NULL,
-        enabled boolean NOT NULL DEFAULT true,
-        next_run_at timestamptz NOT NULL,
-        last_run_at timestamptz,
-        last_task_id uuid,
-        created_at timestamptz NOT NULL DEFAULT now()
-      );
-      CREATE INDEX IF NOT EXISTS schedules_due_idx ON schedules (enabled, next_run_at);
-      CREATE TABLE IF NOT EXISTS cases (
-        id uuid PRIMARY KEY,
-        project_id text,
-        wedge text NOT NULL,
-        title text NOT NULL,
-        client_id uuid,
-        stage text NOT NULL,
-        status text NOT NULL DEFAULT 'open',
-        data jsonb NOT NULL DEFAULT '{}',
-        due_at timestamptz,
-        history jsonb NOT NULL DEFAULT '[]',
-        created_at timestamptz NOT NULL DEFAULT now(),
-        updated_at timestamptz NOT NULL DEFAULT now(),
-        closed_at timestamptz
-      );
-      CREATE INDEX IF NOT EXISTS cases_lookup_idx ON cases (wedge, status);
-      CREATE TABLE IF NOT EXISTS records (
-        id uuid PRIMARY KEY,
-        project_id text,
-        wedge text NOT NULL,
-        collection text NOT NULL,
-        key text NOT NULL,
-        data jsonb NOT NULL DEFAULT '{}',
-        case_id uuid,
-        created_at timestamptz NOT NULL DEFAULT now(),
-        updated_at timestamptz NOT NULL DEFAULT now()
-      );
-      -- the natural key: re-ingesting the same transaction updates it, never double-posts
-      CREATE UNIQUE INDEX IF NOT EXISTS records_natural_key
-        ON records (COALESCE(project_id,'-'), wedge, collection, key);
-      CREATE INDEX IF NOT EXISTS records_query_idx ON records (wedge, collection);
-      CREATE INDEX IF NOT EXISTS records_data_idx ON records USING gin (data);
-    `);
+      // Serialised across processes: `CREATE TABLE IF NOT EXISTS` is not concurrency-safe, and
+      // four kernel containers boot together on every deploy. See schema-lock.ts.
+    await withSchemaLock(this.pool, async (client) => {
+      await client.query(`
+        CREATE TABLE IF NOT EXISTS connections (
+          id uuid PRIMARY KEY,
+          project_id text,
+          kind text NOT NULL,
+          name text NOT NULL,
+          owner jsonb NOT NULL DEFAULT '{}',
+          config jsonb NOT NULL DEFAULT '{}',
+          secret_ref text,
+          created_at timestamptz NOT NULL DEFAULT now()
+        );
+        CREATE TABLE IF NOT EXISTS channels (
+          id uuid PRIMARY KEY,
+          project_id text,
+          connection_id uuid NOT NULL,
+          kind text NOT NULL,
+          address text NOT NULL,
+          wedge text NOT NULL,
+          task_type text NOT NULL,
+          created_at timestamptz NOT NULL DEFAULT now()
+        );
+        CREATE TABLE IF NOT EXISTS clients (
+          id uuid PRIMARY KEY,
+          project_id text,
+          display_name text,
+          handles jsonb NOT NULL DEFAULT '[]',
+          metadata jsonb NOT NULL DEFAULT '{}',
+          created_at timestamptz NOT NULL DEFAULT now(),
+          updated_at timestamptz NOT NULL DEFAULT now()
+        );
+        CREATE TABLE IF NOT EXISTS threads (
+          id uuid PRIMARY KEY,
+          project_id text,
+          client_id uuid NOT NULL,
+          channel_id uuid NOT NULL,
+          subject text,
+          status text NOT NULL DEFAULT 'open',
+          created_at timestamptz NOT NULL DEFAULT now(),
+          updated_at timestamptz NOT NULL DEFAULT now()
+        );
+        CREATE TABLE IF NOT EXISTS messages (
+          id uuid PRIMARY KEY,
+          thread_id uuid NOT NULL,
+          direction text NOT NULL,
+          author text NOT NULL,
+          body text NOT NULL DEFAULT '',
+          status text,
+          task_id uuid,
+          created_at timestamptz NOT NULL DEFAULT now()
+        );
+        CREATE INDEX IF NOT EXISTS messages_thread_idx ON messages (thread_id, created_at);
+        CREATE TABLE IF NOT EXISTS knowledge (
+          id uuid PRIMARY KEY,
+          project_id text,
+          wedge text NOT NULL,
+          name text NOT NULL,
+          content text NOT NULL DEFAULT '',
+          kind text NOT NULL DEFAULT 'document',
+          source text NOT NULL DEFAULT 'uploaded',
+          metadata jsonb NOT NULL DEFAULT '{}',
+          created_at timestamptz NOT NULL DEFAULT now(),
+          updated_at timestamptz NOT NULL DEFAULT now()
+        );
+        CREATE INDEX IF NOT EXISTS knowledge_wedge_idx ON knowledge (wedge);
+        -- What the agent discovered it did not know, on real jobs. The hit count is the ranking
+        -- signal, so the key is (project, id) and a repeat is an increment, not a new row.
+        CREATE TABLE IF NOT EXISTS knowledge_gaps (
+          id text NOT NULL,
+          project_id text NOT NULL,
+          wedge text NOT NULL,
+          question text NOT NULL,
+          fallback text,
+          hits int NOT NULL DEFAULT 1,
+          task_ids text[] NOT NULL DEFAULT '{}',
+          status text NOT NULL DEFAULT 'open',
+          first_seen timestamptz NOT NULL DEFAULT now(),
+          last_seen timestamptz NOT NULL DEFAULT now(),
+          PRIMARY KEY (project_id, id)
+        );
+        CREATE INDEX IF NOT EXISTS knowledge_gaps_wedge_idx ON knowledge_gaps (project_id, wedge, status);
+        CREATE TABLE IF NOT EXISTS schedules (
+          id uuid PRIMARY KEY,
+          project_id text,
+          name text NOT NULL,
+          wedge text NOT NULL,
+          task_type text NOT NULL,
+          input jsonb NOT NULL DEFAULT '{}',
+          cadence jsonb NOT NULL,
+          enabled boolean NOT NULL DEFAULT true,
+          next_run_at timestamptz NOT NULL,
+          last_run_at timestamptz,
+          last_task_id uuid,
+          created_at timestamptz NOT NULL DEFAULT now()
+        );
+        CREATE INDEX IF NOT EXISTS schedules_due_idx ON schedules (enabled, next_run_at);
+        CREATE TABLE IF NOT EXISTS cases (
+          id uuid PRIMARY KEY,
+          project_id text,
+          wedge text NOT NULL,
+          title text NOT NULL,
+          client_id uuid,
+          stage text NOT NULL,
+          status text NOT NULL DEFAULT 'open',
+          data jsonb NOT NULL DEFAULT '{}',
+          due_at timestamptz,
+          history jsonb NOT NULL DEFAULT '[]',
+          created_at timestamptz NOT NULL DEFAULT now(),
+          updated_at timestamptz NOT NULL DEFAULT now(),
+          closed_at timestamptz
+        );
+        CREATE INDEX IF NOT EXISTS cases_lookup_idx ON cases (wedge, status);
+        CREATE TABLE IF NOT EXISTS records (
+          id uuid PRIMARY KEY,
+          project_id text,
+          wedge text NOT NULL,
+          collection text NOT NULL,
+          key text NOT NULL,
+          data jsonb NOT NULL DEFAULT '{}',
+          case_id uuid,
+          created_at timestamptz NOT NULL DEFAULT now(),
+          updated_at timestamptz NOT NULL DEFAULT now()
+        );
+        -- the natural key: re-ingesting the same transaction updates it, never double-posts
+        CREATE UNIQUE INDEX IF NOT EXISTS records_natural_key
+          ON records (COALESCE(project_id,'-'), wedge, collection, key);
+        CREATE INDEX IF NOT EXISTS records_query_idx ON records (wedge, collection);
+        CREATE INDEX IF NOT EXISTS records_data_idx ON records USING gin (data);
+      `);
+    });
   }
 
   // ── connections ──
@@ -577,6 +583,8 @@ export class PostgresDomainStore implements DomainStore {
   }
 
   async close(): Promise<void> {
-    await this.pool.end();
+    // No-op: the pool is shared process-wide. See pool.ts — the first store to end
+    // it would close the connections every other store is still using. Shutdown calls
+    // closeAllPools() once.
   }
 }

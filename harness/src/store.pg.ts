@@ -3,6 +3,8 @@
 // contract types.
 import { randomUUID } from "node:crypto";
 import pg from "pg";
+import { getPool } from "./pool";
+import { withSchemaLock } from "./schema-lock";
 import type {
   Approval,
   Artifact,
@@ -21,79 +23,83 @@ export class PostgresStore implements Store {
   private constructor(private pool: pg.Pool) {}
 
   static async connect(url: string): Promise<PostgresStore> {
-    const pool = new Pool({ connectionString: url });
+    const pool = getPool(url);
     const self = new PostgresStore(pool);
     await self.init();
     return self;
   }
 
   private async init(): Promise<void> {
-    await this.pool.query(`
-      CREATE TABLE IF NOT EXISTS tasks (
-        id uuid PRIMARY KEY,
-        project_id text,
-        case_id uuid,
-        wedge text NOT NULL,
-        task_type text NOT NULL,
-        actor jsonb NOT NULL DEFAULT '{}',
-        input jsonb NOT NULL DEFAULT '{}',
-        constraints jsonb NOT NULL DEFAULT '{}',
-        tools jsonb NOT NULL DEFAULT '[]',
-        output_schema jsonb,
-        status text NOT NULL DEFAULT 'queued',
-        error text,
-        cost_usd numeric NOT NULL DEFAULT 0,
-        event_seq int NOT NULL DEFAULT 0,
-        created_at timestamptz NOT NULL DEFAULT now(),
-        updated_at timestamptz NOT NULL DEFAULT now()
-      );
-      CREATE TABLE IF NOT EXISTS events (
-        task_id uuid NOT NULL REFERENCES tasks(id),
-        seq int NOT NULL,
-        type text NOT NULL,
-        data jsonb NOT NULL DEFAULT '{}',
-        ts timestamptz NOT NULL DEFAULT now(),
-        PRIMARY KEY (task_id, seq)
-      );
-      CREATE TABLE IF NOT EXISTS approvals (
-        approval_id uuid PRIMARY KEY,
-        task_id uuid NOT NULL REFERENCES tasks(id),
-        action text NOT NULL,
-        risk text NOT NULL DEFAULT 'medium',
-        preview jsonb NOT NULL DEFAULT '{}',
-        status text NOT NULL DEFAULT 'pending',
-        policy_reason text,
-        expires_at timestamptz
-      );
-      CREATE TABLE IF NOT EXISTS artifacts (
-        id uuid PRIMARY KEY,
-        task_id uuid NOT NULL REFERENCES tasks(id),
-        name text NOT NULL,
-        content_type text NOT NULL DEFAULT 'application/json',
-        content text NOT NULL DEFAULT '',
-        created_at timestamptz NOT NULL DEFAULT now()
-      );
-    `);
-    // Idempotent migrations for pre-existing installs.
-    await this.pool.query(`ALTER TABLE tasks ADD COLUMN IF NOT EXISTS error text;`);
-    await this.pool.query(`ALTER TABLE tasks ADD COLUMN IF NOT EXISTS event_seq int NOT NULL DEFAULT 0;`);
-    await this.pool.query(`ALTER TABLE tasks ADD COLUMN IF NOT EXISTS project_id text;`);
-    await this.pool.query(`ALTER TABLE tasks ADD COLUMN IF NOT EXISTS case_id uuid;`);
-    // Uploads. Additive so an existing install keeps every artifact it already has, and the
-    // defaults are what those rows always were: agent-written UTF-8 text.
-    await this.pool.query(`
-      ALTER TABLE artifacts ADD COLUMN IF NOT EXISTS encoding text NOT NULL DEFAULT 'utf8';
-      ALTER TABLE artifacts ADD COLUMN IF NOT EXISTS size_bytes bigint;
-      ALTER TABLE artifacts ADD COLUMN IF NOT EXISTS source text NOT NULL DEFAULT 'agent';
-      ALTER TABLE artifacts ADD COLUMN IF NOT EXISTS client_id text;
-      ALTER TABLE artifacts ADD COLUMN IF NOT EXISTS uploaded_by text;
-      CREATE INDEX IF NOT EXISTS artifacts_task_idx ON artifacts (task_id);
-    `);
-    await this.pool.query(`ALTER TABLE approvals ADD COLUMN IF NOT EXISTS policy_reason text;`);
-    // Additive migrations, so an existing deployment keeps its approvals. Rows that predate this
-    // simply have a null created_at and are excluded from the latency stat rather than skewing it.
-    await this.pool.query(`ALTER TABLE approvals ADD COLUMN IF NOT EXISTS created_at timestamptz NOT NULL DEFAULT now();`);
-    await this.pool.query(`ALTER TABLE approvals ADD COLUMN IF NOT EXISTS decided_at timestamptz;`);
+      // Serialised across processes: `CREATE TABLE IF NOT EXISTS` is not concurrency-safe, and
+      // four kernel containers boot together on every deploy. See schema-lock.ts.
+    await withSchemaLock(this.pool, async (client) => {
+      await client.query(`
+        CREATE TABLE IF NOT EXISTS tasks (
+          id uuid PRIMARY KEY,
+          project_id text,
+          case_id uuid,
+          wedge text NOT NULL,
+          task_type text NOT NULL,
+          actor jsonb NOT NULL DEFAULT '{}',
+          input jsonb NOT NULL DEFAULT '{}',
+          constraints jsonb NOT NULL DEFAULT '{}',
+          tools jsonb NOT NULL DEFAULT '[]',
+          output_schema jsonb,
+          status text NOT NULL DEFAULT 'queued',
+          error text,
+          cost_usd numeric NOT NULL DEFAULT 0,
+          event_seq int NOT NULL DEFAULT 0,
+          created_at timestamptz NOT NULL DEFAULT now(),
+          updated_at timestamptz NOT NULL DEFAULT now()
+        );
+        CREATE TABLE IF NOT EXISTS events (
+          task_id uuid NOT NULL REFERENCES tasks(id),
+          seq int NOT NULL,
+          type text NOT NULL,
+          data jsonb NOT NULL DEFAULT '{}',
+          ts timestamptz NOT NULL DEFAULT now(),
+          PRIMARY KEY (task_id, seq)
+        );
+        CREATE TABLE IF NOT EXISTS approvals (
+          approval_id uuid PRIMARY KEY,
+          task_id uuid NOT NULL REFERENCES tasks(id),
+          action text NOT NULL,
+          risk text NOT NULL DEFAULT 'medium',
+          preview jsonb NOT NULL DEFAULT '{}',
+          status text NOT NULL DEFAULT 'pending',
+          policy_reason text,
+          expires_at timestamptz
+        );
+        CREATE TABLE IF NOT EXISTS artifacts (
+          id uuid PRIMARY KEY,
+          task_id uuid NOT NULL REFERENCES tasks(id),
+          name text NOT NULL,
+          content_type text NOT NULL DEFAULT 'application/json',
+          content text NOT NULL DEFAULT '',
+          created_at timestamptz NOT NULL DEFAULT now()
+        );
+      `);
+      // Idempotent migrations for pre-existing installs.
+      await client.query(`ALTER TABLE tasks ADD COLUMN IF NOT EXISTS error text;`);
+      await client.query(`ALTER TABLE tasks ADD COLUMN IF NOT EXISTS event_seq int NOT NULL DEFAULT 0;`);
+      await client.query(`ALTER TABLE tasks ADD COLUMN IF NOT EXISTS project_id text;`);
+      await client.query(`ALTER TABLE tasks ADD COLUMN IF NOT EXISTS case_id uuid;`);
+      // Uploads. Additive so an existing install keeps every artifact it already has, and the
+      // defaults are what those rows always were: agent-written UTF-8 text.
+      await client.query(`
+        ALTER TABLE artifacts ADD COLUMN IF NOT EXISTS encoding text NOT NULL DEFAULT 'utf8';
+        ALTER TABLE artifacts ADD COLUMN IF NOT EXISTS size_bytes bigint;
+        ALTER TABLE artifacts ADD COLUMN IF NOT EXISTS source text NOT NULL DEFAULT 'agent';
+        ALTER TABLE artifacts ADD COLUMN IF NOT EXISTS client_id text;
+        ALTER TABLE artifacts ADD COLUMN IF NOT EXISTS uploaded_by text;
+        CREATE INDEX IF NOT EXISTS artifacts_task_idx ON artifacts (task_id);
+      `);
+      await client.query(`ALTER TABLE approvals ADD COLUMN IF NOT EXISTS policy_reason text;`);
+      // Additive migrations, so an existing deployment keeps its approvals. Rows that predate this
+      // simply have a null created_at and are excluded from the latency stat rather than skewing it.
+      await client.query(`ALTER TABLE approvals ADD COLUMN IF NOT EXISTS created_at timestamptz NOT NULL DEFAULT now();`);
+      await client.query(`ALTER TABLE approvals ADD COLUMN IF NOT EXISTS decided_at timestamptz;`);
+    });
   }
 
   private rowToTask(r: any): Task {
@@ -349,6 +355,8 @@ export class PostgresStore implements Store {
   }
 
   async close(): Promise<void> {
-    await this.pool.end();
+    // No-op: the pool is shared process-wide. See pool.ts — the first store to end
+    // it would close the connections every other store is still using. Shutdown calls
+    // closeAllPools() once.
   }
 }

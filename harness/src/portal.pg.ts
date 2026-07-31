@@ -7,6 +7,8 @@
 //
 // Only hashes are stored, exactly as before: a stolen database yields no working links.
 import pg from "pg";
+import { getPool } from "./pool";
+import { withSchemaLock } from "./schema-lock";
 
 export interface PortalLinkRow {
   hash: string;
@@ -26,27 +28,31 @@ export class PortalPg {
   private constructor(private pool: pg.Pool) {}
 
   static async connect(url: string): Promise<PortalPg> {
-    const pool = new pg.Pool({ connectionString: url });
+    const pool = getPool(url);
     const self = new PortalPg(pool);
-    await self.pool.query(`
-      CREATE TABLE IF NOT EXISTS portal_links (
-        hash text PRIMARY KEY,
-        project_id text NOT NULL,
-        client_id text NOT NULL,
-        expires_at bigint NOT NULL,
-        used boolean NOT NULL DEFAULT false,
-        created_at timestamptz NOT NULL DEFAULT now()
-      );
-      CREATE TABLE IF NOT EXISTS portal_sessions (
-        token text PRIMARY KEY,
-        project_id text NOT NULL,
-        client_id text NOT NULL,
-        expires_at bigint NOT NULL,
-        created_at timestamptz NOT NULL DEFAULT now()
-      );
-      CREATE INDEX IF NOT EXISTS portal_sessions_client_idx ON portal_sessions (client_id);
-      CREATE INDEX IF NOT EXISTS portal_links_client_idx ON portal_links (client_id);
-    `);
+      // Serialised across processes: `CREATE TABLE IF NOT EXISTS` is not concurrency-safe, and
+      // four kernel containers boot together on every deploy. See schema-lock.ts.
+    await withSchemaLock(pool, async (client) => {
+      await client.query(`
+        CREATE TABLE IF NOT EXISTS portal_links (
+          hash text PRIMARY KEY,
+          project_id text NOT NULL,
+          client_id text NOT NULL,
+          expires_at bigint NOT NULL,
+          used boolean NOT NULL DEFAULT false,
+          created_at timestamptz NOT NULL DEFAULT now()
+        );
+        CREATE TABLE IF NOT EXISTS portal_sessions (
+          token text PRIMARY KEY,
+          project_id text NOT NULL,
+          client_id text NOT NULL,
+          expires_at bigint NOT NULL,
+          created_at timestamptz NOT NULL DEFAULT now()
+        );
+        CREATE INDEX IF NOT EXISTS portal_sessions_client_idx ON portal_sessions (client_id);
+        CREATE INDEX IF NOT EXISTS portal_links_client_idx ON portal_links (client_id);
+      `);
+    });
     return self;
   }
 
@@ -101,6 +107,8 @@ export class PortalPg {
   }
 
   async close(): Promise<void> {
-    await this.pool.end();
+    // No-op: the pool is shared process-wide. See pool.ts — the first store to end
+    // it would close the connections every other store is still using. Shutdown calls
+    // closeAllPools() once.
   }
 }

@@ -14,6 +14,7 @@
 // and remember a password for a portal they'll open four times a year. The founder mints a link;
 // exchanging it once yields a longer-lived session.
 import { createHash, randomBytes } from "node:crypto";
+import { databaseUrl } from "./config";
 
 /** How long a minted link stays exchangeable. Short: it's a link sitting in an email. */
 const LINK_TTL_MS = 7 * 24 * 60 * 60 * 1000;
@@ -53,7 +54,7 @@ let pg: import("./portal.pg").PortalPg | null = null;
 
 /** Boot-time: attach durable portal credentials when MYCEL_DATABASE_URL is set. */
 export async function initPortalStore(): Promise<{ backend: "postgres" | "memory" }> {
-  const url = process.env.MYCEL_DATABASE_URL;
+  const url = databaseUrl();
   if (!url) return { backend: "memory" };
   const { PortalPg } = await import("./portal.pg");
   pg = await PortalPg.connect(url);

@@ -11,3 +11,6 @@ build/
 .idea/
 .vscode/
 .mycel/
+
+# Supabase CLI scratch — project refs and temp state, not source.
+supabase/

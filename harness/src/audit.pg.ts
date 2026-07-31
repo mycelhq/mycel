@@ -2,6 +2,8 @@
 // insert-only, and the per-project sequence is allocated under a row lock so two replicas can't
 // fork the chain.
 import pg from "pg";
+import { getPool } from "./pool";
+import { withSchemaLock } from "./schema-lock";
 import { entryHash, GENESIS, type AuditEntry, type AuditStore } from "./audit";
 
 const { Pool } = pg;
@@ -10,27 +12,31 @@ export class PostgresAuditStore implements AuditStore {
   private constructor(private pool: pg.Pool) {}
 
   static async connect(url: string): Promise<PostgresAuditStore> {
-    const pool = new Pool({ connectionString: url });
-    await pool.query(`
-      CREATE TABLE IF NOT EXISTS audit_log (
-        project_id text NOT NULL,
-        seq int NOT NULL,
-        at timestamptz NOT NULL DEFAULT now(),
-        actor text NOT NULL,
-        action text NOT NULL,
-        entity text NOT NULL,
-        entity_id text NOT NULL,
-        detail jsonb NOT NULL DEFAULT '{}',
-        prev_hash text NOT NULL,
-        hash text NOT NULL,
-        PRIMARY KEY (project_id, seq)
-      );
-      CREATE TABLE IF NOT EXISTS audit_heads (
-        project_id text PRIMARY KEY,
-        seq int NOT NULL DEFAULT 0,
-        hash text NOT NULL
-      );
-    `);
+    const pool = getPool(url);
+      // Serialised across processes: `CREATE TABLE IF NOT EXISTS` is not concurrency-safe, and
+      // four kernel containers boot together on every deploy. See schema-lock.ts.
+    await withSchemaLock(pool, async (client) => {
+      await client.query(`
+        CREATE TABLE IF NOT EXISTS audit_log (
+          project_id text NOT NULL,
+          seq int NOT NULL,
+          at timestamptz NOT NULL DEFAULT now(),
+          actor text NOT NULL,
+          action text NOT NULL,
+          entity text NOT NULL,
+          entity_id text NOT NULL,
+          detail jsonb NOT NULL DEFAULT '{}',
+          prev_hash text NOT NULL,
+          hash text NOT NULL,
+          PRIMARY KEY (project_id, seq)
+        );
+        CREATE TABLE IF NOT EXISTS audit_heads (
+          project_id text PRIMARY KEY,
+          seq int NOT NULL DEFAULT 0,
+          hash text NOT NULL
+        );
+      `);
+    });
     return new PostgresAuditStore(pool);
   }
 
@@ -89,6 +95,8 @@ export class PostgresAuditStore implements AuditStore {
   }
 
   async close(): Promise<void> {
-    await this.pool.end();
+    // No-op: the pool is shared process-wide. See pool.ts — the first store to end
+    // it would close the connections every other store is still using. Shutdown calls
+    // closeAllPools() once.
   }
 }

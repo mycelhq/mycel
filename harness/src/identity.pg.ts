@@ -3,6 +3,8 @@
 // of truth at boot and the write-through target. Sessions stay in-memory by design — they're
 // short-lived tokens, and a restart should log members out.
 import pg from "pg";
+import { getPool } from "./pool";
+import { withSchemaLock } from "./schema-lock";
 import type { Org, Project, Role, StoredInvite, StoredMember } from "./identity";
 
 const { Pool } = pg;
@@ -12,71 +14,75 @@ export class IdentityPg {
   private constructor(private pool: pg.Pool) {}
 
   static async connect(url: string): Promise<IdentityPg> {
-    const pool = new Pool({ connectionString: url });
+    const pool = getPool(url);
     const self = new IdentityPg(pool);
-    await self.pool.query(`
-      CREATE TABLE IF NOT EXISTS orgs (
-        id text PRIMARY KEY,
-        name text NOT NULL,
-        created_at timestamptz NOT NULL DEFAULT now()
-      );
-      CREATE TABLE IF NOT EXISTS projects (
-        id text PRIMARY KEY,
-        org_id text NOT NULL,
-        name text NOT NULL,
-        wedges jsonb NOT NULL DEFAULT '[]',
-        created_at timestamptz NOT NULL DEFAULT now()
-      );
-      CREATE TABLE IF NOT EXISTS members (
-        id text PRIMARY KEY,
-        org_id text NOT NULL,
-        email text NOT NULL UNIQUE,
-        role text NOT NULL DEFAULT 'owner',
-        salt text NOT NULL,
-        hash text NOT NULL,
-        created_at timestamptz NOT NULL DEFAULT now()
-      );
-      CREATE TABLE IF NOT EXISTS api_keys (
-        key text PRIMARY KEY,
-        project_id text NOT NULL,
-        org_id text NOT NULL,
-        created_at timestamptz NOT NULL DEFAULT now()
-      );
-      CREATE TABLE IF NOT EXISTS invites (
-        id text PRIMARY KEY,
-        org_id text NOT NULL,
-        email text NOT NULL,
-        role text NOT NULL,
-        invited_by text NOT NULL,
-        token_hash text NOT NULL,
-        expires_at bigint NOT NULL,
-        accepted_at timestamptz,
-        created_at timestamptz NOT NULL DEFAULT now()
-      );
-      CREATE INDEX IF NOT EXISTS invites_org_idx ON invites (org_id);
-    `);
-    // Added after the first release, so additive and idempotent rather than a rewrite of the table.
-    // Without these, a member's last-used provider and any in-flight password reset were lost on
-    // every restart — the reset email a founder sent two minutes before a deploy stopped working.
-    await self.pool.query(`
-      ALTER TABLE members ADD COLUMN IF NOT EXISTS last_provider text;
-      ALTER TABLE members ADD COLUMN IF NOT EXISTS providers jsonb NOT NULL DEFAULT '[]';
-      ALTER TABLE members ADD COLUMN IF NOT EXISTS reset_hash text;
-      ALTER TABLE members ADD COLUMN IF NOT EXISTS reset_expires bigint;
-      ALTER TABLE orgs ADD COLUMN IF NOT EXISTS plan text NOT NULL DEFAULT 'self_hosted';
-      ALTER TABLE orgs ADD COLUMN IF NOT EXISTS plan_status text NOT NULL DEFAULT 'active';
-      ALTER TABLE orgs ADD COLUMN IF NOT EXISTS billing_ref text;
-      ALTER TABLE orgs ADD COLUMN IF NOT EXISTS plan_renews_at timestamptz;
-      ALTER TABLE projects ADD COLUMN IF NOT EXISTS slug text;
-      ALTER TABLE projects ADD COLUMN IF NOT EXISTS custom_domain text;
-      ALTER TABLE projects ADD COLUMN IF NOT EXISTS domain_verify_token text;
-      ALTER TABLE projects ADD COLUMN IF NOT EXISTS custom_domain_verified_at timestamptz;
-      ALTER TABLE projects ADD COLUMN IF NOT EXISTS branding jsonb;
-      -- A hostname must resolve to at most one business. Enforced here rather than only in code,
-      -- because two replicas can allocate the same slug at the same instant.
-      CREATE UNIQUE INDEX IF NOT EXISTS projects_slug_key ON projects (slug) WHERE slug IS NOT NULL;
-      CREATE UNIQUE INDEX IF NOT EXISTS projects_domain_key ON projects (custom_domain) WHERE custom_domain IS NOT NULL;
-    `);
+      // Serialised across processes: `CREATE TABLE IF NOT EXISTS` is not concurrency-safe, and
+      // four kernel containers boot together on every deploy. See schema-lock.ts.
+    await withSchemaLock(pool, async (client) => {
+      await client.query(`
+        CREATE TABLE IF NOT EXISTS orgs (
+          id text PRIMARY KEY,
+          name text NOT NULL,
+          created_at timestamptz NOT NULL DEFAULT now()
+        );
+        CREATE TABLE IF NOT EXISTS projects (
+          id text PRIMARY KEY,
+          org_id text NOT NULL,
+          name text NOT NULL,
+          wedges jsonb NOT NULL DEFAULT '[]',
+          created_at timestamptz NOT NULL DEFAULT now()
+        );
+        CREATE TABLE IF NOT EXISTS members (
+          id text PRIMARY KEY,
+          org_id text NOT NULL,
+          email text NOT NULL UNIQUE,
+          role text NOT NULL DEFAULT 'owner',
+          salt text NOT NULL,
+          hash text NOT NULL,
+          created_at timestamptz NOT NULL DEFAULT now()
+        );
+        CREATE TABLE IF NOT EXISTS api_keys (
+          key text PRIMARY KEY,
+          project_id text NOT NULL,
+          org_id text NOT NULL,
+          created_at timestamptz NOT NULL DEFAULT now()
+        );
+        CREATE TABLE IF NOT EXISTS invites (
+          id text PRIMARY KEY,
+          org_id text NOT NULL,
+          email text NOT NULL,
+          role text NOT NULL,
+          invited_by text NOT NULL,
+          token_hash text NOT NULL,
+          expires_at bigint NOT NULL,
+          accepted_at timestamptz,
+          created_at timestamptz NOT NULL DEFAULT now()
+        );
+        CREATE INDEX IF NOT EXISTS invites_org_idx ON invites (org_id);
+      `);
+      // Added after the first release, so additive and idempotent rather than a rewrite of the table.
+      // Without these, a member's last-used provider and any in-flight password reset were lost on
+      // every restart — the reset email a founder sent two minutes before a deploy stopped working.
+      await client.query(`
+        ALTER TABLE members ADD COLUMN IF NOT EXISTS last_provider text;
+        ALTER TABLE members ADD COLUMN IF NOT EXISTS providers jsonb NOT NULL DEFAULT '[]';
+        ALTER TABLE members ADD COLUMN IF NOT EXISTS reset_hash text;
+        ALTER TABLE members ADD COLUMN IF NOT EXISTS reset_expires bigint;
+        ALTER TABLE orgs ADD COLUMN IF NOT EXISTS plan text NOT NULL DEFAULT 'self_hosted';
+        ALTER TABLE orgs ADD COLUMN IF NOT EXISTS plan_status text NOT NULL DEFAULT 'active';
+        ALTER TABLE orgs ADD COLUMN IF NOT EXISTS billing_ref text;
+        ALTER TABLE orgs ADD COLUMN IF NOT EXISTS plan_renews_at timestamptz;
+        ALTER TABLE projects ADD COLUMN IF NOT EXISTS slug text;
+        ALTER TABLE projects ADD COLUMN IF NOT EXISTS custom_domain text;
+        ALTER TABLE projects ADD COLUMN IF NOT EXISTS domain_verify_token text;
+        ALTER TABLE projects ADD COLUMN IF NOT EXISTS custom_domain_verified_at timestamptz;
+        ALTER TABLE projects ADD COLUMN IF NOT EXISTS branding jsonb;
+        -- A hostname must resolve to at most one business. Enforced here rather than only in code,
+        -- because two replicas can allocate the same slug at the same instant.
+        CREATE UNIQUE INDEX IF NOT EXISTS projects_slug_key ON projects (slug) WHERE slug IS NOT NULL;
+        CREATE UNIQUE INDEX IF NOT EXISTS projects_domain_key ON projects (custom_domain) WHERE custom_domain IS NOT NULL;
+      `);
+    });
     return self;
   }
 
@@ -189,6 +195,8 @@ export class IdentityPg {
   }
 
   async close(): Promise<void> {
-    await this.pool.end();
+    // No-op: the pool is shared process-wide. See pool.ts — the first store to end
+    // it would close the connections every other store is still using. Shutdown calls
+    // closeAllPools() once.
   }
 }

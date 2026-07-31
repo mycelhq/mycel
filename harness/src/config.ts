@@ -86,3 +86,16 @@ export function loadConfig(): MycelConfig {
     maxTokensCeiling: Number(process.env.MYCEL_MAX_TOKENS ?? 8192),
   };
 }
+
+/**
+ * The database URL, or undefined.
+ *
+ * Trimmed, and blank counts as absent. A secret store that hands back an empty string is a common
+ * way to deploy: the secret exists because infrastructure created it, and nobody has put a value in
+ * yet. Reading `process.env.MYCEL_DATABASE_URL` directly made that case a crash loop on boot rather
+ * than the in-memory fallback the kernel already has.
+ */
+export function databaseUrl(): string | undefined {
+  const raw = (process.env.MYCEL_DATABASE_URL ?? "").trim();
+  return raw ? raw : undefined;
+}

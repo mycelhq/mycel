@@ -4,6 +4,7 @@
 //
 // v0.1 ships an in-memory reference implementation (zero setup). Postgres backing mirrors the
 // task tables and is the next step; the task engine itself is already durable (store.pg.ts).
+import { databaseUrl } from "./config";
 import { randomUUID } from "node:crypto";
 import type { KnowledgeGap } from "./intake";
 import type { Case, CaseEvent, Channel, Record_, Client, Connection, KnowledgeItem, Message, Schedule, Thread } from "./contract";
@@ -394,7 +395,7 @@ export function getDomainStore(): DomainStore {
 
 /** Boot-time backend selection: Postgres when MYCEL_DATABASE_URL is set, else in-memory. */
 export async function initDomainStore(): Promise<{ backend: string }> {
-  const url = process.env.MYCEL_DATABASE_URL;
+  const url = databaseUrl();
   if (url) {
     const { PostgresDomainStore } = await import("./domain.pg");
     cached = await PostgresDomainStore.connect(url);

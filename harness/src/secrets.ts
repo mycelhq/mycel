@@ -9,6 +9,7 @@
 // decrypt). The key comes from MYCEL_SECRET_KEY; a `v1:` prefix and a stored key id leave room for
 // rotation without a migration. The ciphertext — never the plaintext — is what a durable backend
 // persists, so a database dump is useless without the key.
+import { databaseUrl } from "./config";
 import { createCipheriv, createDecipheriv, createHash, randomBytes, timingSafeEqual } from "node:crypto";
 
 export interface SealedSecret {
@@ -97,7 +98,7 @@ let backend: SecretStore = new MemorySecretStore();
 
 /** Boot-time: Postgres when MYCEL_DATABASE_URL is set, else in-memory. */
 export async function initSecretStore(): Promise<{ backend: string }> {
-  const url = process.env.MYCEL_DATABASE_URL;
+  const url = databaseUrl();
   if (url) {
     const { PostgresSecretStore } = await import("./secrets.pg");
     backend = await PostgresSecretStore.connect(url);

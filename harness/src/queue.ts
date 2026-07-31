@@ -18,6 +18,8 @@
 // run inline exactly as before. That keeps `npm run dev` and the whole test suite working with zero
 // setup, and means the queue is something you get by configuring Postgres rather than something you
 // must configure to get started.
+import { databaseUrl } from "./config";
+import { getPool } from "./pool";
 import { runTask } from "./orchestrator";
 import type { Store } from "./store";
 
@@ -30,7 +32,7 @@ let utils: WorkerUtils | null = null;
 let runner: Runner | null = null;
 let queueReady = false;
 
-const connectionString = () => process.env.MYCEL_DATABASE_URL;
+const connectionString = () => databaseUrl();
 
 /**
  * How many runs one worker executes at once — the real backpressure knob.
@@ -38,7 +40,18 @@ const connectionString = () => process.env.MYCEL_DATABASE_URL;
  * Each run holds a sandbox and mostly waits on a model, so this is bounded by sandbox memory rather
  * than CPU. 10 is a starting point for a 1GB task; raise it with the container.
  */
-const CONCURRENCY = Number(process.env.MYCEL_WORKER_CONCURRENCY ?? 10);
+const CONCURRENCY = Number(process.env.MYCEL_WORKER_CONCURRENCY ?? 4);
+
+/**
+ * The real ceiling is the DATABASE, not this number.
+ *
+ * graphile-worker holds roughly one connection per concurrent job plus one for LISTEN, and every
+ * replica does the same against a shared client limit — a Supabase nano session pooler allows 15 in
+ * total. Four containers at a concurrency of 10 asks for far more than that and the deploy fails at
+ * boot rather than under load, which at least is honest.
+ *
+ * Raise this WITH the database plan and `MYCEL_PG_POOL_MAX`, not on its own.
+ */
 
 /** True when work is being distributed rather than run wherever it arrived. */
 export function queueEnabled(): boolean {
@@ -54,7 +67,12 @@ export async function initQueue(): Promise<{ mode: "queue" | "inline" }> {
   if (!cs) return { mode: "inline" };
   const { makeWorkerUtils } = await import("graphile-worker");
   // Creates its own `graphile_worker` schema in the same database — one datastore, not two.
-  utils = (await makeWorkerUtils({ connectionString: cs })) as unknown as WorkerUtils;
+  //
+  // `pgPool`, not `connectionString`: given a string, graphile-worker opens a pool of its own, and
+  // a hosted Postgres has a hard client ceiling shared by every replica. A Supabase nano session
+  // pooler allows 15 clients TOTAL — one more independent pool per container is how a deploy dies
+  // with "max clients reached in session mode".
+  utils = (await makeWorkerUtils({ pgPool: getPool(cs) })) as unknown as WorkerUtils;
   queueReady = true;
   return { mode: "queue" };
 }
@@ -89,7 +107,7 @@ export async function startWorker(store: Store): Promise<{ stop: () => Promise<v
 
   const { run } = await import("graphile-worker");
   runner = (await run({
-    connectionString: cs,
+    pgPool: getPool(cs),
     concurrency: CONCURRENCY,
     // Belt and braces: NOTIFY drives normal latency, and this catches anything a dropped
     // notification would otherwise strand until the next restart.

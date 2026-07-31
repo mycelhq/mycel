@@ -1,6 +1,7 @@
 import { serve } from "@hono/node-server";
 import { API_KEY_GENERATED, loadConfig } from "./config";
 import { closeAuditStore, initAuditStore } from "./audit";
+import { closeAllPools } from "./pool";
 import { closeDomainStore, getDomainStore, initDomainStore } from "./domain";
 import { getIdentityStore, initIdentityStore } from "./identity";
 import { recoverTasks } from "./recovery";
@@ -76,6 +77,8 @@ async function shutdown(signal: string): Promise<void> {
     await closeSecretStore();
     await closeAuditStore();
     await closePortalStore();
+    // Last: every store shares one pool, so this is the single place it is actually ended.
+    await closeAllPools();
     // Queued JSONL lines are still in memory (appends are non-blocking by design), so drain them
     // before exiting or the tail of an in-flight run is lost.
     await flushLogs();

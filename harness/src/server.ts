@@ -18,7 +18,7 @@ import { getActionGrant } from "./actiongrants";
 import { getArtifactBackend } from "./artifacts";
 import { subscribe } from "./bus";
 import { markCancelled } from "./cancel";
-import { loadConfig } from "./config";
+import { databaseUrl, loadConfig } from "./config";
 import type {
   Approval,
   Artifact,
@@ -1288,7 +1288,7 @@ export function createServer(store: Store): Hono {
       // "configured" is not "working" — see langfuseState(). A UI that links to traces should check
       // this, not the url, or it sends people to an empty dashboard.
       tracing: langfuseState(),
-      store: process.env.MYCEL_DATABASE_URL ? "postgres" : "memory",
+      store: databaseUrl() ? "postgres" : "memory",
       sandbox: cfg.sandboxBackend,
     });
   });

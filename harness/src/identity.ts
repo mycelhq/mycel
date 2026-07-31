@@ -7,7 +7,7 @@
 // therefore no cross-tenant surface to get wrong. The model is in place; per-project scoping of
 // data lands when a second project actually exists. In-memory (note: pg backing next, like domain).
 import { createHash, randomBytes, randomUUID, scryptSync, timingSafeEqual } from "node:crypto";
-import { loadConfig } from "./config";
+import { loadConfig, databaseUrl } from "./config";
 
 /** A stable, deterministic UUID from a name (UUIDv5-style). The default org/project/owner use
  *  these so their ids survive a restart — otherwise durable rows would be scoped to a dead
@@ -800,7 +800,7 @@ export function getIdentityStore(): IdentityStore {
 
 /** Boot-time: attach durable identity when MYCEL_DATABASE_URL is set (tenants survive restarts). */
 export async function initIdentityStore(): Promise<{ backend: string }> {
-  const url = process.env.MYCEL_DATABASE_URL;
+  const url = databaseUrl();
   const store = getIdentityStore();
   if (!url) return { backend: "memory" };
   const { IdentityPg } = await import("./identity.pg");

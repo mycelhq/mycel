@@ -8,6 +8,7 @@
 //
 // Deliberately narrow: consequential decisions only, not every token. A regulated wedge
 // (bookkeeping, legal, healthcare) needs this to be usable as evidence; noise would ruin that.
+import { databaseUrl } from "./config";
 import { createHash } from "node:crypto";
 
 export type AuditAction =
@@ -138,7 +139,7 @@ class MemoryAuditStore implements AuditStore {
 let backend: AuditStore = new MemoryAuditStore();
 
 export async function initAuditStore(): Promise<{ backend: string }> {
-  const url = process.env.MYCEL_DATABASE_URL;
+  const url = databaseUrl();
   if (url) {
     const { PostgresAuditStore } = await import("./audit.pg");
     backend = await PostgresAuditStore.connect(url);
