@@ -73,6 +73,24 @@ export interface Project {
   /** Wedge slugs this project may run. Empty = all wedges on disk. */
   wedges: string[];
   created_at: string;
+  /**
+   * The subdomain this business's client portal answers on: `acme` → acme.mycelai.dev.
+   *
+   * Allocated at creation from the project name, and stable afterwards — it ends up in emails sent
+   * to a founder's customers, and a link that stops working because someone renamed a project is
+   * worse than an ugly slug.
+   */
+  slug?: string;
+  /** A domain the founder owns, once they have proved they own it. */
+  custom_domain?: string;
+  /**
+   * The TXT value that proves it. Present from the moment a custom domain is claimed until it
+   * verifies; the domain does not serve traffic until `custom_domain_verified_at` is set.
+   */
+  domain_verify_token?: string;
+  custom_domain_verified_at?: string;
+  /** What a customer sees. The business app renders from this — it is the founder's brand, not ours. */
+  branding?: { display_name?: string; accent?: string; support_email?: string };
 }
 export type AuthProvider = "password" | "google" | "github";
 
@@ -171,7 +189,10 @@ class IdentityStore {
     const now = new Date().toISOString();
     const org: Org = { id: stableUuid("default-org"), name: "default", created_at: now };
     this.orgs.set(org.id, org);
-    const project: Project = { id: stableUuid("default-project"), org_id: org.id, name: "default", wedges: [], created_at: now };
+    const project: Project = {
+      id: stableUuid("default-project"), org_id: org.id, name: "default", wedges: [], created_at: now,
+      slug: "default",
+    };
     this.projects.set(project.id, project);
     this.apiKeys.set(loadConfig().apiKey, { project_id: project.id, org_id: org.id });
 
@@ -387,9 +408,122 @@ class IdentityStore {
     return p.wedges.length === 0 || p.wedges.includes(wedge);
   }
 
+  // ---------------------------------------------------------------------------------------------
+  // Where a business answers
+  //
+  // One deployment serves every founder's client portal, resolved by hostname. Deliberately not a
+  // container per tenant: the business app holds no data — it renders and forwards a client session,
+  // and the KERNEL decides what comes back from that session, not from the hostname. So the worst a
+  // host-resolution bug can do is show the wrong logo, where a container per tenant would buy that
+  // same isolation at the cost of N deployments to patch on every security fix and a provisioning
+  // wait at signup.
+  //
+  // The hazard that IS real is cookie scope: portal sessions must be scoped to the exact host, never
+  // to the parent domain, or a client of one business could carry their session onto another's.
+  // ---------------------------------------------------------------------------------------------
+
+  /** Reserved because they are, or will be, ours. A founder claiming `app` would be a phishing kit. */
+  private static RESERVED = new Set([
+    "app", "platform", "cloud", "www", "docs", "api", "admin", "mail", "status",
+    "blog", "help", "support", "static", "assets", "cdn", "auth", "login", "portal",
+  ]);
+
+  /** A hostname-safe slug: lowercase, alphanumeric and hyphens, never leading/trailing hyphen. */
+  static slugify(name: string): string {
+    return name
+      .toLowerCase()
+      .normalize("NFKD")
+      .replace(/[^a-z0-9]+/g, "-")
+      .replace(/^-+|-+$/g, "")
+      .slice(0, 40);
+  }
+
+  /** Allocate a free slug near `name`, suffixing only when it has to. */
+  allocateSlug(name: string): string {
+    const base = IdentityStore.slugify(name) || "business";
+    const taken = (s: string) =>
+      IdentityStore.RESERVED.has(s) || [...this.projects.values()].some((p) => p.slug === s);
+    if (!taken(base)) return base;
+    for (let n = 2; n < 500; n++) {
+      const candidate = `${base}-${n}`;
+      if (!taken(candidate)) return candidate;
+    }
+    return `${base}-${randomBytes(3).toString("hex")}`;
+  }
+
+  /**
+   * Which project serves this hostname.
+   *
+   * A verified custom domain wins over the subdomain, so a founder who has moved to their own
+   * domain keeps working on both. An UNVERIFIED custom domain resolves to nothing — otherwise
+   * claiming a domain you don't own would let you serve a portal on it the moment DNS happened to
+   * point your way.
+   */
+  projectForHost(host: string, rootDomain: string): Project | undefined {
+    const h = (host ?? "").toLowerCase().split(":")[0].replace(/\.$/, "");
+    if (!h) return undefined;
+    const byCustom = [...this.projects.values()].find(
+      (p) => p.custom_domain === h && !!p.custom_domain_verified_at,
+    );
+    if (byCustom) return byCustom;
+    const root = rootDomain.toLowerCase();
+    if (!h.endsWith(`.${root}`)) return undefined;
+    const sub = h.slice(0, -(root.length + 1));
+    // Only one level. `a.b.mycelai.dev` must not resolve as `a` — a wildcard certificate covers one
+    // label, and treating deeper names as a match would make the boundary fuzzy.
+    if (!sub || sub.includes(".")) return undefined;
+    return [...this.projects.values()].find((p) => p.slug === sub);
+  }
+
+  /** Claim a domain the founder says they own. Returns the TXT record they must publish. */
+  claimDomain(projectId: string, domain: string): { record: { name: string; value: string } } | { error: string } {
+    const p = this.projects.get(projectId);
+    if (!p) return { error: "no such project" };
+    const d = domain.trim().toLowerCase().replace(/^https?:\/\//, "").replace(/\/.*$/, "").replace(/\.$/, "");
+    if (!/^[a-z0-9.-]+\.[a-z]{2,}$/.test(d)) return { error: "that doesn't look like a domain" };
+    const clash = [...this.projects.values()].find((x) => x.custom_domain === d && x.id !== projectId);
+    if (clash) return { error: "that domain is already claimed" };
+    p.custom_domain = d;
+    p.custom_domain_verified_at = undefined;
+    p.domain_verify_token = `mycel-verify=${randomBytes(16).toString("hex")}`;
+    if (this.pg) void this.pg.upsertProject(p).catch(() => {});
+    return { record: { name: `_mycel.${d}`, value: p.domain_verify_token } };
+  }
+
+  /**
+   * Record that a claim checked out. The DNS lookup itself lives in the server layer, because the
+   * store has no business doing network I/O.
+   */
+  markDomainVerified(projectId: string): Project | undefined {
+    const p = this.projects.get(projectId);
+    if (!p || !p.custom_domain) return undefined;
+    p.custom_domain_verified_at = new Date().toISOString();
+    p.domain_verify_token = undefined;
+    if (this.pg) void this.pg.upsertProject(p).catch(() => {});
+    return p;
+  }
+
+  /** Branding is what a customer sees, so it belongs to the founder, not to us. */
+  setBranding(projectId: string, branding: Project["branding"]): Project | undefined {
+    const p = this.projects.get(projectId);
+    if (!p) return undefined;
+    p.branding = { ...p.branding, ...branding };
+    if (this.pg) void this.pg.upsertProject(p).catch(() => {});
+    return p;
+  }
+
   /** Create a project (+ its own product API key) in an org. Mirrored to the durable backend. */
   createProject(orgId: string, name: string, wedges: string[] = []): { project: Project; apiKey: string } {
-    const project: Project = { id: randomUUID(), org_id: orgId, name, wedges, created_at: new Date().toISOString() };
+    const project: Project = {
+      id: randomUUID(),
+      org_id: orgId,
+      name,
+      wedges,
+      created_at: new Date().toISOString(),
+      // Allocated now and never changed. It ends up in emails to a founder's customers, and a link
+      // that breaks because someone renamed a project is worse than an ugly slug.
+      slug: this.allocateSlug(name),
+    };
     this.projects.set(project.id, project);
     const apiKey = `msk_${randomBytes(24).toString("base64url")}`;
     this.apiKeys.set(apiKey, { project_id: project.id, org_id: orgId });

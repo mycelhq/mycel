@@ -25,7 +25,12 @@ export type AuditAction =
   /** An external account was linked through a broker (Composio OAuth). Never records the token. */
   | "connection.linked"
   /** A portal link was minted for a client. Never records the token itself. */
-  | "client.portal_link";
+  | "client.portal_link"
+  // Where a business answers is a security-relevant fact: it decides whose certificate serves whose
+  // customers. Both halves are recorded — the claim and the proof — so "who pointed this domain
+  // here, and when did it check out" has an answer.
+  | "domain.claimed"
+  | "domain.verified";
 
 export interface AuditEntry {
   seq: number;

@@ -572,9 +572,13 @@ export function createServer(store: Store): Hono {
     // `/v1/invites/<token>` is public for the same reason: the person holding the link has no
     // account yet, and the token IS the credential. Prefix rather than exact match because the
     // token is in the path.
+    // `/v1/host/*` carries its own credential (`MYCEL_HOST_TOKEN`) and checks it in the handler,
+    // because the customer-facing app that calls it must not hold an operator key. It still
+    // accepts a product key, so this middleware runs and sets a scope when one is presented.
     if (
       c.req.path.startsWith("/v1/internal/") ||
       c.req.path.startsWith("/v1/invites/") ||
+      (c.req.path.startsWith("/v1/host/") && !!process.env.MYCEL_HOST_TOKEN) ||
       PUBLIC_AUTH.has(c.req.path)
     )
       return next();
@@ -661,6 +665,153 @@ export function createServer(store: Store): Hono {
   // member — a key is a machine credential that lives in an environment variable, and one leaking
   // should not be a route to a human login.
   // -----------------------------------------------------------------------------------------------
+
+  // -----------------------------------------------------------------------------------------------
+  // Where a business answers
+  //
+  // The business app is ONE deployment serving every founder's clients, resolved by hostname. See
+  // the comment on `projectForHost` for why that is safe: the app holds no data, and the kernel
+  // decides what a client sees from their session rather than from the host.
+  // -----------------------------------------------------------------------------------------------
+
+  const ROOT_DOMAIN = process.env.MYCEL_ROOT_DOMAIN ?? "mycelai.dev";
+
+  /**
+   * Which business serves this hostname. Called by the business app on every request, so it takes a
+   * product key rather than a member session and returns only what a portal needs to render.
+   *
+   * Notably absent: the project id. The app never needs it — a client session already carries the
+   * project, and handing the id to an unauthenticated-ish surface invites someone to try using it.
+   */
+  app.get("/v1/host/:host", async (c) => {
+    /**
+     * A credential of its own, not the product key.
+     *
+     * The business app is customer-facing, and giving it an operator credential would mean a
+     * compromise there — a dependency, an SSRF — hands over a key that can read and create tasks.
+     * `MYCEL_HOST_TOKEN` can do exactly one thing: turn a hostname into a display name and a
+     * colour. A product key is also accepted so a self-hosted single-tenant setup needs no extra
+     * configuration.
+     */
+    const hostToken = process.env.MYCEL_HOST_TOKEN;
+    const presented = (c.req.header("authorization") ?? "").replace(/^Bearer\s+/i, "");
+    const viaHostToken = !!hostToken && safeEqual(presented, hostToken);
+    // `scope` is undefined when the middleware waved this through on the host-token path, so
+    // the optional chain is load-bearing rather than defensive.
+    if (!viaHostToken && c.get("scope")?.kind !== "key") {
+      return c.json({ error: "host lookup requires the host token or a product key" }, 403);
+    }
+    const p = identity.projectForHost(c.req.param("host") ?? "", ROOT_DOMAIN);
+    if (!p) return c.json({ error: "no business answers on that host" }, 404);
+    return c.json({
+      slug: p.slug,
+      branding: {
+        display_name: p.branding?.display_name ?? p.name,
+        accent: p.branding?.accent ?? "#16a34a",
+        support_email: p.branding?.support_email,
+      },
+    });
+  });
+
+  /** Where this business's portal lives, and the state of any custom domain. Members only. */
+  app.get("/v1/projects/:id/domain", async (c) => {
+    const scope = c.get("scope");
+    const p = identity.getProject(c.req.param("id") ?? "");
+    if (!p || !inScope(accessible(c), p.id)) return c.json({ error: "not found" }, 404);
+    void scope;
+    return c.json({
+      slug: p.slug,
+      portal_url: p.slug ? `https://${p.slug}.${ROOT_DOMAIN}` : null,
+      custom_domain: p.custom_domain,
+      verified: !!p.custom_domain_verified_at,
+      // The record they must publish. Returned while unverified so the UI can show it again after
+      // a reload — a founder who closes the tab shouldn't have to start the claim over.
+      verify_record: p.domain_verify_token
+        ? { type: "TXT", name: `_mycel.${p.custom_domain}`, value: p.domain_verify_token }
+        : null,
+    });
+  });
+
+  app.post("/v1/projects/:id/domain", async (c) => {
+    const scope = c.get("scope");
+    if (!canManageMembers(scope.role)) return c.json({ error: "only an owner or admin can set a domain" }, 403);
+    const p = identity.getProject(c.req.param("id") ?? "");
+    if (!p || !inScope(accessible(c), p.id)) return c.json({ error: "not found" }, 404);
+    const b = (await c.req.json().catch(() => ({}))) as { domain?: string };
+    const out = identity.claimDomain(p.id, b.domain ?? "");
+    if ("error" in out) return c.json(out, 400);
+    await audit({
+      project_id: p.id,
+      actor: scope.member_id ?? "member",
+      action: "domain.claimed",
+      entity: "project",
+      entity_id: p.id,
+      detail: { domain: b.domain },
+    });
+    return c.json({ verify_record: { type: "TXT", ...out.record } }, 201);
+  });
+
+  /**
+   * Check the claim against DNS.
+   *
+   * Deliberately a real lookup rather than the founder ticking a box: serving a portal on a domain
+   * someone else owns is how a phishing page ends up with our certificate on it. Until this passes,
+   * `projectForHost` refuses the domain even if DNS already points at us.
+   */
+  app.post("/v1/projects/:id/domain/verify", async (c) => {
+    const scope = c.get("scope");
+    if (!canManageMembers(scope.role)) return c.json({ error: "only an owner or admin can verify a domain" }, 403);
+    const p = identity.getProject(c.req.param("id") ?? "");
+    if (!p || !inScope(accessible(c), p.id)) return c.json({ error: "not found" }, 404);
+    if (!p.custom_domain || !p.domain_verify_token) return c.json({ error: "no domain is awaiting verification" }, 400);
+
+    let records: string[][] = [];
+    try {
+      const dns = await import("node:dns/promises");
+      records = await dns.resolveTxt(`_mycel.${p.custom_domain}`);
+    } catch {
+      // NXDOMAIN and "not propagated yet" are the same thing to a founder who just added a record,
+      // and telling them apart isn't worth the confusion.
+      return c.json({ verified: false, reason: "no TXT record found at that name yet" }, 409);
+    }
+    const flat = records.map((r) => r.join(""));
+    if (!flat.includes(p.domain_verify_token)) {
+      return c.json({ verified: false, reason: "the TXT record is there but doesn't match", found: flat }, 409);
+    }
+    identity.markDomainVerified(p.id);
+    await audit({
+      project_id: p.id,
+      actor: scope.member_id ?? "member",
+      action: "domain.verified",
+      entity: "project",
+      entity_id: p.id,
+      detail: { domain: p.custom_domain },
+    });
+    return c.json({ verified: true, portal_url: `https://${p.custom_domain}` });
+  });
+
+  app.put("/v1/projects/:id/branding", async (c) => {
+    const scope = c.get("scope");
+    if (!canManageMembers(scope.role)) return c.json({ error: "only an owner or admin can change branding" }, 403);
+    const p = identity.getProject(c.req.param("id") ?? "");
+    if (!p || !inScope(accessible(c), p.id)) return c.json({ error: "not found" }, 404);
+    const b = (await c.req.json().catch(() => ({}))) as {
+      display_name?: string;
+      accent?: string;
+      support_email?: string;
+    };
+    // A colour goes into a style attribute on a page served to a founder's customers. Anything that
+    // isn't a hex triple is a CSS injection waiting to happen.
+    if (b.accent && !/^#[0-9a-fA-F]{6}$/.test(b.accent)) {
+      return c.json({ error: "accent must be a hex colour like #16a34a" }, 400);
+    }
+    const updated = identity.setBranding(p.id, {
+      display_name: b.display_name?.slice(0, 80),
+      accent: b.accent,
+      support_email: b.support_email?.slice(0, 200),
+    });
+    return c.json({ branding: updated?.branding ?? {} });
+  });
 
   // -----------------------------------------------------------------------------------------------
   // Plan & usage

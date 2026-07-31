@@ -67,6 +67,15 @@ export class IdentityPg {
       ALTER TABLE orgs ADD COLUMN IF NOT EXISTS plan_status text NOT NULL DEFAULT 'active';
       ALTER TABLE orgs ADD COLUMN IF NOT EXISTS billing_ref text;
       ALTER TABLE orgs ADD COLUMN IF NOT EXISTS plan_renews_at timestamptz;
+      ALTER TABLE projects ADD COLUMN IF NOT EXISTS slug text;
+      ALTER TABLE projects ADD COLUMN IF NOT EXISTS custom_domain text;
+      ALTER TABLE projects ADD COLUMN IF NOT EXISTS domain_verify_token text;
+      ALTER TABLE projects ADD COLUMN IF NOT EXISTS custom_domain_verified_at timestamptz;
+      ALTER TABLE projects ADD COLUMN IF NOT EXISTS branding jsonb;
+      -- A hostname must resolve to at most one business. Enforced here rather than only in code,
+      -- because two replicas can allocate the same slug at the same instant.
+      CREATE UNIQUE INDEX IF NOT EXISTS projects_slug_key ON projects (slug) WHERE slug IS NOT NULL;
+      CREATE UNIQUE INDEX IF NOT EXISTS projects_domain_key ON projects (custom_domain) WHERE custom_domain IS NOT NULL;
     `);
     return self;
   }
@@ -93,7 +102,14 @@ export class IdentityPg {
         billing_ref: r.billing_ref ?? undefined,
         plan_renews_at: r.plan_renews_at ? iso(r.plan_renews_at) : undefined,
       })),
-      projects: p.rows.map((r: any) => ({ id: r.id, org_id: r.org_id, name: r.name, wedges: r.wedges ?? [], created_at: iso(r.created_at) })),
+      projects: p.rows.map((r: any) => ({
+        id: r.id, org_id: r.org_id, name: r.name, wedges: r.wedges ?? [], created_at: iso(r.created_at),
+        slug: r.slug ?? undefined,
+        custom_domain: r.custom_domain ?? undefined,
+        domain_verify_token: r.domain_verify_token ?? undefined,
+        custom_domain_verified_at: r.custom_domain_verified_at ? iso(r.custom_domain_verified_at) : undefined,
+        branding: r.branding ?? undefined,
+      })),
       members: m.rows.map((r: any) => ({
         id: r.id, org_id: r.org_id, email: r.email, role: r.role as Role,
         created_at: iso(r.created_at), salt: r.salt, hash: r.hash,
@@ -125,9 +141,16 @@ export class IdentityPg {
   }
   async upsertProject(p: Project): Promise<void> {
     await this.pool.query(
-      `INSERT INTO projects (id, org_id, name, wedges) VALUES ($1,$2,$3,$4)
-       ON CONFLICT (id) DO UPDATE SET name=EXCLUDED.name, wedges=EXCLUDED.wedges`,
-      [p.id, p.org_id, p.name, JSON.stringify(p.wedges ?? [])],
+      `INSERT INTO projects (id, org_id, name, wedges, slug, custom_domain, domain_verify_token, custom_domain_verified_at, branding)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)
+       ON CONFLICT (id) DO UPDATE SET name=EXCLUDED.name, wedges=EXCLUDED.wedges, slug=EXCLUDED.slug,
+         custom_domain=EXCLUDED.custom_domain, domain_verify_token=EXCLUDED.domain_verify_token,
+         custom_domain_verified_at=EXCLUDED.custom_domain_verified_at, branding=EXCLUDED.branding`,
+      [
+        p.id, p.org_id, p.name, JSON.stringify(p.wedges ?? []),
+        p.slug ?? null, p.custom_domain ?? null, p.domain_verify_token ?? null,
+        p.custom_domain_verified_at ?? null, p.branding ? JSON.stringify(p.branding) : null,
+      ],
     );
   }
   async upsertMember(m: StoredMember): Promise<void> {
