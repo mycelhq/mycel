@@ -20,6 +20,7 @@ import type { Sandbox } from "./sandbox";
 import { loadWedge, type LoadedWedge } from "./wedge";
 import { getIdentityStore } from "./identity";
 import { isTier, modelForTier, resolveTier, wasClamped, type ModelTier } from "./models";
+import { keyForOrg } from "./litellm";
 
 export interface RuntimeCtx {
   emit(type: EventType, data?: Record<string, unknown>): Promise<void> | void;
@@ -119,13 +120,33 @@ export async function runOpenCodeTask(
   if (cfg.proxyMode) {
     // Route model calls through the harness proxy — the real key never enters the sandbox.
     const { providerId, modelId } = splitModel(model);
-    const base = process.env.MYCEL_LLM_UPSTREAM ?? openaiCompatibleBase(providerId);
+
+    /**
+     * Where model calls actually go.
+     *
+     * With LiteLLM configured, the upstream is the proxy and the credential is this ORG'S virtual
+     * key — which carries a hard budget and a model allowlist the proxy enforces per request. That
+     * matters because the kernel's own spend ceiling is checked once, at task creation, and so
+     * cannot stop the run that is currently spending. This can.
+     *
+     * Without it, we fall back to talking to the provider directly with the shared key, exactly as
+     * before. Degrading rather than failing is deliberate: a budget broker being down should slow
+     * nobody's business down with it.
+     */
+    const orgId = task.project_id
+      ? getIdentityStore().getProject(task.project_id)?.org_id
+      : undefined;
+    const tenantKey = orgId ? await keyForOrg(orgId) : undefined;
+
+    const base = tenantKey
+      ? `${process.env.MYCEL_LITELLM_URL!.replace(/\/+$/, "")}/v1`
+      : (process.env.MYCEL_LLM_UPSTREAM ?? openaiCompatibleBase(providerId));
     if (!base) {
       throw new Error(
-        `proxy mode: no OpenAI-compatible upstream for "${providerId}" — set MYCEL_LLM_UPSTREAM (e.g. a LiteLLM proxy)`,
+        `proxy mode: no OpenAI-compatible upstream for "${providerId}" — set MYCEL_LITELLM_URL, or MYCEL_LLM_UPSTREAM`,
       );
     }
-    const realKey = process.env[providerEnvVar(providerId)] ?? "";
+    const realKey = tenantKey ?? process.env[providerEnvVar(providerId)] ?? "";
     nonce = registerGrant({ base_url: base, api_key: realKey, model: modelId, task_id: task.id });
     const built = buildOpencodeConfig(model, {
       proxyBaseUrl: `${cfg.publicUrl}/v1/internal/llm`,
