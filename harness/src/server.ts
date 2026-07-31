@@ -843,8 +843,7 @@ export function createServer(store: Store): Hono {
   const tasksThisMonth = async (set: Set<string>) => {
     const from = new Date();
     const since = Date.UTC(from.getUTCFullYear(), from.getUTCMonth(), 1);
-    const all = await store.listTasks({ limit: 20_000 });
-    return all.filter((t) => inScope(set, t.project_id) && Date.parse(t.created_at) >= since).length;
+    return store.countTasksSince([...set], new Date(since).toISOString());
   };
 
   app.get("/v1/org", async (c) => {

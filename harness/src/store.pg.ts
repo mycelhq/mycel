@@ -347,6 +347,17 @@ export class PostgresStore implements Store {
     };
   }
 
+  async countTasksSince(projectIds: string[], sinceIso: string): Promise<number> {
+    if (!projectIds.length) return 0;
+    // `= ANY($1)` rather than a built IN list: one plan, one parameter, and no statement whose
+    // shape changes with the number of projects a member happens to own.
+    const r = await this.pool.query(
+      `SELECT count(*)::int AS n FROM tasks WHERE project_id = ANY($1) AND created_at >= $2`,
+      [projectIds, sinceIso],
+    );
+    return r.rows[0]?.n ?? 0;
+  }
+
   async listUnfinished(): Promise<Task[]> {
     const r = await this.pool.query(
       `SELECT * FROM tasks WHERE status NOT IN ('succeeded','failed','rejected','expired','cancelled')`,

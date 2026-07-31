@@ -18,6 +18,16 @@ export interface Store {
   getTask(id: string): Promise<Task | undefined>;
   /** Most-recent-first list for the operator portal. */
   listTasks(filter?: { status?: TaskStatus; wedge?: string; limit?: number }): Promise<Task[]>;
+  /**
+   * How many tasks these projects created since `sinceIso`.
+   *
+   * A COUNT, not a fetch. This is called on EVERY task creation to enforce the monthly plan limit,
+   * and the previous implementation pulled 20,000 rows across all tenants and counted them in
+   * JavaScript. That is a full scan per job on the hot path — and worse, it was WRONG above 20,000
+   * tasks platform-wide: the limit took the most recent 20k across every tenant, so a small
+   * customer's usage could read zero while a busy neighbour filled the window.
+   */
+  countTasksSince(projectIds: string[], sinceIso: string): Promise<number>;
   /** Set status; on a failure/terminal state, pass the reason so it's persisted on the task. */
   setStatus(id: string, status: TaskStatus, error?: string): Promise<void>;
   addCost(id: string, delta: number): Promise<void>;
@@ -201,6 +211,15 @@ export class InMemoryStore implements Store {
       .filter((a) => a.task_id === taskId)
       .sort((a, b) => a.created_at.localeCompare(b.created_at))
       .map(stripContent);
+  }
+
+  async countTasksSince(projectIds: string[], sinceIso: string): Promise<number> {
+    const wanted = new Set(projectIds);
+    let n = 0;
+    for (const t of this.tasks.values()) {
+      if (t.project_id && wanted.has(t.project_id) && t.created_at >= sinceIso) n++;
+    }
+    return n;
   }
 
   async listUnfinished(): Promise<Task[]> {

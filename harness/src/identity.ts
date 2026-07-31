@@ -194,6 +194,7 @@ class IdentityStore {
       slug: "default",
     };
     this.projects.set(project.id, project);
+    this.indexProject(project);
     this.apiKeys.set(loadConfig().apiKey, { project_id: project.id, org_id: org.id });
 
     // Owner member: from env, or generated + printed (never a blank/known password).
@@ -219,7 +220,10 @@ class IdentityStore {
     this.pg = pg;
     const { orgs, projects, members, apiKeys, invites } = await pg.loadAll();
     for (const o of orgs) this.orgs.set(o.id, o);
-    for (const p of projects) this.projects.set(p.id, p);
+    for (const p of projects) {
+      this.projects.set(p.id, p);
+      this.indexProject(p);
+    }
     for (const m of members) this.members.set(m.id, m);
     for (const [k, v] of apiKeys) this.apiKeys.set(k, v);
     // Invites outlive a restart deliberately: a link emailed on Friday must still work on Monday.
@@ -441,8 +445,7 @@ class IdentityStore {
   /** Allocate a free slug near `name`, suffixing only when it has to. */
   allocateSlug(name: string): string {
     const base = IdentityStore.slugify(name) || "business";
-    const taken = (s: string) =>
-      IdentityStore.RESERVED.has(s) || [...this.projects.values()].some((p) => p.slug === s);
+    const taken = (s: string) => IdentityStore.RESERVED.has(s) || this.bySlug.has(s);
     if (!taken(base)) return base;
     for (let n = 2; n < 500; n++) {
       const candidate = `${base}-${n}`;
@@ -462,17 +465,17 @@ class IdentityStore {
   projectForHost(host: string, rootDomain: string): Project | undefined {
     const h = (host ?? "").toLowerCase().split(":")[0].replace(/\.$/, "");
     if (!h) return undefined;
-    const byCustom = [...this.projects.values()].find(
-      (p) => p.custom_domain === h && !!p.custom_domain_verified_at,
-    );
-    if (byCustom) return byCustom;
+    const customId = this.byDomain.get(h);
+    const byCustom = customId ? this.projects.get(customId) : undefined;
+    if (byCustom?.custom_domain_verified_at) return byCustom;
     const root = rootDomain.toLowerCase();
     if (!h.endsWith(`.${root}`)) return undefined;
     const sub = h.slice(0, -(root.length + 1));
     // Only one level. `a.b.mycelai.dev` must not resolve as `a` — a wildcard certificate covers one
     // label, and treating deeper names as a match would make the boundary fuzzy.
     if (!sub || sub.includes(".")) return undefined;
-    return [...this.projects.values()].find((p) => p.slug === sub);
+    const id = this.bySlug.get(sub);
+    return id ? this.projects.get(id) : undefined;
   }
 
   /** Claim a domain the founder says they own. Returns the TXT record they must publish. */
@@ -483,8 +486,12 @@ class IdentityStore {
     if (!/^[a-z0-9.-]+\.[a-z]{2,}$/.test(d)) return { error: "that doesn't look like a domain" };
     const clash = [...this.projects.values()].find((x) => x.custom_domain === d && x.id !== projectId);
     if (clash) return { error: "that domain is already claimed" };
+    // Re-indexed below: claiming a NEW domain must drop the old one from the routing table, or a
+    // founder who moves domains keeps serving on the one they abandoned.
+    if (p.custom_domain && p.custom_domain !== d) this.byDomain.delete(p.custom_domain);
     p.custom_domain = d;
     p.custom_domain_verified_at = undefined;
+    this.byDomain.delete(d);
     p.domain_verify_token = `mycel-verify=${randomBytes(16).toString("hex")}`;
     if (this.pg) void this.pg.upsertProject(p).catch(() => {});
     return { record: { name: `_mycel.${d}`, value: p.domain_verify_token } };
@@ -499,6 +506,7 @@ class IdentityStore {
     if (!p || !p.custom_domain) return undefined;
     p.custom_domain_verified_at = new Date().toISOString();
     p.domain_verify_token = undefined;
+    this.indexProject(p);
     if (this.pg) void this.pg.upsertProject(p).catch(() => {});
     return p;
   }
@@ -525,6 +533,7 @@ class IdentityStore {
       slug: this.allocateSlug(name),
     };
     this.projects.set(project.id, project);
+    this.indexProject(project);
     const apiKey = `msk_${randomBytes(24).toString("base64url")}`;
     this.apiKeys.set(apiKey, { project_id: project.id, org_id: orgId });
     if (this.pg) {
@@ -565,6 +574,27 @@ class IdentityStore {
   // ---------------------------------------------------------------------------------------------
 
   private invites = new Map<string, StoredInvite>();
+
+  /**
+   * Hostname → project, maintained alongside `projects`.
+   *
+   * `projectForHost` runs on EVERY request to the customer-facing app — it is how the page knows
+   * whose brand to render — and it used to scan every project in the process to answer. That is
+   * O(tenants) per page load, on the hottest path in the product. These two indexes make it O(1).
+   *
+   * Rebuilt wholesale on attach and patched on every write, because a stale index here serves one
+   * founder's branding to another's customers.
+   */
+  private bySlug = new Map<string, string>();
+  private byDomain = new Map<string, string>();
+
+  private indexProject(p: Project): void {
+    if (p.slug) this.bySlug.set(p.slug, p.id);
+    // Only a VERIFIED domain is routable. Indexing an unverified claim would serve a portal on a
+    // domain nobody has proved they own.
+    if (p.custom_domain && p.custom_domain_verified_at) this.byDomain.set(p.custom_domain, p.id);
+    else if (p.custom_domain) this.byDomain.delete(p.custom_domain);
+  }
 
   listMembers(orgId: string): Member[] {
     return [...this.members.values()]
