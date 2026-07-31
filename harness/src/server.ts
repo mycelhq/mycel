@@ -839,6 +839,14 @@ export function createServer(store: Store): Hono {
   // product key. Anyone running this themselves stays on `self_hosted`, whose limits are all null.
   // -----------------------------------------------------------------------------------------------
 
+  const monthStart = () => {
+    const now = new Date();
+    return new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), 1)).toISOString();
+  };
+
+  /** Model spend this calendar month. The limit that actually protects margin — see Limits. */
+  const spendThisMonth = (set: Set<string>) => store.sumCostSince([...set], monthStart());
+
   /** Tasks created this calendar month, for the metered limit. */
   const tasksThisMonth = async (set: Set<string>) => {
     const from = new Date();
@@ -869,6 +877,7 @@ export function createServer(store: Store): Hono {
         seats: identity.seatsUsed(scope.org_id),
         projects: projects.length,
         tasks_this_month: await tasksThisMonth(identity.accessibleProjectIds(scope)),
+        model_spend_usd: await spendThisMonth(identity.accessibleProjectIds(scope)),
       },
     });
   });
@@ -1062,12 +1071,37 @@ export function createServer(store: Store): Hono {
      * unpaid invoice does to us.
      */
     const scope = c.get("scope");
-    const monthly = identity.limitsFor(scope.org_id).tasks_per_month;
+    const limits = identity.limitsFor(scope.org_id);
+    const monthly = limits.tasks_per_month;
     if (monthly !== null) {
       const used = await tasksThisMonth(identity.accessibleProjectIds(scope));
       if (used >= monthly) {
         return c.json(
           { error: `your plan includes ${monthly} jobs a month, and ${used} have run`, code: "task_limit" },
+          402,
+        );
+      }
+    }
+
+    /**
+     * The spend ceiling.
+     *
+     * Job count alone does not protect margin: the model tiers differ by 35× in price, so a plan
+     * can be well inside its job allowance and deeply unprofitable. This is the limit that
+     * corresponds to money rather than to volume.
+     *
+     * Deliberately checked BEFORE the run, like the job limit, and deliberately generous — it is a
+     * runaway guard, not a throttle anyone should meet in normal use.
+     */
+    if (limits.model_spend_usd_per_month !== null) {
+      const spent = await spendThisMonth(identity.accessibleProjectIds(scope));
+      if (spent >= limits.model_spend_usd_per_month) {
+        return c.json(
+          {
+            error: `this month's model spend has reached your plan's $${limits.model_spend_usd_per_month} ceiling`,
+            code: "spend_limit",
+            spent_usd: Number(spent.toFixed(2)),
+          },
           402,
         );
       }

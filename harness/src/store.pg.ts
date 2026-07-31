@@ -358,6 +358,15 @@ export class PostgresStore implements Store {
     return r.rows[0]?.n ?? 0;
   }
 
+  async sumCostSince(projectIds: string[], sinceIso: string): Promise<number> {
+    if (!projectIds.length) return 0;
+    const r = await this.pool.query(
+      `SELECT COALESCE(sum(cost_usd), 0)::float8 AS n FROM tasks WHERE project_id = ANY($1) AND created_at >= $2`,
+      [projectIds, sinceIso],
+    );
+    return Number((r.rows[0]?.n ?? 0).toFixed(4));
+  }
+
   async listUnfinished(): Promise<Task[]> {
     const r = await this.pool.query(
       `SELECT * FROM tasks WHERE status NOT IN ('succeeded','failed','rejected','expired','cancelled')`,

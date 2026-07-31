@@ -28,6 +28,8 @@ export interface Store {
    * customer's usage could read zero while a busy neighbour filled the window.
    */
   countTasksSince(projectIds: string[], sinceIso: string): Promise<number>;
+  /** Model spend by these projects since `sinceIso`. Summed in the database, for the same reason. */
+  sumCostSince(projectIds: string[], sinceIso: string): Promise<number>;
   /** Set status; on a failure/terminal state, pass the reason so it's persisted on the task. */
   setStatus(id: string, status: TaskStatus, error?: string): Promise<void>;
   addCost(id: string, delta: number): Promise<void>;
@@ -220,6 +222,15 @@ export class InMemoryStore implements Store {
       if (t.project_id && wanted.has(t.project_id) && t.created_at >= sinceIso) n++;
     }
     return n;
+  }
+
+  async sumCostSince(projectIds: string[], sinceIso: string): Promise<number> {
+    const wanted = new Set(projectIds);
+    let n = 0;
+    for (const t of this.tasks.values()) {
+      if (t.project_id && wanted.has(t.project_id) && t.created_at >= sinceIso) n += t.cost_usd || 0;
+    }
+    return Number(n.toFixed(4));
   }
 
   async listUnfinished(): Promise<Task[]> {

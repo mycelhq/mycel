@@ -11,6 +11,13 @@ import type { Risk } from "./contract";
 import type { IntakeQuestion } from "./intake";
 
 export interface WedgeTaskType {
+  /**
+   * How hard this job actually is: "fast" | "standard" | "deep".
+   *
+   * Declared per task_type because a wedge does several different things — classifying an inbound
+   * message is not the same work as reconciling a month. Clamped by the org's plan at run time.
+   */
+  tier?: string;
   description?: string;
   input_schema?: unknown;
   output_schema?: unknown;
@@ -23,6 +30,8 @@ export interface WedgeApproval {
 }
 
 export interface WedgeManifest {
+  /** Default tier for every task_type that does not declare one. */
+  tier?: string;
   wedge: string;
   title?: string;
   model?: string;

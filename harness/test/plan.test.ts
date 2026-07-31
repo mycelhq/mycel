@@ -12,7 +12,9 @@ test("plan: running it yourself is unmetered, and that is the default", async ()
   const r = await api(app, "org");
   assert.equal(r.status, 200);
   assert.equal(r.json.org.plan, "self_hosted");
-  assert.deepEqual(r.json.limits, { seats: null, projects: null, tasks_per_month: null });
+  assert.deepEqual(r.json.limits, {
+    seats: null, projects: null, tasks_per_month: null, model_spend_usd_per_month: null,
+  });
   assert.equal(typeof r.json.usage.tasks_this_month, "number");
 });
 
@@ -185,4 +187,47 @@ test("plan: setting someone else's plan needs a credential of its own", async ()
 
   if (previous === undefined) delete process.env.MYCEL_CONTROL_TOKEN;
   else process.env.MYCEL_CONTROL_TOKEN = previous;
+});
+
+test("plan: a spend ceiling stops the run that a job count would have allowed", async () => {
+  // Counting jobs does not protect margin. The tiers differ by 35× in price, so a Growth customer
+  // can sit well inside a 20,000-job allowance and still cost $1,520 of model spend against $380 of
+  // revenue. This is the limit that corresponds to money.
+  const { app, store } = makeApp();
+  const id = getIdentityStore();
+  const me = await api(app, "me");
+  const orgId = me.json.org_id as string;
+  const projectId = me.json.projects[0].id as string;
+
+  const spawn = () =>
+    api(app, "tasks", {
+      method: "POST",
+      body: JSON.stringify({ wedge: "enrollment-operator", task_type: "reply_to_lead", input: {} }),
+    });
+
+  id.setPlan(orgId, { plan: "starter" });
+  assert.equal((await spawn()).status, 201, "well inside every limit");
+
+  // A month of expensive runs, without having to actually make 2,000 of them.
+  const now = new Date().toISOString();
+  await store.createTask({
+    id: `spendy-${Date.now()}`, project_id: projectId, wedge: "books-keeper", task_type: "daily_sync",
+    actor: { kind: "system", id: "test" }, input: {}, constraints: {}, tools: [],
+    status: "succeeded", cost_usd: 500, created_at: now, updated_at: now,
+  } as never);
+
+  const refused = await spawn();
+  assert.equal(refused.status, 402, refused.text);
+  assert.equal(refused.json.code, "spend_limit");
+  assert.match(refused.json.error, /model spend/);
+
+  // The job count is untouched — this is a second, independent ceiling, and the message says which
+  // one you hit so the fix is obvious.
+  const org = await api(app, "org");
+  assert.ok(org.json.usage.model_spend_usd >= 500);
+  assert.ok(org.json.usage.tasks_this_month < 2000, "nowhere near the job limit");
+
+  // And running it yourself is still unmetered.
+  id.setPlan(orgId, { plan: "self_hosted" });
+  assert.equal((await spawn()).status, 201);
 });

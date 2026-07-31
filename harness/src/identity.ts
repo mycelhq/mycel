@@ -35,14 +35,33 @@ export interface Limits {
   seats: number | null;
   projects: number | null;
   tasks_per_month: number | null;
+  /**
+   * A ceiling on MODEL SPEND, not just on job count.
+   *
+   * Counting jobs alone does not protect margin, because the model tiers differ by 35× in price. A
+   * Growth customer running their full 20,000 jobs on the deep tier costs about $1,520 of model
+   * spend against $380 of revenue — the plan loses over a thousand dollars a month at its own
+   * advertised limit. Job counts cap volume; this caps money, which is the thing that actually
+   * runs out.
+   *
+   * Set generously: it is a runaway guard and an honest ceiling, not a throttle customers should
+   * feel in normal use.
+   */
+  model_spend_usd_per_month: number | null;
 }
 
 export const PLAN_LIMITS: Record<Plan, Limits> = {
-  self_hosted: { seats: null, projects: null, tasks_per_month: null },
-  free: { seats: 1, projects: 1, tasks_per_month: 100 },
-  starter: { seats: 3, projects: 2, tasks_per_month: 2_000 },
-  growth: { seats: 10, projects: 10, tasks_per_month: 20_000 },
-  scale: { seats: null, projects: null, tasks_per_month: null },
+  // The operator's own key and own bill. Metering someone else's spend would be rude and pointless.
+  self_hosted: { seats: null, projects: null, tasks_per_month: null, model_spend_usd_per_month: null },
+  // Enough to feel it work end to end. Costs us about $0.20 a month at the fast tier.
+  free: { seats: 1, projects: 1, tasks_per_month: 100, model_spend_usd_per_month: 2 },
+  // £99 ≈ $126. At the standard tier 2,000 jobs is ~$15, so $40 is a wide runaway guard.
+  starter: { seats: 3, projects: 2, tasks_per_month: 2_000, model_spend_usd_per_month: 40 },
+  // £299 ≈ $380. 20,000 standard-tier jobs is ~$152; $180 leaves room for some deep work and still
+  // returns a healthy margin. Without this line, deep-tier usage here is a $1,140 monthly loss.
+  growth: { seats: 10, projects: 10, tasks_per_month: 20_000, model_spend_usd_per_month: 180 },
+  // Negotiated, so metered by the contract rather than by this table.
+  scale: { seats: null, projects: null, tasks_per_month: null, model_spend_usd_per_month: null },
 };
 
 /**

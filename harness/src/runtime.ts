@@ -18,6 +18,8 @@ import { buildGatePatterns, MYCEL_PLUGIN_CODE } from "./plugin";
 import { registerGrant, revokeGrant } from "./proxygrants";
 import type { Sandbox } from "./sandbox";
 import { loadWedge, type LoadedWedge } from "./wedge";
+import { getIdentityStore } from "./identity";
+import { isTier, modelForTier, resolveTier, wasClamped, type ModelTier } from "./models";
 
 export interface RuntimeCtx {
   emit(type: EventType, data?: Record<string, unknown>): Promise<void> | void;
@@ -73,10 +75,41 @@ export async function runOpenCodeTask(
 ): Promise<{ text: string }> {
   const cfg = loadConfig();
   const wedge = loadWedge(task.wedge);
+  /**
+   * Which model, and who decided.
+   *
+   * Order: an explicit model on the task wins (an operator debugging a specific run), then a TIER —
+   * declared by the task, else by the wedge's task_type, else by the wedge — clamped to what the
+   * org's plan may reach. A named model in a wedge manifest still works and skips tiering entirely.
+   *
+   * The clamp is downward, never a refusal: a free-tier customer asking for deep reasoning gets a
+   * cheaper answer rather than a failed run. See models.ts for why the default is deliberately not
+   * the best model available.
+   */
+  const plan = task.project_id
+    ? getIdentityStore().getOrg(getIdentityStore().getProject(task.project_id)?.org_id ?? "")?.plan
+    : undefined;
+  const askedTier = isTier(task.input?.tier)
+    ? task.input.tier
+    : isTier(wedge?.manifest.task_types?.[task.task_type]?.tier)
+      ? (wedge!.manifest.task_types![task.task_type]!.tier as ModelTier)
+      : isTier(wedge?.manifest.tier)
+        ? (wedge!.manifest.tier as ModelTier)
+        : undefined;
+  const tier = resolveTier(askedTier, plan);
+
   const model =
     typeof task.input?.model === "string"
       ? task.input.model
-      : (wedge?.manifest.model ?? cfg.model);
+      : (wedge?.manifest.model ?? modelForTier(tier) ?? cfg.model);
+
+  if (wasClamped(askedTier, plan)) {
+    // Said out loud rather than silently downgraded — a founder wondering why an answer is thinner
+    // than last month deserves to see the reason on the run.
+    void ctx.emit("progress", {
+      note: `Ran on the ${tier} model: your plan does not include the ${askedTier} tier.`,
+    });
+  }
 
   let config: Record<string, unknown>;
   let providerEnv: Record<string, string>;
