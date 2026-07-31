@@ -1161,6 +1161,43 @@ export function createServer(store: Store): Hono {
     const lastId = Number.isFinite(parsed) ? parsed : 0; // malformed header must not skip replay
     const visible = (ev: TaskEvent) => !allow || allow.has(ev.type);
 
+    /**
+     * What a customer may see INSIDE an allowed event.
+     *
+     * The type allowlist was only half the boundary. Every allowed event's whole `data` object was
+     * forwarded verbatim, and `progress.note` is free text authored by the runtime and the agent —
+     * a customer watching a run saw "mock runtime — no sandbox, canned result". Anything the agent
+     * decides to narrate about its own internals reaches the client the same way.
+     *
+     * So the portal plane gets a field allowlist per type, not just a type allowlist. Fails closed:
+     * an event type whose fields nobody has thought about yet is forwarded with no data at all,
+     * which shows the customer "Working…" rather than whatever gets added next.
+     *
+     * The operator plane passes through untouched — the founder is entitled to everything.
+     */
+    const PORTAL_FIELDS: Partial<Record<EventType, readonly string[]>> = {
+      "task.created": [],
+      "step.started": [],
+      // Deliberately no `note`: it is operator-flavoured prose with no contract.
+      progress: [],
+      // The name and type of a file produced FOR this customer — they are about to download it.
+      "artifact.created": ["artifact_id", "name", "content_type", "size_bytes"],
+      // Which capability ran, never its arguments or what came back.
+      "tool.called": ["tool"],
+      "tool.result": ["tool", "ok"],
+      "output.validated": ["ok"],
+      "task.finished": ["status"],
+    };
+
+    const redact = (ev: TaskEvent): TaskEvent => {
+      if (!allow) return ev;
+      const keep = PORTAL_FIELDS[ev.type] ?? [];
+      const src = (ev.data ?? {}) as Record<string, unknown>;
+      const data: Record<string, unknown> = {};
+      for (const k of keep) if (k in src) data[k] = src[k];
+      return { ...ev, data };
+    };
+
     return streamSSE(c, async (stream) => {
       let lastSent = lastId;
       const queue: TaskEvent[] = [];
@@ -1213,7 +1250,7 @@ export function createServer(store: Store): Hono {
         // Replay persisted events first (we subscribed above, so nothing is lost in between).
         let finishedInReplay = false;
         for (const ev of (await store.eventsAfter(taskId, lastId)).filter(visible)) {
-          await stream.writeSSE({ id: String(ev.id), event: ev.type, data: JSON.stringify(ev) });
+          await stream.writeSSE({ id: String(ev.id), event: ev.type, data: JSON.stringify(redact(ev)) });
           lastSent = ev.id;
           if (ev.type === "task.finished") finishedInReplay = true;
         }
@@ -1223,7 +1260,7 @@ export function createServer(store: Store): Hono {
         const t = await store.getTask(taskId);
         if (t && TERMINAL.has(t.status)) {
           for (const ev of (await store.eventsAfter(taskId, lastSent)).filter(visible)) {
-            await stream.writeSSE({ id: String(ev.id), event: ev.type, data: JSON.stringify(ev) });
+            await stream.writeSSE({ id: String(ev.id), event: ev.type, data: JSON.stringify(redact(ev)) });
             lastSent = ev.id;
           }
           // Say the run is over before hanging up.
@@ -1264,7 +1301,7 @@ export function createServer(store: Store): Hono {
             // Filtered here as well as in replay, or a customer would see a filtered history and
             // then an unfiltered live tail — the leak arriving only for whoever kept the tab open.
             if (!visible(ev)) continue;
-            await stream.writeSSE({ id: String(ev.id), event: ev.type, data: JSON.stringify(ev) });
+            await stream.writeSSE({ id: String(ev.id), event: ev.type, data: JSON.stringify(redact(ev)) });
             if (ev.type === "task.finished") done = true;
           }
         }

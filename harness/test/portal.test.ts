@@ -2,6 +2,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { api, makeApp, waitTask, KEY } from "./helpers";
 import { getDomainStore } from "../src/domain";
+import { emitEvent } from "../src/events";
 import { _resetPortal, exchangePortalLink, mintPortalLink, resolveClientSession } from "../src/portal";
 
 /** Two clients in one project, each with a thread — the shape every isolation claim is tested on. */
@@ -269,4 +270,52 @@ test("portal: a link is single-use even when two clicks race", async () => {
   const [a, b] = await Promise.all([exchangePortalLink(link.token), exchangePortalLink(link.token)]);
   const winners = [a, b].filter(Boolean);
   assert.equal(winners.length, 1, "exactly one exchange succeeds");
+});
+
+test("portal: an allowed event still can't carry the operator's words to the customer", async () => {
+  // The type allowlist was only half the boundary. Every allowed event's whole `data` object went
+  // out verbatim, and `progress.note` is free text written by the runtime and the agent — a
+  // customer watching a run saw "mock runtime — no sandbox, canned result". Anything the agent
+  // decides to narrate about its own internals reached the client the same way.
+  const { app, store } = makeApp();
+  const domain = getDomainStore();
+  const projectId = (await api(app, "me")).json.projects[0].id;
+  const clientRow = await domain.createClient({ project_id: projectId, display_name: "Watcher" } as never);
+  const now = new Date().toISOString();
+  const taskId = `leak-${Date.now()}`;
+  await store.createTask({
+    id: taskId, project_id: projectId, wedge: "books-keeper", task_type: "daily_sync",
+    actor: { kind: "user", id: clientRow.id }, input: { client_id: clientRow.id },
+    constraints: {}, tools: [], status: "succeeded", cost_usd: 0.42, created_at: now, updated_at: now,
+  } as never);
+
+  await emitEvent(store, taskId, "progress", { note: "mock runtime — no sandbox, canned result" });
+  await emitEvent(store, taskId, "tool.called", { tool: "gmail_send", arguments: { to: "someone-else@example.com" } });
+  await emitEvent(store, taskId, "artifact.created", { artifact_id: "a1", name: "july.pdf", content_type: "application/pdf" });
+  await emitEvent(store, taskId, "task.finished", { status: "succeeded", cost_usd: 0.42, model: "claude-x" });
+
+  const session = (await exchangePortalLink(
+    mintPortalLink({ project_id: projectId, client_id: clientRow.id }).token,
+  ))!.token;
+  const res = await app.request(`/v1/portal/tasks/${taskId}/events`, {
+    headers: { authorization: `Bearer ${session}`, "Last-Event-ID": "0" },
+  });
+  const body = await res.text();
+
+  assert.ok(!body.includes("mock runtime"), "the operator's narration does not reach the customer");
+  assert.ok(!body.includes("someone-else@example.com"), "nor a tool call's arguments");
+  assert.ok(!body.includes("claude-x"), "nor which model ran");
+  assert.ok(!body.includes("0.42"), "nor what it cost");
+
+  // …while everything the customer legitimately needs still arrives.
+  assert.ok(body.includes("july.pdf"), "the file they are about to download is named");
+  assert.ok(body.includes("gmail_send"), "and which capability ran, without its arguments");
+  assert.ok(body.includes("succeeded"), "and that it finished");
+
+  // The founder plane is untouched — they are entitled to all of it.
+  const asFounder = await app.request(`/v1/tasks/${taskId}/events`, {
+    headers: { authorization: `Bearer ${KEY}`, "Last-Event-ID": "0" },
+  });
+  const full = await asFounder.text();
+  assert.ok(full.includes("mock runtime") && full.includes("claude-x"), "nothing is hidden from the operator");
 });
