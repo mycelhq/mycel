@@ -58,7 +58,16 @@ import {
   listCategories as composioCategories,
   createManagedAuthConfig,
   slugToolkit,
+  composioWebhookSecret,
+  deleteTrigger as composioDeleteTrigger,
+  parseTriggerEvent,
+  setTriggerEnabled as composioSetTriggerEnabled,
+  setWebhookSubscription as composioSetWebhookSubscription,
+  upsertTrigger as composioUpsertTrigger,
+  verifyWebhook as verifyComposioWebhook,
+  WEBHOOK_HEADERS,
 } from "./composio";
+import { startRunFromTrigger } from "./triggers";
 import { buildCoverage, gapId, isGapId, recordAnswer } from "./intake";
 import {
   exchangePortalLink,
@@ -576,9 +585,16 @@ export function createServer(store: Store): Hono {
     // `/v1/host/*` carries its own credential (`MYCEL_HOST_TOKEN`) and checks it in the handler,
     // because the customer-facing app that calls it must not hold an operator key. It still
     // accepts a product key, so this middleware runs and sets a scope when one is presented.
+    //
+    // `/v1/composio/webhook` is public because Composio has no Mycel session and never will. Its
+    // credential is the HMAC signature over the raw body, checked in the handler against the
+    // project's webhook secret — and the handler refuses everything when that secret is unset,
+    // rather than degrading into an unauthenticated "start a run" endpoint. Exact match, not a
+    // prefix: nothing else under /v1/composio/ may inherit this.
     if (
       c.req.path.startsWith("/v1/internal/") ||
       c.req.path.startsWith("/v1/invites/") ||
+      c.req.path === "/v1/composio/webhook" ||
       (c.req.path.startsWith("/v1/host/") && !!process.env.MYCEL_HOST_TOKEN) ||
       PUBLIC_AUTH.has(c.req.path)
     )
@@ -1973,6 +1989,237 @@ export function createServer(store: Store): Hono {
     } catch (e) {
       return c.json({ error: (e as Error).message }, 502);
     }
+  });
+
+  // ── Triggers: the doorbell ──
+  // See triggers.ts for why routing is read from the stored subscription and never from a payload.
+
+  /**
+   * Subscribe this connection to an event. Idempotent on (connection, trigger_slug) at both ends:
+   * the store upserts, and Composio's own endpoint is an upsert — so a founder clicking twice ends
+   * with one subscription and one run per event, not two.
+   */
+  app.post("/v1/connections/:id/triggers", async (c) => {
+    const r = await composioConn(c);
+    if ("error" in r) return c.json({ error: r.error }, r.status);
+    const { conn, cfg } = r;
+    const cc = composioConnConfig(conn);
+    const b = (await c.req.json().catch(() => ({}))) as {
+      trigger_slug?: string;
+      wedge?: string;
+      task_type?: string;
+      config?: Record<string, unknown>;
+    };
+    const slug = (b.trigger_slug ?? "").trim().toUpperCase();
+    if (!slug || !b.wedge || !b.task_type) {
+      return c.json({ error: "trigger_slug, wedge and task_type are required" }, 400);
+    }
+    if (!/^[A-Z0-9_]{1,128}$/.test(slug)) return c.json({ error: "invalid trigger_slug" }, 400);
+
+    // Validate the destination up front, exactly like POST /v1/tasks. A subscription that can only
+    // ever produce a 404 at 3am is worse than a 400 now.
+    const wedge = loadWedge(b.wedge);
+    if (!wedge) return c.json({ error: `unknown wedge: ${b.wedge}` }, 400);
+    const types = wedge.manifest.task_types;
+    if (types && Object.keys(types).length && !types[b.task_type]) {
+      return c.json({ error: `unknown task_type "${b.task_type}" for wedge "${b.wedge}"` }, 400);
+    }
+    if (!identity.projectAllowsWedge(conn.project_id ?? "", b.wedge)) {
+      return c.json({ error: `wedge "${b.wedge}" is not enabled for this project` }, 403);
+    }
+    if (!cc.connected_account_id) {
+      return c.json({ error: "connect this account before subscribing to its events" }, 400);
+    }
+    if (!composioWebhookSecret()) {
+      // Refuse to register a trigger we would then be unable to accept. Otherwise the founder gets
+      // a working subscription on Composio's side and a webhook route that rejects every delivery.
+      return c.json({ error: "COMPOSIO_WEBHOOK_SECRET is not set on the harness" }, 501);
+    }
+
+    try {
+      const out = await composioUpsertTrigger(cfg, {
+        slug,
+        // Derived from the connection's owner, never the body — same rule as every other call.
+        userId: composioUserId(conn),
+        connectedAccountId: cc.connected_account_id,
+        triggerConfig: b.config ?? {},
+      });
+      const sub = await domain.createTriggerSub({
+        project_id: conn.project_id,
+        connection_id: conn.id,
+        trigger_slug: slug,
+        trigger_id: out.trigger_id,
+        owner: conn.owner,
+        wedge: b.wedge,
+        task_type: b.task_type,
+        config: b.config ?? {},
+        enabled: true,
+      });
+      await audit({
+        project_id: conn.project_id ?? "",
+        actor: (c.get("scope").member_id ?? "system") as string,
+        action: "trigger.subscribed",
+        entity: "trigger",
+        entity_id: sub.id,
+        detail: { connection: conn.name, toolkit: cc.toolkit, trigger_slug: slug, wedge: b.wedge, task_type: b.task_type },
+      });
+      return c.json(sub, 201);
+    } catch (e) {
+      return c.json({ error: (e as Error).message }, 502);
+    }
+  });
+
+  app.get("/v1/triggers", async (c) => {
+    const set = accessible(c);
+    const connId = c.req.query("connection_id");
+    const rows = (await domain.listTriggerSubs()).filter((s) => inScope(set, s.project_id));
+    return c.json(connId ? rows.filter((s) => s.connection_id === connId) : rows);
+  });
+
+  const ownedSub = async (c: import("hono").Context) => {
+    const sub = await domain.getTriggerSub(c.req.param("id") ?? "");
+    if (!sub || !inScope(accessible(c), sub.project_id)) return undefined;
+    return sub;
+  };
+
+  /** Pause or resume without losing the subscription — the trigger equivalent of disabling a schedule. */
+  app.patch("/v1/triggers/:id", async (c) => {
+    const sub = await ownedSub(c);
+    if (!sub) return c.json({ error: "not found" }, 404);
+    const b = (await c.req.json().catch(() => ({}))) as { enabled?: boolean };
+    if (typeof b.enabled !== "boolean") return c.json({ error: "enabled is required" }, 400);
+    const cfg = composioConfig();
+    // Stop delivery at the source when we can, but the stored `enabled` flag is the one that
+    // actually decides: the webhook route checks it, so a trigger paused here is paused even if
+    // Composio keeps sending.
+    if (cfg && sub.trigger_id) {
+      try {
+        await composioSetTriggerEnabled(cfg, sub.trigger_id, b.enabled);
+      } catch {
+        /* the local flag still holds; a stale instance at Composio delivers into a closed door */
+      }
+    }
+    return c.json(await domain.updateTriggerSub(sub.id, { enabled: b.enabled }));
+  });
+
+  app.delete("/v1/triggers/:id", async (c) => {
+    const sub = await ownedSub(c);
+    if (!sub) return c.json({ error: "not found" }, 404);
+    const cfg = composioConfig();
+    if (cfg && sub.trigger_id) {
+      try {
+        await composioDeleteTrigger(cfg, sub.trigger_id);
+      } catch {
+        /* deleted locally regardless — an orphan at Composio delivers to a subscription that's gone */
+      }
+    }
+    await domain.deleteTriggerSub(sub.id);
+    await audit({
+      project_id: sub.project_id ?? "",
+      actor: (c.get("scope").member_id ?? "system") as string,
+      action: "trigger.unsubscribed",
+      entity: "trigger",
+      entity_id: sub.id,
+      detail: { trigger_slug: sub.trigger_slug, wedge: sub.wedge },
+    });
+    return c.json({ ok: true });
+  });
+
+  /** Tell Composio where to deliver. One URL per project, on their side — see composio.ts. */
+  app.post("/v1/composio/webhook/subscribe", async (c) => {
+    const cfg = composioConfig();
+    if (!cfg) return c.json({ error: "COMPOSIO_API_KEY is not set on the harness" }, 501);
+    const b = (await c.req.json().catch(() => ({}))) as { webhook_url?: string };
+    const url = b.webhook_url ?? process.env.MYCEL_PUBLIC_URL;
+    if (!url) return c.json({ error: "webhook_url is required (or set MYCEL_PUBLIC_URL)" }, 400);
+    try {
+      const target = url.endsWith("/v1/composio/webhook") ? url : `${url.replace(/\/$/, "")}/v1/composio/webhook`;
+      return c.json(await composioSetWebhookSubscription(cfg, target));
+    } catch (e) {
+      return c.json({ error: (e as Error).message }, 502);
+    }
+  });
+
+  /**
+   * The inbound webhook. PUBLIC — allowlisted in the auth middleware above.
+   *
+   * There is no session here and there cannot be one, so the signature IS the authentication.
+   * Everything before the verification must therefore be free of side effects, and everything that
+   * fails verification must leave nothing behind: no task, no subscription touched, no log line
+   * carrying the body.
+   *
+   * On the logging point specifically: these payloads are the contents of customers' inboxes and
+   * invoices. Nothing here prints the body, the headers, or the parsed event data — a failure is
+   * reported by its reason code alone, which is enough to debug a misconfigured secret and not
+   * enough to leak an email.
+   *
+   * A refusal answers 401 and a routing miss answers 200. That asymmetry is deliberate: a 4xx/5xx
+   * makes Composio retry, so anything we will never accept (an event for a subscription that was
+   * deleted, a disabled trigger) must be acknowledged or it is redelivered forever.
+   */
+  app.post("/v1/composio/webhook", async (c) => {
+    const secret = composioWebhookSecret();
+    // Fail closed. Without a secret this route would be an unauthenticated way to make the kernel
+    // spend money, so an unconfigured harness accepts nothing at all.
+    if (!secret) return c.json({ error: "webhooks are not configured" }, 501);
+
+    // Raw text, not c.req.json(): the signature covers the exact bytes, and re-serialising a parsed
+    // object cannot be trusted to reproduce them (key order, unicode escapes, whitespace).
+    const raw = await c.req.text();
+    const verdict = verifyComposioWebhook({
+      secret,
+      webhookId: c.req.header(WEBHOOK_HEADERS.id) ?? "",
+      timestamp: c.req.header(WEBHOOK_HEADERS.timestamp) ?? "",
+      signature: c.req.header(WEBHOOK_HEADERS.signature) ?? "",
+      rawBody: raw,
+      toleranceS: Number(process.env.COMPOSIO_WEBHOOK_TOLERANCE_S ?? 300),
+    });
+    if (!verdict.ok) return c.json({ error: "invalid signature", reason: verdict.reason }, 401);
+
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(raw);
+    } catch {
+      return c.json({ error: "invalid json" }, 400);
+    }
+    const event = parseTriggerEvent(parsed);
+    // Lifecycle events (a connection expired, say) come down the same pipe and must not start runs.
+    if (!event) return c.json({ ok: true, ignored: "not a trigger event" });
+
+    /**
+     * Find whose subscription this is. `trigger_id` is what Composio returned when WE registered
+     * the trigger, so it is the only identifier in the delivery that we minted and therefore the
+     * only one that may decide routing on its own.
+     *
+     * The fallback exists because a legacy V2 envelope can arrive without it. It resolves the
+     * connected account to a connection first, so the pair (connection, slug) still comes out of
+     * our own records — a payload naming a slug alone can never select a subscription.
+     */
+    let sub = event.trigger_id
+      ? await domain.findTriggerSub({ trigger_id: event.trigger_id })
+      : undefined;
+    if (!sub && event.connected_account_id) {
+      const conn = (await domain.listConnections()).find(
+        (x) => x.kind === "composio" && composioConnConfig(x).connected_account_id === event.connected_account_id,
+      );
+      if (conn) {
+        sub = await domain.findTriggerSub({
+          connection_id: conn.id,
+          trigger_slug: event.trigger_slug,
+        });
+      }
+    }
+    if (!sub) return c.json({ ok: true, ignored: "no subscription" });
+
+    const connection = await domain.getConnection(sub.connection_id);
+    const out = await startRunFromTrigger({ store, domain, event, sub, connection });
+    if (!out.ok) {
+      // 402 is the one refusal worth surfacing as a failure: the founder is over their plan, and a
+      // Composio retry a few minutes later may well succeed.
+      if (out.status === 402) return c.json({ error: out.reason }, 402);
+      return c.json({ ok: true, ignored: out.reason });
+    }
+    return c.json({ ok: true, task_id: out.task_id, duplicate: out.duplicate ?? false }, out.duplicate ? 200 : 202);
   });
 
   // Store a connection's secret in the vault (a client's OAuth token, a provider key). The value

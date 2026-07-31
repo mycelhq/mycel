@@ -7,7 +7,7 @@
 import { databaseUrl } from "./config";
 import { randomUUID } from "node:crypto";
 import type { KnowledgeGap } from "./intake";
-import type { Case, CaseEvent, Channel, Record_, Client, Connection, KnowledgeItem, Message, Schedule, Thread } from "./contract";
+import type { Case, CaseEvent, Channel, Record_, Client, Connection, KnowledgeItem, Message, Schedule, Thread, TriggerSub } from "./contract";
 
 export interface DomainStore {
   // connections (secrets referenced, never stored in the clear here)
@@ -19,6 +19,22 @@ export interface DomainStore {
     id: string,
     patch: Partial<Pick<Connection, "name" | "config" | "secret_ref">>,
   ): Promise<Connection | undefined>;
+
+  // trigger subscriptions (reactive counterpart to schedules)
+  createTriggerSub(t: Omit<TriggerSub, "id" | "created_at" | "updated_at">): Promise<TriggerSub>;
+  getTriggerSub(id: string): Promise<TriggerSub | undefined>;
+  listTriggerSubs(): Promise<TriggerSub[]>;
+  /**
+   * Find the subscription a delivery belongs to. Composio's `trigger_id` is the only field on a
+   * webhook that we minted ourselves, so it is the only one allowed to decide routing; the
+   * (connection, slug) fallback exists because a legacy V2 envelope may omit it.
+   */
+  findTriggerSub(q: { trigger_id?: string; connection_id?: string; trigger_slug?: string }): Promise<TriggerSub | undefined>;
+  updateTriggerSub(
+    id: string,
+    patch: Partial<Pick<TriggerSub, "enabled" | "trigger_id" | "wedge" | "task_type" | "config" | "last_event_at" | "last_task_id">>,
+  ): Promise<TriggerSub | undefined>;
+  deleteTriggerSub(id: string): Promise<boolean>;
 
   // channels
   createChannel(c: Omit<Channel, "id" | "created_at">): Promise<Channel>;
@@ -134,6 +150,66 @@ export class InMemoryDomainStore implements DomainStore {
   }
   async listConnections(): Promise<Connection[]> {
     return [...this.connections.values()];
+  }
+
+  private triggerSubs = new Map<string, TriggerSub>();
+
+  async createTriggerSub(t: Omit<TriggerSub, "id" | "created_at" | "updated_at">): Promise<TriggerSub> {
+    const ts = now();
+    const slug = t.trigger_slug.toUpperCase();
+    // Upsert on (connection, slug), matching the Postgres unique index. Subscribing twice to the
+    // same event on the same account is ONE subscription — two rows would mean two runs per
+    // delivery, which is the exact failure the idempotency key exists to prevent, reintroduced
+    // one level up. The two backends must agree here or memory-backed tests can't catch it.
+    const existing = [...this.triggerSubs.values()].find(
+      (s) => s.connection_id === t.connection_id && s.trigger_slug === slug,
+    );
+    if (existing) {
+      Object.assign(existing, defined({ ...t, trigger_slug: slug, trigger_id: t.trigger_id ?? existing.trigger_id }));
+      existing.updated_at = ts;
+      return existing;
+    }
+    const sub: TriggerSub = { ...t, trigger_slug: slug, id: randomUUID(), created_at: ts, updated_at: ts };
+    this.triggerSubs.set(sub.id, sub);
+    return sub;
+  }
+  async getTriggerSub(id: string): Promise<TriggerSub | undefined> {
+    return this.triggerSubs.get(id);
+  }
+  async listTriggerSubs(): Promise<TriggerSub[]> {
+    return [...this.triggerSubs.values()];
+  }
+  async findTriggerSub(q: {
+    trigger_id?: string;
+    connection_id?: string;
+    trigger_slug?: string;
+  }): Promise<TriggerSub | undefined> {
+    const all = [...this.triggerSubs.values()];
+    if (q.trigger_id) {
+      const hit = all.find((s) => s.trigger_id === q.trigger_id);
+      if (hit) return hit;
+    }
+    if (q.connection_id && q.trigger_slug) {
+      return all.find(
+        (s) =>
+          s.connection_id === q.connection_id &&
+          s.trigger_slug.toUpperCase() === q.trigger_slug!.toUpperCase(),
+      );
+    }
+    return undefined;
+  }
+  async updateTriggerSub(
+    id: string,
+    patch: Partial<Pick<TriggerSub, "enabled" | "trigger_id" | "wedge" | "task_type" | "config" | "last_event_at" | "last_task_id">>,
+  ): Promise<TriggerSub | undefined> {
+    const s = this.triggerSubs.get(id);
+    if (!s) return undefined;
+    Object.assign(s, defined(patch));
+    s.updated_at = now();
+    return s;
+  }
+  async deleteTriggerSub(id: string): Promise<boolean> {
+    return this.triggerSubs.delete(id);
   }
 
   async createChannel(c: Omit<Channel, "id" | "created_at">): Promise<Channel> {

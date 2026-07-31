@@ -6,7 +6,7 @@ import pg from "pg";
 import { getPool } from "./pool";
 import { withSchemaLock } from "./schema-lock";
 import type { KnowledgeGap } from "./intake";
-import type { Cadence, Case, CaseEvent, Record_, Channel, Client, Connection, ConnectionKind, ConnectionOwner, KnowledgeItem, Message, Schedule, Thread } from "./contract";
+import type { Cadence, Case, CaseEvent, Record_, Channel, Client, Connection, ConnectionKind, ConnectionOwner, KnowledgeItem, Message, Schedule, Thread, TriggerSub } from "./contract";
 import { normalizeHandle, type DomainStore } from "./domain";
 
 const { Pool } = pg;
@@ -37,6 +37,29 @@ export class PostgresDomainStore implements DomainStore {
           secret_ref text,
           created_at timestamptz NOT NULL DEFAULT now()
         );
+        CREATE TABLE IF NOT EXISTS trigger_subs (
+          id uuid PRIMARY KEY,
+          project_id text,
+          connection_id uuid NOT NULL,
+          trigger_slug text NOT NULL,
+          trigger_id text,
+          owner jsonb NOT NULL DEFAULT '{}',
+          wedge text NOT NULL,
+          task_type text NOT NULL,
+          config jsonb NOT NULL DEFAULT '{}',
+          enabled boolean NOT NULL DEFAULT true,
+          last_event_at timestamptz,
+          last_task_id uuid,
+          created_at timestamptz NOT NULL DEFAULT now(),
+          updated_at timestamptz NOT NULL DEFAULT now()
+        );
+        -- Every inbound webhook does exactly one lookup, by this. Unique because two rows claiming
+        -- the same Composio trigger instance would make routing ambiguous, and a webhook that could
+        -- land in either of two projects is a tenancy bug waiting for a busy day.
+        CREATE UNIQUE INDEX IF NOT EXISTS trigger_subs_trigger_id ON trigger_subs (trigger_id)
+          WHERE trigger_id IS NOT NULL;
+        CREATE UNIQUE INDEX IF NOT EXISTS trigger_subs_conn_slug
+          ON trigger_subs (connection_id, trigger_slug);
         CREATE TABLE IF NOT EXISTS channels (
           id uuid PRIMARY KEY,
           project_id text,
@@ -242,6 +265,99 @@ export class PostgresDomainStore implements DomainStore {
   async listConnections(): Promise<Connection[]> {
     const r = await this.pool.query(`SELECT * FROM connections ORDER BY created_at`);
     return r.rows.map(this.toConn);
+  }
+
+  // ── trigger subscriptions ──
+  private toSub = (r: any): TriggerSub => ({
+    id: r.id,
+    project_id: r.project_id ?? undefined,
+    connection_id: r.connection_id,
+    trigger_slug: r.trigger_slug,
+    trigger_id: r.trigger_id ?? undefined,
+    owner: r.owner as ConnectionOwner,
+    wedge: r.wedge,
+    task_type: r.task_type,
+    config: r.config,
+    enabled: !!r.enabled,
+    last_event_at: r.last_event_at ? iso(r.last_event_at) : undefined,
+    last_task_id: r.last_task_id ?? undefined,
+    created_at: iso(r.created_at),
+    updated_at: iso(r.updated_at),
+  });
+  async createTriggerSub(t: Omit<TriggerSub, "id" | "created_at" | "updated_at">): Promise<TriggerSub> {
+    // Upsert on (connection, slug): subscribing twice to the same event on the same account is one
+    // subscription, not two runs per delivery. Mirrors Composio's own upsert on the far side.
+    const r = await this.pool.query(
+      `INSERT INTO trigger_subs (id, project_id, connection_id, trigger_slug, trigger_id, owner, wedge, task_type, config, enabled)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)
+       ON CONFLICT (connection_id, trigger_slug) DO UPDATE
+         SET trigger_id = COALESCE(EXCLUDED.trigger_id, trigger_subs.trigger_id),
+             wedge = EXCLUDED.wedge,
+             task_type = EXCLUDED.task_type,
+             config = EXCLUDED.config,
+             enabled = EXCLUDED.enabled,
+             updated_at = now()
+       RETURNING *`,
+      [
+        randomUUID(), t.project_id ?? null, t.connection_id, t.trigger_slug.toUpperCase(),
+        t.trigger_id ?? null, JSON.stringify(t.owner), t.wedge, t.task_type,
+        JSON.stringify(t.config ?? {}), t.enabled,
+      ],
+    );
+    return this.toSub(r.rows[0]);
+  }
+  async getTriggerSub(id: string): Promise<TriggerSub | undefined> {
+    const r = await this.pool.query(`SELECT * FROM trigger_subs WHERE id=$1`, [id]);
+    return r.rows[0] ? this.toSub(r.rows[0]) : undefined;
+  }
+  async listTriggerSubs(): Promise<TriggerSub[]> {
+    const r = await this.pool.query(`SELECT * FROM trigger_subs ORDER BY created_at`);
+    return r.rows.map(this.toSub);
+  }
+  async findTriggerSub(q: {
+    trigger_id?: string;
+    connection_id?: string;
+    trigger_slug?: string;
+  }): Promise<TriggerSub | undefined> {
+    if (q.trigger_id) {
+      const r = await this.pool.query(`SELECT * FROM trigger_subs WHERE trigger_id=$1`, [q.trigger_id]);
+      if (r.rows[0]) return this.toSub(r.rows[0]);
+    }
+    if (q.connection_id && q.trigger_slug) {
+      const r = await this.pool.query(
+        `SELECT * FROM trigger_subs WHERE connection_id=$1 AND upper(trigger_slug)=upper($2)`,
+        [q.connection_id, q.trigger_slug],
+      );
+      if (r.rows[0]) return this.toSub(r.rows[0]);
+    }
+    return undefined;
+  }
+  async updateTriggerSub(
+    id: string,
+    patch: Partial<Pick<TriggerSub, "enabled" | "trigger_id" | "wedge" | "task_type" | "config" | "last_event_at" | "last_task_id">>,
+  ): Promise<TriggerSub | undefined> {
+    const r = await this.pool.query(
+      `UPDATE trigger_subs SET
+         enabled       = COALESCE($2, enabled),
+         trigger_id    = COALESCE($3, trigger_id),
+         wedge         = COALESCE($4, wedge),
+         task_type     = COALESCE($5, task_type),
+         config        = COALESCE($6::jsonb, config),
+         last_event_at = COALESCE($7::timestamptz, last_event_at),
+         last_task_id  = COALESCE($8::uuid, last_task_id),
+         updated_at    = now()
+       WHERE id=$1 RETURNING *`,
+      [
+        id, patch.enabled ?? null, patch.trigger_id ?? null, patch.wedge ?? null,
+        patch.task_type ?? null, patch.config ? JSON.stringify(patch.config) : null,
+        patch.last_event_at ?? null, patch.last_task_id ?? null,
+      ],
+    );
+    return r.rows[0] ? this.toSub(r.rows[0]) : undefined;
+  }
+  async deleteTriggerSub(id: string): Promise<boolean> {
+    const r = await this.pool.query(`DELETE FROM trigger_subs WHERE id=$1`, [id]);
+    return (r.rowCount ?? 0) > 0;
   }
 
   // ── channels ──

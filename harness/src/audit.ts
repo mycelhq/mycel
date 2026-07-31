@@ -27,6 +27,11 @@ export type AuditAction =
   | "connection.linked"
   /** A portal link was minted for a client. Never records the token itself. */
   | "client.portal_link"
+  // Standing permission for an outside system to start work here. Worth a chain entry for the same
+  // reason a linked account is: it is a durable capability someone granted on a particular day, so
+  // "why did this run at 2am" has an answer that predates the run by weeks.
+  | "trigger.subscribed"
+  | "trigger.unsubscribed"
   // Where a business answers is a security-relevant fact: it decides whose certificate serves whose
   // customers. Both halves are recorded — the claim and the proof — so "who pointed this domain
   // here, and when did it check out" has an answer.

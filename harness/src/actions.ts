@@ -21,6 +21,50 @@ export interface ActionResult {
 }
 
 /** A short, human-readable preview of what will happen — shown on the approval card. */
+/**
+ * What an approval card may carry.
+ *
+ * The preview is PERSISTED in the approvals row and RENDERED to a human, so whatever goes in here
+ * outlives the run and gets read. That is right for the amount and the recipient — a human
+ * approving "create an invoice in Xero" has to see them — and wrong for three things the agent can
+ * put in a tool argument without anyone intending it:
+ *
+ *   · A credential. Some brokered tools take a token or a webhook secret as an argument. Once one
+ *     lands in an approval row it is in the database, in the UI, and in anything that reads either.
+ *   · A document. An argument can be an entire attachment or a 200KB body. A preview is a summary
+ *     for a human to judge, not a copy of the payload.
+ *   · Depth. Nested structures render as unreadable JSON, which trains people to approve without
+ *     looking — the worst possible outcome for a gate whose whole value is that it is read.
+ *
+ * Subtractive by key name and size, deliberately: an allowlist would need to know every tool in
+ * Composio's catalogue, and a tool added tomorrow would silently show nothing.
+ */
+const SECRET_KEY = /token|secret|password|passwd|api[-_]?key|authorization|credential|private[-_]?key|signature|bearer/i;
+/** Long enough to show an invoice line or an email subject; short enough not to be a document. */
+const MAX_STRING = 400;
+const MAX_ITEMS = 20;
+const MAX_DEPTH = 4;
+
+export function redactPreview(value: unknown, depth = 0): unknown {
+  if (value === null || value === undefined) return value;
+  if (typeof value === "string") {
+    return value.length > MAX_STRING ? `${value.slice(0, MAX_STRING)}… [${value.length} chars]` : value;
+  }
+  if (typeof value !== "object") return value;
+  if (depth >= MAX_DEPTH) return "[nested]";
+  if (Array.isArray(value)) {
+    const head = value.slice(0, MAX_ITEMS).map((v) => redactPreview(v, depth + 1));
+    return value.length > MAX_ITEMS ? [...head, `… ${value.length - MAX_ITEMS} more`] : head;
+  }
+  const out: Record<string, unknown> = {};
+  for (const [k, v] of Object.entries(value as Record<string, unknown>)) {
+    // Redacted rather than dropped: a human deciding whether to approve should be able to see THAT
+    // a token was going to be sent, just not what it is.
+    out[k] = SECRET_KEY.test(k) ? "[redacted]" : redactPreview(v, depth + 1);
+  }
+  return out;
+}
+
 export function actionPreview(
   conn: Connection,
   capability: string,
@@ -43,7 +87,7 @@ export function actionPreview(
       tool: capability,
       // Arguments only. Never the Composio API key, and never the connected account's token —
       // neither is in `payload`, and this is the note that keeps it that way.
-      arguments: payload.arguments ?? payload.body ?? {},
+      arguments: redactPreview(payload.arguments ?? payload.body ?? {}),
       preview: `${cc.toolkit}: ${capability}`,
     };
   }
@@ -51,7 +95,7 @@ export function actionPreview(
     connection: conn.name,
     kind: conn.kind,
     capability,
-    to: payload.to ?? payload.recipient ?? undefined,
+    to: redactPreview(payload.to ?? payload.recipient ?? undefined),
     endpoint,
     subject: payload.subject ?? undefined,
     preview: typeof payload.body === "string" ? payload.body.slice(0, 400) : payload.body,

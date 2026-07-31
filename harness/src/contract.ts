@@ -170,6 +170,43 @@ export interface Connection {
   created_at: string;
 }
 
+/**
+ * A standing subscription to something happening in a connected app.
+ *
+ * The reactive counterpart to `Schedule`. A schedule says "at 6am"; a trigger says "when a bill
+ * lands in Xero". Both end in a task, and both are owned exactly the way a `Connection` is —
+ * founder-level or scoped to one client — because the run that comes out of a trigger must be
+ * attributed to whoever the work is for.
+ *
+ * This row is the authority on routing. Composio delivers every project's triggers to ONE webhook
+ * URL with no per-subscription secret, so the payload cannot be allowed to say which project or
+ * client it belongs to. `trigger_id` (what Composio returned when we registered) is looked up here,
+ * and everything that decides where the run lands is read from this row instead.
+ */
+export interface TriggerSub {
+  id: string;
+  project_id?: string;
+  /** The Composio connection whose account is being watched. */
+  connection_id: string;
+  /** Composio trigger slug, uppercase — "GMAIL_NEW_GMAIL_MESSAGE", "STRIPE_INVOICE_CREATED". */
+  trigger_slug: string;
+  /** The trigger INSTANCE id Composio returned. Absent only if registration failed. */
+  trigger_id?: string;
+  /** Copied from the connection at subscribe time, so a webhook never needs to re-derive it. */
+  owner: ConnectionOwner;
+  /** What to run when it fires. */
+  wedge: string;
+  task_type: string;
+  /** The `trigger_config` Composio needs (a repo, a label, a mailbox filter). Non-secret. */
+  config: Record<string, unknown>;
+  enabled: boolean;
+  /** Observability a founder can act on: did this ever actually fire? */
+  last_event_at?: string;
+  last_task_id?: string;
+  created_at: string;
+  updated_at: string;
+}
+
 /** A conversation surface bound to a connection; inbound here spawns a task of the given type. */
 export interface Channel {
   id: string;
