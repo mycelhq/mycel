@@ -10,9 +10,9 @@ import type { Plan } from "./identity";
  *   gpt-5-nano   $0.05 in /  $0.40 out     — 25× cheaper
  *
  * A typical run is roughly 20k input and 3k output, so about $0.055 on gpt-5.1, $0.011 on mini and
- * $0.002 on nano. Run the Starter plan's 2,000 monthly jobs entirely on gpt-5.1 and the model bill
- * is ~$110 against £99 of revenue — the plan loses money at its own advertised limit. On mini it is
- * ~$22, which is a business.
+ * $0.002 on nano. Run the Starter plan's 2,000 monthly jobs entirely on the deep tier and the model
+ * bill is ~$152 against $99 of revenue — the plan loses money at its own advertised limit. On the
+ * standard tier it is ~$15, which is a business.
  *
  * So the default is NOT the best model. It is the cheapest model that can do the job, with the
  * expensive one reserved for work that genuinely needs it and gated by what the customer pays.

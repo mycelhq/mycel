@@ -53,13 +53,18 @@ export interface Limits {
 export const PLAN_LIMITS: Record<Plan, Limits> = {
   // The operator's own key and own bill. Metering someone else's spend would be rude and pointless.
   self_hosted: { seats: null, projects: null, tasks_per_month: null, model_spend_usd_per_month: null },
-  // Enough to feel it work end to end. Costs us about $0.20 a month at the fast tier.
+  // Every limit below is DERIVED from what a job costs, not chosen and then costed afterwards.
+  // A standard-tier run is ~$0.0076 (20k in, 3k out on gpt-5.6-luna); a fast one ~$0.0022.
+  //
+  // Enough to feel it work end to end. 100 fast jobs is about $0.22 of model spend.
   free: { seats: 1, projects: 1, tasks_per_month: 100, model_spend_usd_per_month: 2 },
-  // £99 ≈ $126. At the standard tier 2,000 jobs is ~$15, so $40 is a wide runaway guard.
-  starter: { seats: 3, projects: 2, tasks_per_month: 2_000, model_spend_usd_per_month: 40 },
-  // £299 ≈ $380. 20,000 standard-tier jobs is ~$152; $180 leaves room for some deep work and still
-  // returns a healthy margin. Without this line, deep-tier usage here is a $1,140 monthly loss.
-  growth: { seats: 10, projects: 10, tasks_per_month: 20_000, model_spend_usd_per_month: 180 },
+  // $99. 2,000 standard jobs is ~$15, so the ceiling is a runaway guard at ~70% margin worst case.
+  starter: { seats: 3, projects: 2, tasks_per_month: 2_000, model_spend_usd_per_month: 30 },
+  // $299 and 10,000 jobs, NOT the 20,000 this originally carried. That number predated knowing what
+  // a job costs: 20,000 standard-tier runs is ~$152, which is a 49% gross margin before a single
+  // deep-tier job. At 10,000 it is ~$76 and ~75%. The spend ceiling then caps the deep-tier tail,
+  // which would otherwise be $1,520 against $299 of revenue.
+  growth: { seats: 10, projects: 10, tasks_per_month: 10_000, model_spend_usd_per_month: 90 },
   // Negotiated, so metered by the contract rather than by this table.
   scale: { seats: null, projects: null, tasks_per_month: null, model_spend_usd_per_month: null },
 };
