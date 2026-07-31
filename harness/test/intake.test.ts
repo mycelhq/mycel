@@ -25,6 +25,10 @@ test("intake: coverage merges the wedge's questions with what the founder has an
   assert.equal(cov.questions[0].answered, false);
   assert.equal(cov.questions[1].answered, true);
   assert.match(String(cov.questions[1].answer), /£450/);
+  // The weight is not only a sort key — it travels on the question, so a product can tell the
+  // founder which of five identical-looking rows is the one that decides the output.
+  assert.equal(cov.questions[0].weight, 10);
+  assert.equal(cov.questions[1].weight, 9);
 });
 
 test("intake: a question that blocked real work outranks one nobody has hit", () => {
@@ -48,6 +52,10 @@ test("intake: a question that blocked real work outranks one nobody has hit", ()
   assert.equal(cov.questions[0].source, "discovered");
   assert.equal(cov.questions[0].hits, 3);
   assert.match(String(cov.questions[0].why), /3 real jobs/);
+  // A discovered gap has no author, so it has no weight. Reporting one would be inventing a
+  // judgement nobody made; `hits` is the honest signal here and it already outranked the 10.
+  assert.equal(cov.questions[0].weight, undefined);
+  assert.equal(cov.questions[1].weight, 10);
 });
 
 test("intake: answering stores knowledge, and re-answering replaces rather than duplicates", async () => {
@@ -61,6 +69,12 @@ test("intake: answering stores knowledge, and re-answering replaces rather than 
   assert.equal(before.json.percent, 0);
   // The example is what makes a founder answer well rather than write "TBD".
   assert.ok(before.json.questions.every((q: { example?: string }) => q.example), "every question shows a real example");
+  // And over HTTP, not just out of buildCoverage(): the weight is what lets the cloud UI rank the
+  // queue for the founder instead of showing five rows that all look equally optional.
+  assert.ok(
+    before.json.questions.every((q: { weight?: number }) => typeof q.weight === "number"),
+    "the wedge's declared weights survive serialisation",
+  );
 
   const answer = await api(app, `wedges/${WEDGE}/intake/pricing`, {
     method: "POST",

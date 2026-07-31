@@ -1311,7 +1311,57 @@ export function createServer(store: Store): Hono {
         const fresh = await store.getApproval(id);
         return c.json({ error: `already ${fresh?.status ?? "resolved"}` }, 409);
       }
-      return c.json({ ok: true, decision });
+
+      /**
+       * The correction is the point.
+       *
+       * "Every human correction sharpens the wedge" is the thesis this product is sold on, and it
+       * was not true: an edit was applied to the one action in flight, recorded in the audit chain
+       * as `edited: true`, and then discarded. The same mistake would arrive again next week and be
+       * corrected again by hand — which is a treadmill, not a moat.
+       *
+       * Written as grounding knowledge, in the same shape `POST /v1/tasks/:id/feedback` uses, so
+       * the runtime picks it up on the next run with no redeploy. Deliberately records BOTH the
+       * agent's version and the human's: "here is what good looks like" teaches far less than
+       * "here is what it wrote and here is what I sent instead".
+       */
+      let correctionId: string | undefined;
+      if (decision === "approved" && body.edited && Object.keys(body.edited).length) {
+        try {
+          const item = await domain.createKnowledge({
+            project_id: at.project_id,
+            wedge: at.wedge,
+            name: `correction-${new Date().toISOString().slice(0, 19)}.md`,
+            content: [
+              `# A "${a.action}" the founder rewrote before it went out`,
+              "## What the agent proposed",
+              "```json",
+              JSON.stringify(a.preview, null, 2),
+              "```",
+              "## What was actually sent",
+              "```json",
+              JSON.stringify(body.edited, null, 2),
+              "```",
+              "Match the second, not the first.",
+            ].join("\n\n"),
+            kind: "correction",
+            source: "feedback",
+            metadata: { task_id: a.task_id, approval_id: id, action: a.action },
+          });
+          correctionId = item.id;
+          await emitEvent(store, a.task_id, "feedback.recorded", {
+            rating: "bad",
+            has_correction: true,
+            knowledge_id: correctionId,
+            from: "approval_edit",
+          });
+        } catch (e) {
+          // Never fail the approval because we couldn't file the lesson. The action is already
+          // in flight and the human has decided; losing the note is the lesser outcome.
+          console.error("[mycel] could not record approval correction:", e);
+        }
+      }
+      return c.json({ ok: true, decision, correction_id: correctionId });
     };
   app.post("/v1/approvals/:id/approve", decide("approved"));
   app.post("/v1/approvals/:id/reject", decide("rejected"));

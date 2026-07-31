@@ -65,6 +65,15 @@ export interface OpenQuestion {
   fallback?: string;
   /** How many real jobs this has blocked. 0 for declared questions nobody has hit yet. */
   hits: number;
+  /**
+   * The wedge author's judgement of how much this question matters, roughly 0–10. Undefined for a
+   * discovered gap — nobody authored it, and `hits` is the honest signal there.
+   *
+   * On the response, not just in the sort: a UI that can't see it can't tell "you haven't answered
+   * the question that decides everything" from "you haven't answered a nice-to-have", so it renders
+   * five identical rows and the founder answers them in whatever order they appear.
+   */
+  weight?: number;
   answered: boolean;
   /** The knowledge item holding the answer, when there is one. */
   knowledge_id?: string;
@@ -130,6 +139,7 @@ export function buildCoverage(
       example: q.example,
       // A declared question can also have been hit for real; that's worth showing.
       hits: gapByQuestion.get(q.id)?.hits ?? 0,
+      weight: q.weight,
       answered: !!item,
       knowledge_id: item?.id,
       answer: item?.content,
@@ -153,11 +163,12 @@ export function buildCoverage(
     });
   }
 
-  const weight = new Map(declared.map((q) => [q.id, q.weight ?? 0]));
+  // The weight now travels on the question itself, so the sort reads it from there rather than
+  // rebuilding a lookup — one source, and the order the API returns matches the field it exposes.
   questions.sort((a, b) => {
     if (a.answered !== b.answered) return a.answered ? 1 : -1;
     if (a.hits !== b.hits) return b.hits - a.hits;
-    return (weight.get(b.id) ?? 0) - (weight.get(a.id) ?? 0);
+    return (b.weight ?? 0) - (a.weight ?? 0);
   });
 
   const answered = questions.filter((q) => q.answered).length;
