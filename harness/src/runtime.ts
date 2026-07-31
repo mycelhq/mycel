@@ -210,6 +210,13 @@ export async function runOpenCodeTask(
   for (const [name, content] of knowledgeByName) {
     await sandbox.writeFile(`knowledge/${name}`, content);
   }
+
+  // Skills as files, indexed in AGENTS.md rather than inlined into it. Mounting them is what makes
+  // that index real — an index pointing at files nobody wrote is worse than no index, because the
+  // agent will try to read them and get nothing.
+  for (const s of wedge?.skills ?? []) {
+    await sandbox.writeFile(`skills/${s.name}`, s.content);
+  }
   const documents = Array.isArray(task.input?.documents) ? (task.input.documents as unknown[]) : [];
   let docCount = 0;
   for (const d of documents) {
@@ -377,6 +384,25 @@ function buildPrompt(task: Task, wedge: LoadedWedge | null): string {
     .join("\n");
 }
 
+/**
+ * One line describing what a skill is for, for the index in AGENTS.md.
+ *
+ * Prefers a `description:` in frontmatter — the convention every skill in this repo follows — and
+ * falls back to the first real sentence, because a skill written without frontmatter should still
+ * be findable rather than silently unlabelled.
+ */
+function skillSummary(content: string): string {
+  const fm = content.match(/^---\r?\n([\s\S]*?)\r?\n---/);
+  const described = fm?.[1].match(/^description:\s*(.+)$/m)?.[1]?.trim();
+  if (described) return described.replace(/^["']|["']$/g, "").slice(0, 200);
+  const body = content.replace(/^---[\s\S]*?---/, "");
+  const line = body
+    .split("\n")
+    .map((l) => l.trim())
+    .find((l) => l && !l.startsWith("#") && !l.startsWith("<!--"));
+  return (line ?? "no description").slice(0, 200);
+}
+
 function buildAgentsMd(task: Task, wedge: LoadedWedge | null, connections: Connection[] = []): string {
   const parts: string[] = [];
   parts.push(`# ${wedge?.manifest.title ?? `Mycel agent — ${task.wedge}`}`);
@@ -438,13 +464,28 @@ function buildAgentsMd(task: Task, wedge: LoadedWedge | null, connections: Conne
       `these questions and answers them once; the answer becomes knowledge you're given next time.\n` +
       `Ask about things specific to this business, not general knowledge. One call per distinct gap.`,
   );
+  /**
+   * Skills are INDEXED here and mounted as files, not inlined.
+   *
+   * Every skill's full text used to be concatenated into this prompt on every run, so a wedge with
+   * twenty procedures paid for twenty procedures on a task that needed one. The agent has a
+   * filesystem — `./knowledge/` already works this way — so the prompt carries a menu and the agent
+   * pays tokens only for what it actually opens.
+   *
+   * The summary line matters: it is the entire basis on which the agent decides whether to read the
+   * file, so a skill whose description is vague gets skipped when it was needed, or read when it
+   * was not.
+   */
   if (wedge?.skills.length) {
     parts.push("");
     parts.push(`## Procedures`);
+    parts.push(
+      `Written up in ./skills/. Read the one that fits the job before you start — they are how this ` +
+        `business does the work, not general advice. Don't read them all.`,
+    );
+    parts.push("");
     for (const s of wedge.skills) {
-      parts.push("");
-      parts.push(`### ${s.name}`);
-      parts.push(s.content);
+      parts.push(`- \`skills/${s.name}\` — ${skillSummary(s.content)}`);
     }
   }
   return parts.join("\n");
@@ -464,3 +505,6 @@ function estimateCost(model: string, usage: Record<string, unknown>): number {
 function shellQuote(v: string): string {
   return `'${v.replace(/'/g, `'\\''`)}'`;
 }
+
+/** Test seam: the prompt is a cost decision, so its shape is worth asserting directly. */
+export const buildAgentsMdForTest = buildAgentsMd;
