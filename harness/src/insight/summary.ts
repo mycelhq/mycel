@@ -80,9 +80,17 @@ export async function buildSummary(
   const to = now.toISOString();
   const from = new Date(now.getTime() - days * 86_400_000).toISOString();
   const prevFrom = new Date(now.getTime() - 2 * days * 86_400_000).toISOString();
+  // The windows are half-open, `[from, to)`, so the two never double-count the instant between
+  // them. The current window's end is pushed one millisecond PAST now, though, because a batch
+  // ingested in the same millisecond as this read would otherwise fall outside both windows and
+  // simply vanish. That is not a theoretical boundary: a product posting continuously will hit it,
+  // and "events silently missing near the edge of every window" is a bug nobody would ever
+  // reproduce. Nothing can be ingested in the future, so the extra millisecond can only ever
+  // include an event that already happened.
+  const end = new Date(now.getTime() + 1).toISOString();
 
   const [cur, prev] = await Promise.all([
-    aggregateWindow(domain, projectId, from, to),
+    aggregateWindow(domain, projectId, from, end),
     aggregateWindow(domain, projectId, prevFrom, from),
   ]);
 

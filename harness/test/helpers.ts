@@ -1,6 +1,10 @@
 // Shared test helpers. Tests run in-process against a fresh InMemoryStore with MYCEL_RUNTIME=mock,
 // so tasks finish instantly with no OpenCode. Node's test runner isolates each file in its own
 // process, so the identity/domain singletons are fresh per file.
+// `randomUUID` was used by `freshProjectId` below without ever being imported — the helper had no
+// caller, so nothing had run it. It throws on first use, which would have looked like a bug in
+// whichever test reached for it first.
+import { randomUUID } from "node:crypto";
 import { createServer } from "../src/server";
 import { InMemoryStore } from "../src/store";
 
