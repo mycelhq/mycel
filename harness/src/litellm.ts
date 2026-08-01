@@ -34,6 +34,18 @@ interface StoredKey {
   /** The budget it was minted with, so a plan change can be detected and the key re-issued. */
   budget: number | null;
   plan: string;
+  /**
+   * The allowlist it was minted with, joined.
+   *
+   * Without this, a cached key is reused whenever plan and budget still match — so changing what
+   * `modelsForPlan` returns has no effect on any org that already has a key, forever. That is
+   * exactly how a corrected allowlist failed to correct anything: the code was right, the minted key
+   * was still wrong, and nothing compared them.
+   *
+   * Optional because keys minted before this field existed have no value for it; absent counts as a
+   * mismatch, which re-mints once and then stops.
+   */
+  models?: string;
 }
 
 /** Models a plan may reach — the tier ceiling, expressed as an allowlist the proxy enforces. */
@@ -69,12 +81,17 @@ export async function keyForOrg(orgId: string): Promise<string | undefined> {
   const plan = org?.plan ?? "self_hosted";
   const budget = getIdentityStore().limitsFor(orgId).model_spend_usd_per_month;
 
+  // Computed before the cache check so it can be compared, and reused when minting — one source for
+  // both, so they cannot drift apart the way the allowlist and the registered names did.
+  const models = modelsForPlan(plan);
+  const wanted = models.join(",");
+
   const cached = await getSecret(vaultKey(orgId));
   if (cached) {
     try {
       const parsed = JSON.parse(cached) as StoredKey;
-      if (parsed.plan === plan && parsed.budget === budget) return parsed.key;
-      // Plan changed — fall through and mint a key with the new budget and allowlist.
+      if (parsed.plan === plan && parsed.budget === budget && parsed.models === wanted) return parsed.key;
+      // Plan, budget or allowlist changed — fall through and mint a key that matches the code.
     } catch {
       /* corrupt entry; mint a fresh one rather than wedging model calls forever */
     }
@@ -86,7 +103,7 @@ export async function keyForOrg(orgId: string): Promise<string | undefined> {
       signal: AbortSignal.timeout(10_000),
       headers: { authorization: `Bearer ${master()}`, "content-type": "application/json" },
       body: JSON.stringify({
-        models: modelsForPlan(plan),
+        models,
         // null means unmetered — a self-hosted operator's own key and own bill.
         ...(budget === null ? {} : { max_budget: budget, budget_duration: "30d" }),
         metadata: { mycel_org_id: orgId, plan },
@@ -99,7 +116,7 @@ export async function keyForOrg(orgId: string): Promise<string | undefined> {
       return undefined;
     }
     const { key } = (await res.json()) as { key: string };
-    await setSecret(vaultKey(orgId), JSON.stringify({ key, budget, plan } satisfies StoredKey));
+    await setSecret(vaultKey(orgId), JSON.stringify({ key, budget, plan, models: wanted } satisfies StoredKey));
     return key;
   } catch (e) {
     // Never fail a run because the budget broker is unreachable. The kernel's own ceiling still
