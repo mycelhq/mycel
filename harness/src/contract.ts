@@ -406,3 +406,139 @@ export interface Message {
   task_id?: string; // the task that produced an outbound message
   created_at: string;
 }
+
+// ── Billing: how a founder charges THEIR clients ──
+//
+// Distinct from Mycel's own subscription (cloud/lib/billing.ts), which is how Mycel charges the
+// founder. This is the founder's accounts-receivable, and it is what makes the kernel a Business OS
+// rather than a task runner: a service business that cannot raise an invoice is a hobby.
+//
+// ═══ MONEY IS AN INTEGER, IN MINOR UNITS, ALWAYS ═══
+//
+// Every amount below is a whole number of the currency's smallest unit — 1250 in GBP is £12.50,
+// 1250 in JPY is ¥1250. Never a float, anywhere, for one reason that is not negotiable: 0.1 + 0.2
+// is 0.30000000000000004 in IEEE-754, so a twelve-line invoice totalled in floats can disagree with
+// the same invoice totalled in a different order, and an invoice whose total depends on the order
+// of its lines is not an invoice. It is also how every payment provider on earth represents money
+// (Stripe's `amount`, PayPal's minor units), so the seam below needs no conversion — and a
+// conversion is exactly where the half-penny goes missing.
+//
+// `currency` carries the exponent implicitly; `MINOR_UNIT_EXPONENT` in billing.ts is the only place
+// that maps one to the other, and it is exposed to the portal so a client's browser can format
+// money without shipping a currency table to it.
+
+export type InvoiceStatus = "draft" | "sent" | "paid" | "overdue" | "void";
+
+/**
+ * One billable line.
+ *
+ * Two kinds, because service businesses charge two ways and both matter from day one:
+ *   `fixed` — a retainer or a flat fee. Quantity is 1 by definition.
+ *   `unit`  — a per-unit charge (hours, transactions, properties sourced, invoices chased).
+ *
+ * Deliberately NOT here: recurrence. A monthly retainer is a `fixed` line on an invoice that a
+ * `Schedule` issues every month — the kernel already has a recurrence primitive, and a second one
+ * living on Invoice would be two calendars that eventually disagree about which month got billed.
+ */
+export interface InvoiceLine {
+  id: string;
+  /** What the client reads. Their language, not a task id. */
+  description: string;
+  kind: "fixed" | "unit";
+  /**
+   * Quantity in THOUSANDTHS of a unit — 1500 is 1.5 hours. An integer for the same reason money is;
+   * 0.1 hours × 7 is not 0.7 in binary floating point. Always 1000 for a `fixed` line.
+   */
+  quantity_milli: number;
+  /** Price of ONE unit, in minor units. */
+  unit_amount: number;
+  /** Tax on this line, in basis points (2000 = 20% VAT). Absent means untaxed. */
+  tax_bps?: number;
+  /**
+   * The runs that produced this line. FOUNDER-PLANE ONLY — this is the provenance link that lets an
+   * operator answer "what am I actually billing for", and it is stripped before an invoice crosses
+   * to the portal because a client has no use for a task id and every use for not seeing one.
+   */
+  task_ids?: string[];
+}
+
+export interface Invoice {
+  id: string;
+  /**
+   * Required, unlike every other row in this file. Invoices are new, so there are no legacy
+   * unscoped rows to be compatible with — which means the tenant filter can fail closed without an
+   * exception for `NULL`, and "an invoice with no project" is unrepresentable rather than
+   * merely unusual.
+   */
+  project_id: string;
+  client_id: string;
+  /** The engagement that produced the work, when there is one. */
+  case_id?: string;
+  /** Human-facing reference, unique per project. Allocated on creation; never reused. */
+  number: string;
+  /** ISO-4217, uppercase. */
+  currency: string;
+  status: InvoiceStatus;
+  lines: InvoiceLine[];
+  /** YYYY-MM-DD. Set when the invoice is issued (leaves draft), because a draft has no issue date. */
+  issue_date?: string;
+  /** YYYY-MM-DD. What `overdue` is measured against. */
+  due_date?: string;
+  /** Received so far, in minor units. Incremented atomically — see `BillingStore.recordPayment`. */
+  amount_paid: number;
+  /**
+   * THE PAYMENT-PROVIDER SEAM. See `PAYMENT_SEAM` in billing.ts before filling this in.
+   *
+   * A URL where the client can pay. Set by hand today (a Stripe payment link a founder pasted in);
+   * the place a Stripe Connect / provider integration would write instead. Nothing in the kernel
+   * moves money — deliberately.
+   */
+  payment_link_url?: string;
+  /** Terms, thanks, a bank reference. The client reads this. */
+  note?: string;
+  /** The operator's own notes. NEVER crosses to the portal plane. */
+  internal_note?: string;
+  sent_at?: string;
+  paid_at?: string;
+  voided_at?: string;
+  created_at: string;
+  updated_at: string;
+}
+
+/**
+ * What a client is blocked on — the single highest-value thing a portal does.
+ *
+ * A status page tells a customer to wait. This tells them what to do, and clearing it in thirty
+ * seconds is worth more to the business than any amount of progress reporting, because the agent is
+ * genuinely stopped until the receipt / the bank statement / the answer arrives.
+ *
+ * `thread_id` is what makes it a loop rather than a to-do list: answering a request posts into the
+ * client's thread, which spawns the run that was waiting. See `mountRequestRoutes`.
+ */
+export type ClientRequestKind = "document" | "answer" | "decision";
+export type ClientRequestStatus = "open" | "resolved" | "cancelled";
+
+export interface ClientRequest {
+  id: string;
+  /** Required, and fails closed on read, for the same reason as `Invoice.project_id`. */
+  project_id: string;
+  client_id: string;
+  case_id?: string;
+  /** Where an answer goes, and therefore what gets unblocked when one arrives. */
+  thread_id?: string;
+  /** The run that stalled on this. FOUNDER-PLANE ONLY. */
+  task_id?: string;
+  kind: ClientRequestKind;
+  /** One sentence, in the client's language: "Your March bank statement". */
+  ask: string;
+  /** Optional elaboration — where to find it, what format, why it's needed. */
+  detail?: string;
+  status: ClientRequestStatus;
+  /** When it stops being polite and starts being a problem. */
+  due_at?: string;
+  /** What the client said back, when they cleared it. */
+  response?: string;
+  resolved_at?: string;
+  created_at: string;
+  updated_at: string;
+}
