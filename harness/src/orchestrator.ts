@@ -8,7 +8,7 @@ import { loadConfig } from "./config";
 import type { EventType, TaskStatus } from "./contract";
 import { emitEvent } from "./events";
 import { createSandbox, type Sandbox } from "./sandbox";
-import { runOpenCodeTask } from "./runtime";
+import { runOpenCodeTask, type CostMeta } from "./runtime";
 import { runMockTask } from "./runtime.mock";
 import type { Store } from "./store";
 import { getObserver } from "./tracing";
@@ -29,13 +29,34 @@ export async function runTask(store: Store, taskId: string): Promise<void> {
   const deadline = Date.now() + task.constraints.max_runtime_s * 1000;
   let accruedCost = 0;
 
-  const onCost = (usd: number) => {
+  /**
+   * Unrecognised OpenCode event types seen during the run, reported on `task.finished`.
+   *
+   * The alternative is what happened before: a protocol change silently produced runs with no tool
+   * calls, no tokens and no cost, and looked exactly like a quiet run. A counter here means the
+   * next drift is visible on the very first task that hits it.
+   */
+  let drift: Record<string, number> | undefined;
+  const onDrift = (counts: Record<string, number>) => {
+    drift = counts;
+  };
+
+  const onCost = (usd: number, meta?: CostMeta) => {
     accruedCost += usd;
     // Fire-and-forget, but never leave an unhandled rejection (a pg blip must not crash the process).
     void store.addCost(taskId, usd).catch((e) => console.error("[mycel] addCost error:", e));
-    void Promise.resolve(emit("cost.charged", { cost_usd: Number(usd.toFixed(6)), reason: "model" })).catch(
-      (e) => console.error("[mycel] cost event error:", e),
-    );
+    void Promise.resolve(
+      emit("cost.charged", {
+        cost_usd: Number(usd.toFixed(6)),
+        reason: meta?.reason ?? "model",
+        // The model and the token counts ride ALONG with the dollars rather than being collapsed
+        // into them. "Which model ran this?" is the first question anyone asks a trace, and until
+        // now `cost.charged` carried `{cost_usd, reason}` and could not answer it.
+        ...(meta?.model ? { model: meta.model } : {}),
+        ...(meta?.tier ? { tier: meta.tier } : {}),
+        ...(meta?.tokens ? { tokens: meta.tokens } : {}),
+      }),
+    ).catch((e) => console.error("[mycel] cost event error:", e));
   };
 
   // Synchronous, store-independent — safe to call on hot paths inside the run loop. The abort
@@ -48,7 +69,10 @@ export async function runTask(store: Store, taskId: string): Promise<void> {
     return null;
   };
 
-  const ctx = { emit, onCost, shouldAbort };
+  /** `unmapped` only appears when something WAS unmapped — an absent key means a clean run. */
+  const driftData = () => (drift ? { unmapped: drift } : {});
+
+  const ctx = { emit, onCost, shouldAbort, onDrift };
   const useMock = loadConfig().runtime === "mock";
   let sandbox: Sandbox | undefined;
   try {
@@ -84,12 +108,12 @@ export async function runTask(store: Store, taskId: string): Promise<void> {
       url: `/v1/artifacts/${art.id}`,
     });
     await store.setStatus(taskId, "succeeded");
-    await emit("task.finished", { status: "succeeded" });
+    await emit("task.finished", { status: "succeeded", ...driftData() });
   } catch (e) {
     const reason = String((e as Error)?.message ?? e);
     const status = terminalStatusFor(reason);
     await store.setStatus(taskId, status, reason);
-    await emit("task.finished", { status, error: reason });
+    await emit("task.finished", { status, error: reason, ...driftData() });
   } finally {
     clearAbort(taskId);
     if (sandbox) await sandbox.destroy();

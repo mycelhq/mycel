@@ -10,6 +10,7 @@
         "max_runtime_s": 240,
         "max_cost_usd": 0.5,
         "strict_output": true,
+        "needs_connections": true,
         "temperature": 0.1,
         "steps": 30,
         "skills": [

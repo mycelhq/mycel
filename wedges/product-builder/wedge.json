@@ -14,9 +14,9 @@
         "max_cost_usd": 5,
         "steps": 400,
         "strict_output": false,
+        "needs_connections": false,
         "permission": {
           "edit": "allow",
-          "write": "allow",
           "bash": {
             "rm -rf /": "deny",
             "rm -rf /*": "deny",

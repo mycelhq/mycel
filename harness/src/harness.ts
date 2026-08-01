@@ -23,6 +23,34 @@
  *     external_directory/lsp/skill an object of glob-pattern → action. VERIFIED: this is not merely
  *     a prompt gate, it determines the TOOLSET the model is handed. `edit: "deny"` removes both
  *     `edit` and `write`; `task: "deny"` removes subagents entirely.
+ *
+ *     THREE verified behaviours that the shape of this file depends on, each of which is a footgun:
+ *
+ *     1. `write` and `patch` are NOT permission keys. `permission: { write: "deny" }` on its own
+ *        changes the toolset not at all — `write` stays on. The key that governs writing is `edit`,
+ *        and denying it removes `edit` AND `write` together. The `tools` spelling agrees:
+ *        `tools: { write: false }` came back out of `debug config` as `permission.edit: "deny"`.
+ *        Writing `write: "deny"` next to `edit: "deny"` therefore reads like defence in depth and
+ *        is decoration; only the `edit` line is doing anything.
+ *
+ *     2. `"*"` IS a valid permission key — opencode's own default is literally `{"*": "allow"}` —
+ *        and `{"*": "deny"}` plus explicit allows composes into a TRUE ALLOWLIST. Denied-by-default
+ *        with `read`/`grep`/`glob`/`skill`/`todowrite`/`bash` allowed yields exactly those six tools
+ *        and nothing else. This matters more than it looks: a denylist fails OPEN, so the day
+ *        opencode ships a new tool, every denylist profile silently gains it.
+ *
+ *     3. ORDER IS SIGNIFICANT, and it fails catastrophically rather than loudly. The wildcard must
+ *        be the FIRST key in the object. `{"*": "deny", read: "allow"}` yields `read`; the same
+ *        pairs written `{read: "allow", "*": "deny"}` yields THE EMPTY TOOLSET — an agent with no
+ *        tools at all, which presents as a model that inexplicably refuses to do anything rather
+ *        than as a config error. Since this object is assembled by spreading founder-authored JSON
+ *        over our defaults, key order is an emergent property of the merge, so `orderPermission()`
+ *        below pins the wildcard to the front rather than trusting it.
+ *
+ *     Within a single tool's pattern map, the reverse is true and an allowlist is NOT expressible:
+ *     a bash map whose `"*"` is `deny` removes the bash tool outright, so `{"curl *": "allow",
+ *     "*": "deny"}` is simply "no shell" (verified: bash absent from the toolset). Pattern maps
+ *     carve holes out of an allow default; the tool-level wildcard is where allowlisting happens.
  *   · `tools` — a flat `{ [toolId]: boolean }` map. VERIFIED: 1.17.6 normalises this INTO
  *     `permission` (`tools: { webfetch: false }` came back out of `debug config` as
  *     `permission.webfetch: "deny"`), so the two are one lever with two spellings. Real tool ids
@@ -146,8 +174,14 @@ export interface HarnessProfileSpec {
   /**
    * May this run hold the action-proxy token (send/charge/book, read a connection, advance a case)?
    * Defaults per shape; `build` is false and saying `true` on a build shape is refused below.
+   *
+   * `needs_connections` is the same switch under the name the design doc uses, accepted because
+   * this is the field a founder is most likely to reach for and least likely to get right from
+   * memory. `actions` wins if somebody writes both — it is the narrower word for what it does, and
+   * a silent tiebreak beats an error on the one field whose default is "no credentials".
    */
   actions?: boolean;
+  needs_connections?: boolean;
   temperature?: number;
   /** OpenCode `agent.build.steps` — max agentic iterations before a forced text-only answer. */
   steps?: number;
@@ -238,24 +272,50 @@ export const SHAPE_DEFAULTS: Record<HarnessShape, ShapeDefaults> = {
     // not landed in four minutes is a decision that is not going to land.
     max_runtime_s: 240,
     max_cost_usd: 0.5,
+    /**
+     * A true allowlist: deny everything, then name the six tools a decision actually uses.
+     *
+     * Written this way rather than as a list of denies because a denylist fails OPEN. Enumerating
+     * `edit: "deny", task: "deny", webfetch: "deny"…` is only correct against the toolset that
+     * exists today; the day opencode ships a seventh tool, every profile spelled as a denylist
+     * silently acquires it, and nobody re-reads this file when a dependency is bumped. Denied by
+     * default, a new tool arrives switched OFF and someone has to decide to switch it on.
+     *
+     * `"*"` MUST stay first — see finding (3) in the header. `orderPermission()` enforces it after
+     * the merge, so a founder's JSON cannot accidentally push it to the back and empty the toolset.
+     *
+     * `invalid` is allowed deliberately: it is opencode's handler for a malformed tool call, and
+     * denying it turns "the model emitted bad JSON" into a harder failure than it needs to be.
+     *
+     * `question` is NOT allowed, and this is the concrete bug the rewrite fixed rather than a
+     * hypothetical. Feeding both spellings of this profile to the real 1.17.6 binary:
+     *
+     *   denylist  → bash,glob,grep,invalid,QUESTION,read,skill,todowrite
+     *   allowlist → bash,glob,grep,invalid,read,skill,todowrite
+     *
+     * The denylist left `question` on because nobody thought to name it. `question` prompts a human
+     * and blocks on the answer; there is no human on a queued run, so a model that reaches for it
+     * hangs until the deadline kills it — the same failure mode as `permission: "ask"`, arrived at
+     * by omission instead of by choice. That is what a fail-open list buys you.
+     *
+     * (`list` is named below and does not appear in any toolset: it is a permission key without a
+     * corresponding tool in 1.17.6. Harmless, and kept so the allowlist stays readable as intent.)
+     */
     permission: {
+      "*": "deny",
+      invalid: "allow",
       read: "allow",
       grep: "allow",
       glob: "allow",
       list: "allow",
       skill: "allow",
       todowrite: "allow",
-      edit: "deny",
-      write: "deny",
-      patch: "deny",
-      task: "deny",
-      webfetch: "deny",
-      websearch: "deny",
-      // Never leave the workspace. Reading /etc or another task's leftovers is not part of the job.
-      external_directory: "deny",
       bash: { ...BASH_DENYLIST, "*": "allow" },
     },
-    tools: { edit: false, write: false, patch: false, task: false, webfetch: false, websearch: false },
+    // Empty on purpose. `tools` and `permission` are one lever with two spellings — 1.17.6 folds
+    // `tools` into `permission` at load — and stating a restriction twice invites the two copies to
+    // disagree. The allowlist above is the single source of truth.
+    tools: {},
     grants_actions: true,
     strict_output: true,
     long_lived: false,
@@ -293,22 +353,25 @@ export const SHAPE_DEFAULTS: Record<HarnessShape, ShapeDefaults> = {
     // scaffolding an app is not a five-minute job and never was.
     max_runtime_s: 1800,
     max_cost_usd: 5,
+    /**
+     * Allow-by-default, and unlike `decide` that is the right call here rather than laziness.
+     *
+     * A build wants the whole toolset — that is what distinguishes it — so an allowlist would be a
+     * transcription of the tool registry that has to be edited every time opencode adds something,
+     * and would fail closed in the one shape where a missing tool means the work silently cannot be
+     * done. The security boundary for a build is not the toolset at all; it is `grants_actions:
+     * false` below. Constrain what it can REACH, not what it can RUN.
+     *
+     * `edit: "allow"` covers `write` too (they are one permission — header, finding 1), so there is
+     * no `write` line here; it would be decoration.
+     */
     permission: {
-      read: "allow",
-      grep: "allow",
-      glob: "allow",
-      list: "allow",
-      skill: "allow",
-      todowrite: "allow",
-      edit: "allow",
-      write: "allow",
-      patch: "allow",
-      // Subagents: a build genuinely benefits from farming out "find every call site" work.
-      task: "allow",
-      // Library docs and error messages. Reading the web is not acting on the world.
-      webfetch: "allow",
-      websearch: "allow",
+      "*": "allow",
+      // Reading outside the workspace is the one hole worth closing even here: the sandbox is
+      // disposable, but /proc and the environment of a neighbouring process are not the job.
       external_directory: "deny",
+      // No human is listening, so a tool that asks one is a tool that hangs the run.
+      question: "deny",
       bash: { ...BASH_DENYLIST, "*": "allow" },
     },
     tools: {},
@@ -418,7 +481,13 @@ export function resolveHarnessProfile(args: ResolveHarnessArgs): HarnessProfile 
    * needs both, that is two task types, and splitting them is the point.
    */
   const grants_actions =
-    shape === "build" ? false : (typeSpec.actions ?? wedgeSpec.actions ?? base.grants_actions);
+    shape === "build"
+      ? false
+      : (typeSpec.actions ??
+        typeSpec.needs_connections ??
+        wedgeSpec.actions ??
+        wedgeSpec.needs_connections ??
+        base.grants_actions);
 
   return {
     shape,
@@ -429,7 +498,9 @@ export function resolveHarnessProfile(args: ResolveHarnessArgs): HarnessProfile 
     max_runtime_s,
     max_cost_usd,
     // Narrowest last: a task type may open or close a specific tool without restating the shape.
-    permission: { ...base.permission, ...wedgeSpec.permission, ...typeSpec.permission },
+    // `orderPermission` then pins `"*"` to the front, because a wildcard that lands last empties
+    // the toolset outright rather than erroring — see finding (3) in the header.
+    permission: orderPermission({ ...base.permission, ...wedgeSpec.permission, ...typeSpec.permission }),
     tools: { ...base.tools, ...wedgeSpec.tools, ...typeSpec.tools },
     // AGENTS.md is always first — it is the file the runtime writes and everything else supplements.
     instructions: dedupe(["AGENTS.md", ...(wedgeSpec.instructions ?? []), ...(typeSpec.instructions ?? [])]),
@@ -486,6 +557,7 @@ function sanitizeSpec(raw: unknown): HarnessProfileSpec {
   const skills = sanitizeStrings(s.skills);
   if (skills) out.skills = skills;
   if (typeof s.actions === "boolean") out.actions = s.actions;
+  if (typeof s.needs_connections === "boolean") out.needs_connections = s.needs_connections;
   // Temperature outside [0,2] is not a preference, it is a typo that would fail the provider call.
   if (typeof s.temperature === "number" && s.temperature >= 0 && s.temperature <= 2) {
     out.temperature = s.temperature;
@@ -553,4 +625,24 @@ function clampPositive(want: number, ceiling: number, fallback: number): number 
 
 function dedupe(xs: string[]): string[] {
   return Array.from(new Set(xs));
+}
+
+/**
+ * Put `"*"` first, if it is there at all.
+ *
+ * Not cosmetic. Verified against the real opencode 1.17.6 binary with `opencode debug agent build`:
+ * `{"*": "deny", read: "allow"}` hands the model `read`, while `{read: "allow", "*": "deny"}` — the
+ * same two rules, written in the other order — hands it NOTHING. An agent with an empty toolset
+ * does not crash; it sits there producing text about what it would do, which is the most expensive
+ * possible way to discover a config bug.
+ *
+ * This object is built by spreading founder-authored JSON over our defaults, and JS spread keeps a
+ * key at the position of its FIRST appearance. So a wedge that adds `"*"` to a shape whose defaults
+ * have none gets it appended at the end — silently, and only for that one wedge. Pinning it here
+ * costs one object rebuild per run and removes the entire class of failure.
+ */
+function orderPermission(merged: PermissionMap): PermissionMap {
+  if (!("*" in merged)) return merged;
+  const { "*": wildcard, ...rest } = merged;
+  return { "*": wildcard, ...rest };
 }

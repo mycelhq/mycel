@@ -10,9 +10,11 @@ import { getDomainStore } from "./domain";
 import {
   buildOpencodeConfig,
   OpenCodeClient,
+  OpenCodeEventMapper,
   openaiCompatibleBase,
   providerEnvVar,
   splitModel,
+  type UsageDelta,
 } from "./opencode";
 import { buildGatePatterns, MYCEL_PLUGIN_CODE } from "./plugin";
 import { registerGrant, revokeGrant } from "./proxygrants";
@@ -23,11 +25,32 @@ import { modelForTier, TIER_MODELS, TIER_PRICE, type ModelTier } from "./models"
 import { keyForOrg } from "./litellm";
 import { resolveHarnessProfile, SHAPE_DEFAULTS, type HarnessProfile } from "./harness";
 
+/** What a charge was for, beyond the dollars. Everything here ends up on `cost.charged`. */
+export interface CostMeta {
+  /**
+   * The model that produced the tokens.
+   *
+   * "Which model ran this?" is the first question anyone asks a trace, and until now the event log
+   * could not answer it for any run in the system's history.
+   */
+  model?: string;
+  tier?: string;
+  /** Prompt/completion/reasoning/cache counts, kept rather than collapsed into dollars. */
+  tokens?: Record<string, number>;
+  reason?: string;
+}
+
 export interface RuntimeCtx {
   emit(type: EventType, data?: Record<string, unknown>): Promise<void> | void;
-  onCost(usd: number): void;
+  onCost(usd: number, meta?: CostMeta): void;
   /** Returns a reason string if the task should abort (cancel / cost / runtime), else null. */
   shouldAbort(): string | null;
+  /**
+   * Unrecognised OpenCode event types and their counts, handed over so `task.finished` can carry
+   * them. Optional: not every RuntimeCtx has a place to put them, and a missing drift counter must
+   * not be a type error at every call site.
+   */
+  onDrift?(counts: Record<string, number>): void;
 }
 
 /** Who this run is acting for, if anyone. All three sources are caller-supplied. */
@@ -356,22 +379,41 @@ export async function runOpenCodeTask(
   let abortWatch: ReturnType<typeof setInterval> | undefined;
   let finalText = "";
   let done = false;
+  let mapper: OpenCodeEventMapper | undefined;
   try {
     if (ctx.shouldAbort()) throw new Error(`aborted: ${ctx.shouldAbort()}`);
     const sessionId = await oc.createSession(`mycel-${task.id}`);
+    mapper = new OpenCodeEventMapper(sessionId);
+
+    /**
+     * SUBSCRIBE BEFORE PROMPTING. This ordering is the whole bug.
+     *
+     * `POST /session/:id/message` is synchronous — its body is the finished assistant message — so
+     * the old sequence (await the prompt, then open /event) spent the entire run with nobody
+     * listening and then attached to a session that had already gone quiet. A production task burnt
+     * 165,000 tokens and left four events in the log, none of them from the agent.
+     *
+     * `openEvents` does the HTTP handshake before it returns, so by the time the prompt is accepted
+     * the stream is live. `startPrompt` then uses `prompt_async`, which answers 204 immediately, so
+     * the loop below is free to consume the stream while the turn runs.
+     */
+    const stream = await oc.openEvents(abort.signal);
+
+    abortWatch = setInterval(() => {
+      if (ctx.shouldAbort()) abort.abort();
+    }, 1000);
+    (abortWatch as { unref?: () => void }).unref?.();
+
     try {
       /**
-       * Strict-output profiles use OpenCode's NATIVE structured output rather than a sentence in
-       * the prompt. Verified on 1.17.6's own OpenAPI document: POST /session/:id/message accepts
-       * `format: {type:"json_schema", schema, retryCount}`, and opencode re-prompts the model
-       * itself when the answer does not validate.
+       * Strict-output profiles ASK for OpenCode's native structured output.
        *
-       * That is worth doing because a schema violation is currently terminal: `runTask` validates
-       * the final text and throws, so the whole run is billed and delivers nothing. Two free
-       * retries inside the session are far cheaper than one failed task.
+       * CAVEAT, and it is a live one: `format` is not in the 1.17.6 request schema (see the note on
+       * `startPrompt`). It is sent, and at this pin it is silently dropped. Nothing may treat a
+       * strict-output run as schema-enforced until that is verified against the pinned binary.
        */
       const schema = outputSchemaFor(task, wedge);
-      await oc.sendPrompt(
+      await oc.startPrompt(
         sessionId,
         buildPrompt(task, wedge, profile),
         promptModel,
@@ -392,61 +434,30 @@ export async function runOpenCodeTask(
       throw new Error(`${(e as Error).message}\n--- opencode.log (tail) ---\n${await tailAgentLog(sandbox)}`);
     }
 
-    abortWatch = setInterval(() => {
-      if (ctx.shouldAbort()) abort.abort();
-    }, 1000);
-    (abortWatch as { unref?: () => void }).unref?.();
+    // The agent's own phase. Without it every tool call and every token in the run hangs off
+    // `start_opencode` in the trace, which reads as if booting the server took four minutes.
+    await ctx.emit("step.started", { step: "agent" });
 
     try {
-      for await (const ev of oc.events(abort.signal)) {
+      for await (const ev of stream) {
         const reason = ctx.shouldAbort();
         if (reason) {
           await oc.abort(sessionId);
           throw new Error(`aborted: ${reason}`);
         }
-        const sid: unknown = ev.properties?.sessionID ?? ev.properties?.part?.sessionID;
-        if (typeof sid === "string" && sid !== sessionId) continue;
+        if (mapper.foreign(ev)) continue;
 
-        switch (ev.type) {
-          case "message.part.delta": {
-            const d: unknown = ev.properties?.delta;
-            if (typeof d === "string" && d) await ctx.emit("token.delta", { text: d });
-            break;
-          }
-          case "message.part.updated": {
-            const part = ev.properties?.part;
-            const kind: unknown = part?.type;
-            if (kind === "tool" || kind === "tool-invocation") {
-              const name = part.toolName ?? part.tool ?? "tool";
-              if (part.result !== undefined) await ctx.emit("tool.result", { tool: name, ok: !part.error });
-              else await ctx.emit("tool.called", { tool: name, args: part.invocation?.input ?? part.args });
-            } else if (kind === "text" && typeof part.text === "string") {
-              finalText = part.text;
-            } else if (kind === "reasoning") {
-              await ctx.emit("progress", { note: "reasoning" });
-            }
-            break;
-          }
-          case "message.info": {
-            const usage = ev.properties?.info?.usage ?? ev.properties?.usage;
-            if (usage) ctx.onCost(estimateCost(model, usage));
-            break;
-          }
-          case "message.completed":
-          case "session.completed":
-          case "session.idle": {
-            done = true;
-            break;
-          }
-          case "session.error": {
-            throw new Error(`opencode session error: ${JSON.stringify(ev.properties)}`);
-          }
-        }
-        if (done) {
+        const mapped = mapper.map(ev);
+        for (const e of mapped.emissions) await ctx.emit(e.type, e.data);
+        if (mapped.usage) chargeUsage(ctx, model, tier, mapped.usage);
+        if (mapped.error) throw new Error(mapped.error);
+        if (mapped.done) {
+          done = true;
           await oc.abort(sessionId);
           break;
         }
       }
+      finalText = mapper.finalText;
     } catch (e) {
       // An aborted fetch surfaces as a generic AbortError — translate to the real reason so the
       // task lands on the correct terminal status.
@@ -467,6 +478,10 @@ export async function runOpenCodeTask(
     if (abortWatch) clearInterval(abortWatch);
     if (nonce) await revokeGrant(nonce);
     if (actionNonce) await revokeActionGrant(actionNonce);
+    // Reported from the `finally` so it survives the failure path too. A run that failed BECAUSE
+    // the protocol moved is precisely the run whose drift counter is worth reading.
+    const drift = mapper?.unmapped;
+    if (drift && Object.keys(drift).length) ctx.onDrift?.(drift);
   }
 
   // 6. Prefer the streamed final text; fall back to an artifact the agent wrote.
@@ -706,7 +721,38 @@ function defaultProfileFor(task: Task): HarnessProfile {
 }
 
 /**
- * What this run cost, from the price table the rest of the system already uses.
+ * Turn one usage increment into a charge, with the counts and the model kept ON the event.
+ *
+ * Both halves of this used to be thrown away. `runtime.ts` called `estimateCost` and passed only
+ * the dollars to `onCost`, so `cost.charged` carried `{cost_usd, reason}` and a trace could report
+ * how many CHUNKS were streamed but not how many tokens were spent, nor on what. `traces.ts` says
+ * so in a comment on `token_deltas`; it was right, and this is the other end of that complaint.
+ *
+ * OpenCode's own `cost` is preferred when it is non-zero — it prices against the provider's real
+ * table, which is better than ours can be. In proxy mode the provider is `mycel`, a custom
+ * openai-compatible entry with no pricing, so `cost` is 0 and the tier table below is the only
+ * number available. Preferring theirs and falling back to ours is what keeps both modes honest.
+ */
+function chargeUsage(ctx: RuntimeCtx, model: string, tier: ModelTier, usage: UsageDelta): void {
+  const usd = usage.cost_usd > 0 ? usage.cost_usd : estimateCost(model, usage.input, usage.output);
+  ctx.onCost(usd, {
+    model,
+    tier,
+    tokens: {
+      input: usage.input,
+      output: usage.output,
+      reasoning: usage.reasoning,
+      cache_read: usage.cache_read,
+      cache_write: usage.cache_write,
+    },
+    // Where the dollars came from. A run priced by our table and one priced by the provider are
+    // different kinds of claim, and an invoice dispute turns on which one this was.
+    reason: usage.cost_usd > 0 ? "model" : "model_estimated",
+  });
+}
+
+/**
+ * What a token count costs, from the price table the rest of the system already uses.
  *
  * This used to hardcode $3/$15 per million (or $5/$25 if the model name contained "opus"), which
  * was wrong twice over: those are Anthropic's rates and we moved to OpenAI via LiteLLM, and no
@@ -717,14 +763,17 @@ function defaultProfileFor(task: Task): HarnessProfile {
  * $2/month allowance was really about three cents and ran out after a handful of jobs. Every margin
  * figure reasoned about in models.ts was computed from a table this function never read.
  *
+ * It also used to take a `usage` bag and dig for `input_tokens | inputTokens | prompt_tokens` —
+ * none of which OpenCode has ever sent. Its real shape is `tokens: {input, output, reasoning,
+ * cache:{read,write}}`, so every one of those lookups returned undefined and every run in the
+ * system's history was priced at exactly $0.00. Taking two numbers means a caller cannot get the
+ * key names wrong again.
+ *
  * Falls back to the standard tier for an unrecognised model. Over-estimating an unknown model
  * throttles a customer early, which is recoverable; under-estimating means serving work at a loss
  * and finding out on the invoice.
  */
-function estimateCost(model: string, usage: Record<string, unknown>): number {
-  const input = Number(usage.input_tokens ?? usage.inputTokens ?? usage.prompt_tokens ?? 0);
-  const output = Number(usage.output_tokens ?? usage.outputTokens ?? usage.completion_tokens ?? 0);
-
+function estimateCost(model: string, input: number, output: number): number {
   const tier = (Object.keys(TIER_MODELS) as ModelTier[]).find(
     (t) => TIER_MODELS[t] === model || model.endsWith(TIER_MODELS[t].split("/").pop() ?? "\u0000"),
   );
@@ -774,3 +823,9 @@ async function tailAgentLog(sandbox: Sandbox): Promise<string> {
     return `(could not read: ${(e as Error).message})`;
   }
 }
+
+/**
+ * Test seam: pricing and the metadata that rides with it are the difference between a trace that
+ * can answer "which model, how many tokens" and the one we shipped, which could answer neither.
+ */
+export const chargeUsageForTest = chargeUsage;

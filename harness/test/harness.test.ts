@@ -37,6 +37,31 @@ function fakeWedge(manifest: Record<string, unknown>): LoadedWedge {
   return { manifest: manifest as never, dir: "/tmp", skills: [], knowledge: [] };
 }
 
+/**
+ * Does this permission map leave `tool` switched on for the model?
+ *
+ * Asserting on individual keys was how these tests used to read, and it tested the wrong thing: a
+ * profile can deny `edit` by naming it or by denying `"*"` and not allowing it, and a test that
+ * greps for `permission.edit === "deny"` passes or fails on spelling rather than on whether the
+ * agent can write a file.
+ *
+ * This mirrors the resolution rules VERIFIED against the real opencode 1.17.6 binary by running
+ * `opencode debug agent build` over each shape of config and reading back the toolset it hands the
+ * model:
+ *   · a tool named explicitly wins over `"*"`; absent both, the default is allow;
+ *   · `write` is not a permission key — writing is governed by `edit` (denying `edit` removes the
+ *     `edit` AND `write` tools; denying `write` alone removes nothing);
+ *   · a pattern map leaves the tool ON unless its own `"*"` is `deny`, which removes the tool
+ *     entirely rather than filtering commands.
+ */
+function toolEnabled(permission: Record<string, unknown>, tool: string): boolean {
+  const key = tool === "write" ? "edit" : tool;
+  const rule = permission[key] ?? permission["*"] ?? "allow";
+  if (typeof rule === "string") return rule !== "deny";
+  if (rule && typeof rule === "object") return (rule as Record<string, string>)["*"] !== "deny";
+  return true;
+}
+
 // ---------------------------------------------------------------------------------------------
 // Resolution and defaulting
 // ---------------------------------------------------------------------------------------------
@@ -71,7 +96,7 @@ test("harness: narrowest declaration wins — task_type over wedge over shape de
   assert.equal(profile.max_cost_usd, 0.25, "the wedge-level budget survives");
   assert.equal(profile.steps, 55, "the task type overrides the wedge");
   assert.equal(profile.permission.websearch, "allow", "a task type may reopen a tool the shape closed");
-  assert.equal(profile.permission.edit, "deny", "…without discarding the rest of the shape's denies");
+  assert.equal(toolEnabled(profile.permission, "edit"), false, "…without discarding the shape's denies");
 });
 
 test("harness: a manifest is JSON and can say anything, so nothing is trusted", () => {
@@ -236,11 +261,21 @@ test("harness: a decide profile keeps the action proxy and loses the filesystem"
     ceilings: CEILINGS,
   });
   assert.equal(profile.grants_actions, true, "a decision's whole job may be to send one message");
-  assert.equal(profile.permission.edit, "deny");
-  assert.equal(profile.permission.write, "deny");
-  assert.equal(profile.permission.task, "deny", "no subagents to supervise");
-  assert.equal(profile.permission.webfetch, "deny", "a dunning decision is not made from the open web");
-  assert.equal(profile.permission.external_directory, "deny");
+
+  // Denied by default, so this holds for tools that do not exist yet as well as the ones that do.
+  assert.equal(profile.permission["*"], "deny");
+  assert.equal(toolEnabled(profile.permission, "edit"), false);
+  assert.equal(toolEnabled(profile.permission, "write"), false);
+  assert.equal(toolEnabled(profile.permission, "task"), false, "no subagents to supervise");
+  assert.equal(toolEnabled(profile.permission, "webfetch"), false, "not decided from the open web");
+  assert.equal(toolEnabled(profile.permission, "websearch"), false);
+  assert.equal(toolEnabled(profile.permission, "external_directory"), false);
+  assert.equal(toolEnabled(profile.permission, "some_tool_opencode_adds_in_2027"), false);
+
+  // …while the six a decision genuinely uses stay on.
+  for (const tool of ["read", "grep", "glob", "list", "skill", "todowrite"]) {
+    assert.equal(toolEnabled(profile.permission, tool), true, `${tool} must stay available`);
+  }
 
   /**
    * The shell stays open, and that is deliberate rather than an oversight: the action proxy, the
@@ -256,6 +291,55 @@ test("harness: a decide profile keeps the action proxy and loses the filesystem"
   const bash = profile.permission.bash as Record<string, string>;
   assert.equal(bash["*"], "allow");
   assert.equal(bash["rm -rf /"], "deny");
+});
+
+test("harness: the permission wildcard is pinned first, because last means an empty toolset", () => {
+  /**
+   * Verified against the real opencode 1.17.6 binary with `opencode debug agent build`:
+   *
+   *   {"*": "deny", "read": "allow"}  →  the model gets `read`
+   *   {"read": "allow", "*": "deny"}  →  the model gets NOTHING
+   *
+   * Same two rules, opposite order, and the second is not an error — it is an agent with no tools,
+   * which presents as a model that mysteriously narrates instead of working. Since this object is
+   * assembled by spreading founder JSON over our defaults, and JS spread keeps a key at the index
+   * of its FIRST appearance, a wedge that introduces `"*"` to a shape without one would append it.
+   */
+  const profile = resolveHarnessProfile({
+    task: taskOf("x", "t"),
+    wedge: fakeWedge({
+      wedge: "x",
+      task_types: {
+        t: { harness: { shape: "build", permission: { read: "allow", grep: "allow", "*": "deny" } } },
+      },
+    }),
+    ceilings: CEILINGS,
+  });
+  assert.equal(Object.keys(profile.permission)[0], "*", "the wildcard must lead, whatever order it arrived in");
+  assert.equal(toolEnabled(profile.permission, "read"), true, "…and the allows it precedes still bite");
+  assert.equal(toolEnabled(profile.permission, "webfetch"), false);
+});
+
+test("harness: `needs_connections` is honoured as the spelling for withholding credentials", () => {
+  // The design doc's name for the switch. A founder reaching for it and silently getting the
+  // default would be the worst possible failure on the one field that governs credentials.
+  const off = resolveHarnessProfile({
+    task: taskOf("x", "t"),
+    wedge: fakeWedge({ wedge: "x", task_types: { t: { harness: { needs_connections: false } } } }),
+    ceilings: CEILINGS,
+  });
+  assert.equal(off.grants_actions, false, "a general-shape task type may still refuse the token");
+
+  const on = resolveHarnessProfile({
+    task: taskOf("x", "t"),
+    wedge: fakeWedge({
+      wedge: "x",
+      // A build asking for connections by either spelling is still refused — the shape decides.
+      task_types: { t: { harness: { shape: "build", needs_connections: true } } },
+    }),
+    ceilings: CEILINGS,
+  });
+  assert.equal(on.grants_actions, false);
 });
 
 // ---------------------------------------------------------------------------------------------
@@ -279,8 +363,8 @@ test("harness: the opencode config genuinely differs by task type", () => {
   assert.notDeepEqual(a, b, "one config for every task was the whole problem");
 
   // Permissions: the decide run cannot write a file; the build run must be able to.
-  assert.equal((a.permission as Record<string, string>).edit, "deny");
-  assert.equal((b.permission as Record<string, string>).edit, "allow");
+  assert.equal(toolEnabled(a.permission as Record<string, unknown>, "edit"), false);
+  assert.equal(toolEnabled(b.permission as Record<string, unknown>, "edit"), true);
 
   // Snapshots are pure overhead for a run that edits nothing.
   assert.equal(a.snapshot, false);
@@ -384,7 +468,7 @@ test("harness: invoice-chaser's chase_invoice is a real decide profile on disk",
   assert.equal(profile.tier, "fast", "a dunning judgement does not need a frontier model");
   assert.equal(profile.strict_output, true);
   assert.equal(profile.grants_actions, true, "it exists to send the chase");
-  assert.equal(profile.permission.edit, "deny");
+  assert.equal(toolEnabled(profile.permission, "edit"), false);
   assert.ok(profile.max_runtime_s <= 300, "a decision that hasn't landed in four minutes won't");
 });
 
@@ -400,7 +484,7 @@ test("harness: product-builder's build_feature is a real build profile on disk, 
   assert.equal(profile.shape, "build");
   assert.equal(profile.tier, "deep");
   assert.equal(profile.grants_actions, false, "a build has no business sending email");
-  assert.equal(profile.permission.edit, "allow");
+  assert.equal(toolEnabled(profile.permission, "edit"), true);
   assert.equal(profile.strict_output, false);
   assert.ok(profile.max_runtime_s >= 900, "scaffolding an app is not a five-minute job");
 
@@ -413,6 +497,6 @@ test("harness: product-builder's build_feature is a real build profile on disk, 
     ceilings: CEILINGS,
   });
   assert.equal(review.shape, "decide");
-  assert.equal(review.permission.edit, "deny");
+  assert.equal(toolEnabled(review.permission, "edit"), false);
   assert.notEqual(review.tier, profile.tier);
 });

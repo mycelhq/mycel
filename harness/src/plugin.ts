@@ -1,9 +1,16 @@
 // The Mycel OpenCode plugin. It is written INTO the sandbox and referenced by opencode.json's
 // `plugin` array. On every tool call, the `tool.execute.before` hook checks whether the action
 // is gated; if so, it calls back to the harness (/v1/internal/gate), which suspends the task and
-// waits for a human. Deny -> the tool is blocked. This is the approval-gate
-// pattern. The exact hook name/signature follows @opencode-ai/plugin; confirm against the
-// installed version when wiring a real sandbox.
+// waits for a human. Deny -> the tool is blocked. This is the approval-gate pattern.
+//
+// HOOK SIGNATURE — VERIFIED against @opencode-ai/plugin@1.17.6 (dist/index.d.ts, `interface Hooks`):
+//
+//   "tool.execute.before"?: (input: {tool, sessionID, callID}, output: {args}) => Promise<void>
+//
+// So the tool name is on INPUT and the arguments are on OUTPUT, which is what the code below reads.
+// The `||` fallbacks are kept because they cost nothing and the two halves have swapped before.
+// Also present at this pin, and unused here: `tool.execute.after` ({tool, sessionID, callID, args}
+// -> {title, output, metadata}) and `shell.env`.
 //
 // WHAT THIS DOES AND DOES NOT GATE — read this before enabling a shell in a harness profile.
 //

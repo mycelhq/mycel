@@ -49,6 +49,7 @@ import type {
   TaskStatus,
 } from "./contract";
 import { getDomainStore } from "./domain";
+import { profileConstraintDefaults } from "./harness";
 import { emitEvent } from "./events";
 import { canManageMembers, getIdentityStore, PLAN_LIMITS } from "./identity";
 import type { Plan, PlanStatus, Role } from "./identity";
@@ -93,7 +94,7 @@ import {
   type ClientScope,
 } from "./portal";
 import { traceLlmCall } from "./tracing";
-import { loadWedge, wedgesDir } from "./wedge";
+import { loadWedge, wedgesDir, type LoadedWedge } from "./wedge";
 import { runWorkflow } from "./workflows";
 
 const TERMINAL: ReadonlySet<TaskStatus> = new Set<TaskStatus>([
@@ -1172,7 +1173,7 @@ export function createServer(store: Store): Hono {
     }
 
     const cfg = loadConfig();
-    const constraints = clampConstraints(body.constraints, cfg.maxCostCeilingUsd, cfg.maxRuntimeCeilingS);
+    const constraints = clampConstraints(body.constraints, cfg.maxCostCeilingUsd, cfg.maxRuntimeCeilingS, loadWedge(body.wedge), body.task_type);
     const now = new Date().toISOString();
     const task: Task = {
       id: randomUUID(),
@@ -3601,13 +3602,31 @@ function validCadence(c: Cadence | undefined): boolean {
   return false;
 }
 
-/** Clamp client-supplied constraints to server ceilings so a caller can't set max_cost_usd: 1e6. */
+/**
+ * Clamp client-supplied constraints to server ceilings so a caller can't set max_cost_usd: 1e6.
+ *
+ * The DEFAULTS come from the task type's harness profile, not from a constant. A flat 300s was
+ * killing real work: a production run spent 165,000 tokens and was aborted mid-think, and a
+ * `build` profile — which exists to construct a whole Next.js product — could never have finished
+ * inside five minutes. "Decide the next dunning step" and "build an application" do not share a
+ * budget, and pretending they do means the expensive one silently never completes.
+ *
+ * Ceilings still win: a profile REQUESTS, the server DECIDES, exactly as `resolveTier` clamps a
+ * requested model tier down by plan. A founder-authored manifest cannot buy itself more runtime
+ * than the deployment allows.
+ */
 function clampConstraints(
   c: Partial<Constraints> | undefined,
   costCeiling: number,
   runtimeCeiling: number,
+  wedge?: LoadedWedge | null,
+  taskType?: string,
 ): Constraints {
-  const max_cost_usd = Math.min(Math.max(0, c?.max_cost_usd ?? 1), costCeiling);
-  const max_runtime_s = Math.min(Math.max(1, c?.max_runtime_s ?? 300), runtimeCeiling);
+  const d = profileConstraintDefaults(wedge ?? null, taskType ?? "", {
+    maxRuntimeS: runtimeCeiling,
+    maxCostUsd: costCeiling,
+  });
+  const max_cost_usd = Math.min(Math.max(0, c?.max_cost_usd ?? d.max_cost_usd), costCeiling);
+  const max_runtime_s = Math.min(Math.max(1, c?.max_runtime_s ?? d.max_runtime_s), runtimeCeiling);
   return { max_cost_usd, max_runtime_s, approval_required: c?.approval_required ?? false };
 }
