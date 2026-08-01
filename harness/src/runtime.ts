@@ -147,7 +147,19 @@ export async function runOpenCodeTask(
       );
     }
     const realKey = tenantKey ?? process.env[providerEnvVar(providerId)] ?? "";
-    nonce = await registerGrant({ base_url: base, api_key: realKey, model: modelId, task_id: task.id });
+    // The grant's `model` is what the proxy pins on the way UPSTREAM, so it must be the name the
+    // upstream knows — LiteLLM registers `openai/gpt-5.6-luna`, provider prefix and all.
+    //
+    // `modelId` is the bare id, and it is right in exactly one other place: the sandbox's own config,
+    // where the provider is `mycel` and the model is addressed as `mycel/<modelId>`. Using the bare
+    // id here too sent `model=gpt-5.6-luna` to LiteLLM, which answered "Invalid model name" — a
+    // 400 that surfaced as a run silently burning its whole runtime budget and aborting on the
+    // timeout, because nothing on the way back turns an upstream 400 into a fast failure.
+    //
+    // Two names for one model is not an accident to be tidied away: `mycel/...` inside the sandbox
+    // is what keeps the real provider key out of it, and `openai/...` upstream is what LiteLLM
+    // meters and budgets per org.
+    nonce = await registerGrant({ base_url: base, api_key: realKey, model, task_id: task.id });
     const built = buildOpencodeConfig(model, {
       proxyBaseUrl: `${cfg.publicUrl}/v1/internal/llm`,
       nonce,
