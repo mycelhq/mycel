@@ -9,6 +9,7 @@
 // The multi-replica assertions need a shared backend and are skipped without
 // MYCEL_TEST_DATABASE_URL; the single-store ones run everywhere.
 import { test } from "node:test";
+import { randomUUID } from "node:crypto";
 import assert from "node:assert/strict";
 import { InMemoryPolicyCounters } from "../src/store";
 import { evaluatePolicy, resetPolicyCounters } from "../src/policy";
@@ -17,6 +18,11 @@ import type { PolicyCounterStore } from "../src/store";
 
 const URL = process.env.MYCEL_TEST_DATABASE_URL;
 const skip = URL ? false : "set MYCEL_TEST_DATABASE_URL to run";
+
+// Budget is shared state, and `resetPolicyCounters()` is a no-op against a real database by design.
+// The tests that spend budget scope themselves with ids nothing else will reuse, so the file is
+// repeatable against one Postgres — the rule `freshProjectId` in test/helpers.ts spells out.
+const RUN = randomUUID().slice(0, 8);
 
 const manifest = (policy: unknown): WedgeManifest => ({ wedge: "w", policy } as WedgeManifest);
 const soon = () => new Date(Date.now() + 3_600_000);
@@ -77,7 +83,7 @@ test("a per-day ceiling admits exactly N, even when every caller races for the l
   // the number the atomic increment hands back is what decides, so the total cannot exceed 5.
   const decisions = await Promise.all(
     Array.from({ length: 25 }, (_, i) =>
-      evaluatePolicy(m, { action: "email:send", taskId: `race-${i}`, projectId: "race-project" }),
+      evaluatePolicy(m, { action: "email:send", taskId: `race-${RUN}-${i}`, projectId: `race-${RUN}` }),
     ),
   );
   const allowed = decisions.filter((d) => d.auto).length;
@@ -89,7 +95,7 @@ test("a per-task ceiling admits exactly N under the same race", async () => {
   resetPolicyCounters();
   const m = manifest({ auto_approve: [{ action: "email:send", max_per_task: 3 }] });
   const decisions = await Promise.all(
-    Array.from({ length: 20 }, () => evaluatePolicy(m, { action: "email:send", taskId: "one-task" })),
+    Array.from({ length: 20 }, () => evaluatePolicy(m, { action: "email:send", taskId: `one-task-${RUN}` })),
   );
   assert.equal(decisions.filter((d) => d.auto).length, 3);
 });
