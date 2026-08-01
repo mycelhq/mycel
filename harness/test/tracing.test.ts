@@ -24,9 +24,10 @@ const task = (over: Partial<Task> = {}): Task =>
   }) as Task;
 
 test("tracing: a trace carries the tenancy key, so per-project filtering is possible", async () => {
-  // The cloud design is one shared Langfuse project with traces tagged per tenant (creating a
-  // project per customer needs Enterprise Edition). Without project_id on the trace there is
-  // nothing to segment by, and every tenant's traces are indistinguishable.
+  // Everything lands in ONE Langfuse project — the operator's own. Per-project provisioning was
+  // removed (the API it needed exists only on self-hosted Enterprise), so tags are the only
+  // segmentation there is: without project_id an operator running several businesses cannot tell
+  // whose run they are looking at. Customer-facing traces come from traces.ts, not from here.
   const captured: Record<string, unknown>[] = [];
   const fakeLangfuse = {
     trace(args: Record<string, unknown>) {
@@ -49,7 +50,8 @@ test("tracing: a trace carries the tenancy key, so per-project filtering is poss
 });
 
 test("tracing: every task gets a local JSONL log, whether or not Langfuse is configured", async () => {
-  // The always-on sink. Langfuse is optional; losing the record of what an agent did is not.
+  // The always-on sink. Langfuse is an operator's optional debugging sink; losing the record of what
+  // an agent did is not optional.
   const dir = mkdtempSync(join(tmpdir(), "mycel-trace-"));
   const { _localObserverForTest, flushLogs } = await import("../src/tracing");
   const obs = _localObserverForTest(dir);

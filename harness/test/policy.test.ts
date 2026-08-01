@@ -9,66 +9,66 @@ import { registerActionGrant } from "../src/actiongrants";
 
 const manifest = (policy: unknown): WedgeManifest => ({ wedge: "w", policy } as WedgeManifest);
 
-test("no policy means everything is gated — the safe default", () => {
-  const d = evaluatePolicy(manifest(undefined), { action: "email:send", taskId: "t" });
+test("no policy means everything is gated — the safe default", async () => {
+  const d = await evaluatePolicy(manifest(undefined), { action: "email:send", taskId: "t" });
   assert.equal(d.auto, false);
   assert.match(d.reason, /no auto-approve policy/);
-  assert.equal(evaluatePolicy(undefined, { action: "x", taskId: "t" }).auto, false);
+  assert.equal((await evaluatePolicy(undefined, { action: "x", taskId: "t" })).auto, false);
 });
 
-test("an action outside the envelope stays gated; inside it auto-approves", () => {
+test("an action outside the envelope stays gated; inside it auto-approves", async () => {
   resetPolicyCounters();
   const m = manifest({ auto_approve: [{ action: "email:send_reminder" }] });
-  assert.equal(evaluatePolicy(m, { action: "email:send_reminder", taskId: "t1" }).auto, true);
-  assert.equal(evaluatePolicy(m, { action: "stripe:charge", taskId: "t1" }).auto, false, "money has no rule → gated");
+  assert.equal((await evaluatePolicy(m, { action: "email:send_reminder", taskId: "t1" })).auto, true);
+  assert.equal((await evaluatePolicy(m, { action: "stripe:charge", taskId: "t1" })).auto, false, "money has no rule → gated");
 });
 
-test("prefix rules match a family of actions", () => {
+test("prefix rules match a family of actions", async () => {
   resetPolicyCounters();
   const m = manifest({ auto_approve: [{ action: "ads:" }] });
-  assert.equal(evaluatePolicy(m, { action: "ads:set_budget", taskId: "t" }).auto, true);
-  assert.equal(evaluatePolicy(m, { action: "ads:pause_campaign", taskId: "t" }).auto, true);
-  assert.equal(evaluatePolicy(m, { action: "stripe:refund", taskId: "t" }).auto, false);
+  assert.equal((await evaluatePolicy(m, { action: "ads:set_budget", taskId: "t" })).auto, true);
+  assert.equal((await evaluatePolicy(m, { action: "ads:pause_campaign", taskId: "t" })).auto, true);
+  assert.equal((await evaluatePolicy(m, { action: "stripe:refund", taskId: "t" })).auto, false);
 });
 
-test("amount ceilings: within passes, over is gated, missing amount is gated", () => {
+test("amount ceilings: within passes, over is gated, missing amount is gated", async () => {
   resetPolicyCounters();
   const m = manifest({ auto_approve: [{ action: "ads:set_budget", max_amount_usd: 50 }] });
-  assert.equal(evaluatePolicy(m, { action: "ads:set_budget", payload: { amount: 20 }, taskId: "t" }).auto, true);
-  const over = evaluatePolicy(m, { action: "ads:set_budget", payload: { amount: 500 }, taskId: "t" });
+  assert.equal((await evaluatePolicy(m, { action: "ads:set_budget", payload: { amount: 20 }, taskId: "t" })).auto, true);
+  const over = await evaluatePolicy(m, { action: "ads:set_budget", payload: { amount: 500 }, taskId: "t" });
   assert.equal(over.auto, false);
   assert.match(over.reason, /exceeds/);
-  const missing = evaluatePolicy(m, { action: "ads:set_budget", payload: {}, taskId: "t" });
+  const missing = await evaluatePolicy(m, { action: "ads:set_budget", payload: {}, taskId: "t" });
   assert.equal(missing.auto, false, "a cap with no amount to check must fail closed");
 });
 
-test("per-task and per-day ceilings stop runaway autonomy, and a refusal doesn't burn budget", () => {
+test("per-task and per-day ceilings stop runaway autonomy, and a refusal doesn't burn budget", async () => {
   resetPolicyCounters();
   const m = manifest({ auto_approve: [{ action: "email:send", max_per_task: 2, max_per_day: 3 }] });
 
-  assert.equal(evaluatePolicy(m, { action: "email:send", taskId: "a", projectId: "p" }).auto, true);
-  assert.equal(evaluatePolicy(m, { action: "email:send", taskId: "a", projectId: "p" }).auto, true);
-  const third = evaluatePolicy(m, { action: "email:send", taskId: "a", projectId: "p" });
+  assert.equal((await evaluatePolicy(m, { action: "email:send", taskId: "a", projectId: "p" })).auto, true);
+  assert.equal((await evaluatePolicy(m, { action: "email:send", taskId: "a", projectId: "p" })).auto, true);
+  const third = await evaluatePolicy(m, { action: "email:send", taskId: "a", projectId: "p" });
   assert.equal(third.auto, false, "per-task ceiling reached");
   assert.match(third.reason, /per-task limit of 2/);
 
   // a different task gets its own per-task budget, but shares the daily one
-  assert.equal(evaluatePolicy(m, { action: "email:send", taskId: "b", projectId: "p" }).auto, true);
-  const dayCapped = evaluatePolicy(m, { action: "email:send", taskId: "c", projectId: "p" });
+  assert.equal((await evaluatePolicy(m, { action: "email:send", taskId: "b", projectId: "p" })).auto, true);
+  const dayCapped = await evaluatePolicy(m, { action: "email:send", taskId: "c", projectId: "p" });
   assert.equal(dayCapped.auto, false, "daily ceiling reached");
   assert.match(dayCapped.reason, /daily limit of 3/);
 
   // another project has its own daily budget
-  assert.equal(evaluatePolicy(m, { action: "email:send", taskId: "d", projectId: "other" }).auto, true);
+  assert.equal((await evaluatePolicy(m, { action: "email:send", taskId: "d", projectId: "other" })).auto, true);
 });
 
-test("commit:false evaluates without consuming budget", () => {
+test("commit:false evaluates without consuming budget", async () => {
   resetPolicyCounters();
   const m = manifest({ auto_approve: [{ action: "x", max_per_task: 1 }] });
-  assert.equal(evaluatePolicy(m, { action: "x", taskId: "t", commit: false }).auto, true);
-  assert.equal(evaluatePolicy(m, { action: "x", taskId: "t", commit: false }).auto, true, "peeking is free");
-  assert.equal(evaluatePolicy(m, { action: "x", taskId: "t" }).auto, true);
-  assert.equal(evaluatePolicy(m, { action: "x", taskId: "t" }).auto, false, "now the budget is spent");
+  assert.equal((await evaluatePolicy(m, { action: "x", taskId: "t", commit: false })).auto, true);
+  assert.equal((await evaluatePolicy(m, { action: "x", taskId: "t", commit: false })).auto, true, "peeking is free");
+  assert.equal((await evaluatePolicy(m, { action: "x", taskId: "t" })).auto, true);
+  assert.equal((await evaluatePolicy(m, { action: "x", taskId: "t" })).auto, false, "now the budget is spent");
 });
 
 test("payloadAmount reads the usual shapes", () => {
@@ -102,7 +102,7 @@ test("end to end: an in-envelope action executes with no human, and is queued fo
     project_id: "p", kind: "email", name: "billing-email", owner: { kind: "founder", id: "founder" },
     config: { api_url: `http://127.0.0.1:${port}`, from: "a@b.c" },
   });
-  const nonce = registerActionGrant({ task_id: "pt1", connectionIds: [conn.id] });
+  const nonce = await registerActionGrant({ task_id: "pt1", connectionIds: [conn.id] });
   const H = { authorization: `Bearer ${nonce}`, "content-type": "application/json" };
 
   // invoice-chaser's policy auto-approves email:send_reminder (3/task) — no human, no suspend

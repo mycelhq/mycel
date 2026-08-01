@@ -66,13 +66,9 @@ $EnvMap = @{ anthropic = "ANTHROPIC_API_KEY"; openai = "OPENAI_API_KEY"; google 
 $PkeyVar = if ($EnvMap.ContainsKey($Provider)) { $EnvMap[$Provider] } else { "$($Provider.ToUpper())_API_KEY" }
 $Pkey = AskSecret "  $PkeyVar for $Model"
 
-# langfuse
-$LfSecret = ""; $LfPublic = ""; $LfHost = ""
-if (YesNo "`nEnable Langfuse tracing? (open-source observability)" "n") {
-  $LfHost = Ask "  Langfuse host" "https://cloud.langfuse.com"
-  $LfPublic = Ask "  LANGFUSE_PUBLIC_KEY" ""
-  $LfSecret = AskSecret "  LANGFUSE_SECRET_KEY"
-}
+# No tracing prompt. Traces come from the kernel's own event log (GET /v1/tasks/:id/trace), so there
+# is nothing to configure. Langfuse is optional and bring-your-own — see .env.example. Kept in step
+# with setup.sh.
 
 # write .env
 $EnvFile = "$Here\.env"
@@ -87,7 +83,6 @@ $lines = @(
   "PORT=4000"
 )
 if ($DaytonaKey) { $lines += "DAYTONA_API_KEY=$DaytonaKey" }
-if ($LfSecret) { $lines += "LANGFUSE_SECRET_KEY=$LfSecret"; $lines += "LANGFUSE_PUBLIC_KEY=$LfPublic"; $lines += "LANGFUSE_HOST=$LfHost" }
 $lines -join "`n" | Set-Content -Path $EnvFile -Encoding utf8
 Ok "wrote .env"
 
@@ -95,7 +90,6 @@ Ok "wrote .env"
 Write-Host "`nInstalling dependencies" -ForegroundColor White
 Push-Location $Here
 npm install | Out-Null; Ok "npm install done"
-if ($LfSecret) { npm install langfuse | Out-Null; Ok "langfuse installed" }
 Pop-Location
 
 Write-Host "`nMycel is set up." -ForegroundColor Green

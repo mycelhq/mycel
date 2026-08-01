@@ -201,7 +201,7 @@ test("composio: a write goes through the human gate, and the agent never sees th
     } as never);
     const task = { id: "composio-task-1" };
 
-    const nonce = registerActionGrant({ task_id: task.id, connectionIds: [conn.id] });
+    const nonce = await registerActionGrant({ task_id: task.id, connectionIds: [conn.id] });
     const callTool = (slug: string, path: "actions" | "reads", body: Record<string, unknown> = {}) =>
       api(app, `internal/${path}/${slug}`, {
         method: "POST",

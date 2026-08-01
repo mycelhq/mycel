@@ -52,7 +52,7 @@ test("records: the agent batches an ingest and queries it back, scoped to its we
   const { store, app } = makeApp();
   const kase = (await api(app, "cases", { method: "POST", body: JSON.stringify({ wedge: WEDGE, title: "Oct close" }) })).json;
   const task = (await api(app, `cases/${kase.id}/tasks`, { method: "POST", body: JSON.stringify({ task_type: "daily_sync" }) })).json;
-  const nonce = registerActionGrant({ task_id: task.id, connectionIds: [], caseId: kase.id });
+  const nonce = await registerActionGrant({ task_id: task.id, connectionIds: [], caseId: kase.id });
   const H = { authorization: `Bearer ${nonce}`, "content-type": "application/json" };
 
   // a 300-transaction ingest in one call

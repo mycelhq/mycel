@@ -11,17 +11,16 @@ import { createSandbox, type Sandbox } from "./sandbox";
 import { runOpenCodeTask } from "./runtime";
 import { runMockTask } from "./runtime.mock";
 import type { Store } from "./store";
-import { getObserverFor } from "./tracing";
-import { getIdentityStore } from "./identity";
+import { getObserver } from "./tracing";
 import { validateOutput } from "./validate";
 
 export async function runTask(store: Store, taskId: string): Promise<void> {
   const task = await store.getTask(taskId);
   if (!task) return;
 
-  // Per tenant: this task's traces go to this project's own Langfuse project, not to a shared one
-  // filtered by tag. See `getObserverFor`.
-  const observer = await getObserverFor(task.project_id, getIdentityStore().getProject(task.project_id ?? "")?.name);
+  // One process-wide observer (the JSONL sink). The per-tenant variant existed for the Langfuse
+  // sink, which is gone; see tracing.ts.
+  const observer = await getObserver();
   await observer.onTaskStart(task);
 
   const emit = (type: EventType, data: Record<string, unknown> = {}) =>

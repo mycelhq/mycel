@@ -152,7 +152,7 @@ test("audit: a real approval + executed action land in the chain, with no secret
   });
   await setSecret(conn.id, "SUPERSECRET-TOKEN");
 
-  const nonce = registerActionGrant({ task_id: "at1", connectionIds: [conn.id] });
+  const nonce = await registerActionGrant({ task_id: "at1", connectionIds: [conn.id] });
   const H = { authorization: `Bearer ${nonce}`, "content-type": "application/json" };
   const callP = app.request("/v1/internal/actions/send_thing", {
     method: "POST", headers: H, body: JSON.stringify({ connection_id: conn.id, to: "x@y.z", body: "hi" }),

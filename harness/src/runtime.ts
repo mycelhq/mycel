@@ -147,7 +147,7 @@ export async function runOpenCodeTask(
       );
     }
     const realKey = tenantKey ?? process.env[providerEnvVar(providerId)] ?? "";
-    nonce = registerGrant({ base_url: base, api_key: realKey, model: modelId, task_id: task.id });
+    nonce = await registerGrant({ base_url: base, api_key: realKey, model: modelId, task_id: task.id });
     const built = buildOpencodeConfig(model, {
       proxyBaseUrl: `${cfg.publicUrl}/v1/internal/llm`,
       nonce,
@@ -190,7 +190,7 @@ export async function runOpenCodeTask(
       }
     }
   }
-  const actionNonce = registerActionGrant({ task_id: task.id, connectionIds, threadId, caseId: task.case_id });
+  const actionNonce = await registerActionGrant({ task_id: task.id, connectionIds, threadId, caseId: task.case_id });
   const grantedConns = allConns.filter((c) => connectionIds.includes(c.id));
 
   // 1. Write opencode.json + AGENTS.md, then GROUND the agent: mount the wedge's skills +
@@ -269,8 +269,8 @@ export async function runOpenCodeTask(
   try {
     await oc.waitReady(60000, ctx.shouldAbort);
   } catch (e) {
-    if (nonce) revokeGrant(nonce);
-    revokeActionGrant(actionNonce);
+    if (nonce) await revokeGrant(nonce);
+    await revokeActionGrant(actionNonce);
     const reason = String((e as Error)?.message ?? e);
     if (reason.startsWith("aborted:")) throw e;
     const log = (await sandbox.readFile("/tmp/opencode.log").catch(() => null)) ?? "";
@@ -374,8 +374,8 @@ export async function runOpenCodeTask(
     }
   } finally {
     if (abortWatch) clearInterval(abortWatch);
-    if (nonce) revokeGrant(nonce);
-    revokeActionGrant(actionNonce);
+    if (nonce) await revokeGrant(nonce);
+    await revokeActionGrant(actionNonce);
   }
 
   // 6. Prefer the streamed final text; fall back to an artifact the agent wrote.

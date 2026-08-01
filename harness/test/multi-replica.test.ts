@@ -40,7 +40,7 @@ test("multi-replica: an approval decided on instance B unblocks a run waiting on
     project_id: projectId, kind: "webhook", name: "sink",
     owner: { kind: "founder", id: "founder" }, config: { url: "http://127.0.0.1:1/" },
   });
-  const nonce = registerActionGrant({ task_id: "replica-task", connectionIds: [conn.id] });
+  const nonce = await registerActionGrant({ task_id: "replica-task", connectionIds: [conn.id] });
 
   // The run blocks on instance A.
   const blocked = a.request("/v1/internal/actions/send_webhook", {

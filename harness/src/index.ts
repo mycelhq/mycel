@@ -12,7 +12,7 @@ import { closeQueue, initQueue, startWorker } from "./queue";
 import { createServer } from "./server";
 import { createStore } from "./store";
 import { flushLogs } from "./tracing";
-import { sandboxPreflight } from "./sandbox";
+import { sandboxPreflight, sandboxReachability } from "./sandbox";
 
 const { store, backend } = await createStore();
 await initDomainStore(); // durable service surface when MYCEL_DATABASE_URL is set
@@ -27,6 +27,20 @@ const recovered = await recoverTasks(store);
 const app = createServer(store);
 const cfg = loadConfig();
 const port = Number(process.env.PORT ?? 4000);
+
+// Refuse to open the port at all if the sandbox could never call back to it.
+//
+// BEFORE `serve`, unlike the async preflight below, and that ordering is the whole point: the
+// moment this process binds 4000 it starts passing its ECS health check, and a green target that
+// fails every task is the failure mode this check exists to remove. The test is a string
+// comparison, so nothing is delayed by putting it first. (The SDK and snapshot checks stay after
+// the listener because a cold snapshot build takes minutes and would otherwise be killed by the
+// container health check before it finished.)
+const unreachable = sandboxReachability(cfg.sandboxBackend, cfg.publicUrl);
+if (unreachable) {
+  console.error(`\n  ✗ ${unreachable}\n    Refusing to start: every task would fail at its first callback.\n`);
+  process.exit(1);
+}
 
 const server = serve({ fetch: app.fetch, port });
 const queue = await initQueue();

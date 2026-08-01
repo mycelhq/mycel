@@ -44,13 +44,28 @@ export interface MycelConfig {
   opencodePort: number;
   /** Directory for per-task JSONL event logs (always on). */
   logsDir: string;
-  /** Langfuse tracing (opt-in). Present only when both keys are set. */
+  /**
+   * Langfuse tracing (opt-in). Present only when both keys are set.
+   *
+   * The operator's OWN sink — bring your own account and it points at your own org. Nothing here
+   * provisions a Langfuse project for anyone else: that path was removed because it needed an API
+   * that exists only on self-hosted Enterprise. Customer-facing traces come from `traces.ts`.
+   */
   langfuse?: LangfuseConfig;
   /** Shared secret the sandbox plugin presents to /v1/internal/gate. */
   gateToken: string;
   /** Founder API key required (Bearer) on the public /v1 surface. */
   apiKey: string;
-  /** URL the sandbox uses to reach this harness (localhost / host.docker.internal / public). */
+  /**
+   * URL the sandbox uses to reach this harness (localhost / host.docker.internal / public).
+   *
+   * Read it as "the address of this harness AS SEEN FROM INSIDE THE SANDBOX", not "the address of
+   * this harness". The default below is only correct when the sandbox shares a loopback interface
+   * with the harness — i.e. the `local` backend on a laptop. In a Daytona microVM, 127.0.0.1 is the
+   * microVM, so every callback the runtime injects (gate, actions, reads, case, workflows, gaps,
+   * records, and the LLM proxy in proxy mode) resolves to a port nothing is listening on.
+   * `sandboxReachability` in sandbox.ts refuses to boot on that combination.
+   */
   publicUrl: string;
   /** Proxy mode: route model calls through the harness so provider keys never enter the sandbox. */
   proxyMode: boolean;
@@ -101,6 +116,40 @@ export function loadConfig(): MycelConfig {
     maxRuntimeCeilingS: Number(process.env.MYCEL_MAX_RUNTIME_S ?? 1800),
     maxTokensCeiling: Number(process.env.MYCEL_MAX_TOKENS ?? 8192),
   };
+}
+
+/**
+ * Would a sandbox on a DIFFERENT machine reach this URL?
+ *
+ * Only false for the loopback family and the unroutable wildcard, plus anything that isn't a URL at
+ * all. Deliberately not a positive test ("is this a public https hostname"): a self-hosted install
+ * may legitimately point the sandbox at an internal DNS name, a Tailscale address, an ngrok tunnel,
+ * or `host.docker.internal`, and a whitelist would refuse every one of them. The only thing we can
+ * say with certainty is that an address meaning "this machine" is wrong when "this machine" is the
+ * sandbox rather than the harness.
+ *
+ * Blank counts as unreachable for the same reason `databaseUrl` treats it as absent: a secret store
+ * that hands back an empty string is a normal way to deploy a half-configured stack, and the empty
+ * string would otherwise sail past the `??` default and produce callback URLs like `/v1/internal/gate`.
+ */
+export function reachableFromOtherHosts(url: string): boolean {
+  const raw = (url ?? "").trim();
+  if (!raw) return false;
+  let host: string;
+  try {
+    host = new URL(raw).hostname.toLowerCase();
+  } catch {
+    return false;
+  }
+  // URL() keeps IPv6 literals in brackets; strip them so ::1 compares as itself.
+  const h = host.replace(/^\[|\]$/g, "");
+  if (h === "localhost" || h.endsWith(".localhost")) return false;
+  if (h === "::1" || h === "0:0:0:0:0:0:0:1") return false;
+  // 0.0.0.0 and :: mean "every interface here", which is never an address to dial.
+  if (h === "0.0.0.0" || h === "::") return false;
+  // The whole 127/8 block, not just 127.0.0.1 — 127.0.0.2 is just as local.
+  if (/^127\.\d{1,3}\.\d{1,3}\.\d{1,3}$/.test(h)) return false;
+  return true;
 }
 
 /**

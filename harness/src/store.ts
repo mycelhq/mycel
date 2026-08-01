@@ -293,3 +293,250 @@ export async function createStore(): Promise<{ store: Store; backend: string }> 
   }
   return { store: new InMemoryStore(), backend: "memory" };
 }
+
+// ───────────────────────────────────────────────────────────────────────────────
+// Grants — the nonce-keyed capability rows behind proxygrants.ts and actiongrants.ts.
+//
+// These were plain in-process `Map`s, and that was not a degradation under multiple replicas, it
+// was a break. `infra/main.tf` runs api_count = 2 and worker_count = 2, the queue hands a task to
+// whichever worker claims it, and the worker service is not in the ALB target group at all — so a
+// nonce minted inside a worker process is presented to an API replica that has never seen it. Every
+// surface that authenticates with one (the action proxy, the read proxy, the case/gap/records APIs,
+// workflows, and the LLM proxy) answered `401 invalid action token` for reasons no log explained.
+//
+// The store is deliberately dumb — an opaque jsonb payload under (kind, nonce) — so the two grant
+// modules keep their own shapes and their own encryption decisions. See proxygrants.ts, which seals
+// the provider key before it is ever handed here.
+// ───────────────────────────────────────────────────────────────────────────────
+
+/** Namespaces the nonce space. A proxy nonce must never resolve as an action grant. */
+export type GrantKind = "proxy" | "action";
+
+export interface GrantStore {
+  /**
+   * True when the payload leaves this process (i.e. is written to a database).
+   *
+   * Callers use it to decide whether a secret in the payload needs sealing. In memory the payload
+   * never leaves the heap that produced it, so sealing there would buy nothing and would force
+   * MYCEL_SECRET_KEY on every `npm run dev`.
+   */
+  readonly durable: boolean;
+  put(kind: GrantKind, nonce: string, payload: Record<string, unknown>, expiresAt: Date): Promise<void>;
+  /** The grant, or undefined if it is unknown OR expired. Expiry is part of the lookup. */
+  get(kind: GrantKind, nonce: string): Promise<Record<string, unknown> | undefined>;
+  del(kind: GrantKind, nonce: string): Promise<void>;
+  close?(): Promise<void>;
+}
+
+/**
+ * How long a grant may live if nothing revokes it.
+ *
+ * Revocation at the end of a run is the normal path; the TTL is the backstop for the run that died
+ * with the process holding it. Twice the runtime ceiling, so a grant can never expire out from
+ * under a run that is still legitimately inside its own budget, and never long enough that a
+ * leaked nonce is useful tomorrow.
+ */
+export function grantTtlMs(): number {
+  const ceilingS = Number(process.env.MYCEL_MAX_RUNTIME_S ?? 1800);
+  return Math.max(Number.isFinite(ceilingS) ? ceilingS : 1800, 600) * 2 * 1000;
+}
+
+/** How often a store bothers to sweep. Correctness never depends on this — see `get`. */
+const SWEEP_INTERVAL_MS = 60_000;
+
+export class InMemoryGrantStore implements GrantStore {
+  readonly durable = false;
+  private rows = new Map<string, { payload: Record<string, unknown>; expiresAt: number }>();
+  private lastSweep = 0;
+
+  private k(kind: GrantKind, nonce: string): string {
+    return `${kind} ${nonce}`;
+  }
+
+  async put(kind: GrantKind, nonce: string, payload: Record<string, unknown>, expiresAt: Date): Promise<void> {
+    this.sweep();
+    this.rows.set(this.k(kind, nonce), { payload, expiresAt: expiresAt.getTime() });
+  }
+
+  async get(kind: GrantKind, nonce: string): Promise<Record<string, unknown> | undefined> {
+    const key = this.k(kind, nonce);
+    const row = this.rows.get(key);
+    if (!row) return undefined;
+    // Expiry is checked on READ, not left to the sweeper. A grant that outlives its run because a
+    // timer was late is precisely the hole this is meant to close.
+    if (row.expiresAt <= Date.now()) {
+      this.rows.delete(key);
+      return undefined;
+    }
+    return row.payload;
+  }
+
+  async del(kind: GrantKind, nonce: string): Promise<void> {
+    this.rows.delete(this.k(kind, nonce));
+  }
+
+  /**
+   * Drop expired rows. Throttled and driven by writes rather than by a timer: a `setInterval` in a
+   * module like this keeps the event loop alive, which turns a clean test-process exit into a hang.
+   */
+  private sweep(): void {
+    const now = Date.now();
+    if (now - this.lastSweep < SWEEP_INTERVAL_MS) return;
+    this.lastSweep = now;
+    for (const [k, v] of this.rows) if (v.expiresAt <= now) this.rows.delete(k);
+  }
+
+  /** Test hook: forces a sweep regardless of the throttle, and reports how many rows remain. */
+  sweepNow(): number {
+    this.lastSweep = 0;
+    this.sweep();
+    return this.rows.size;
+  }
+}
+
+// The grant backend is a process-wide singleton resolved on first use, not at boot: `index.ts` owns
+// boot and this has to work identically inside a worker, inside an API replica, and inside a test
+// that never boots either.
+let grantStore: GrantStore | null = null;
+let grantStorePending: Promise<GrantStore> | null = null;
+
+export function getGrantStore(): Promise<GrantStore> {
+  if (grantStore) return Promise.resolve(grantStore);
+  const url = databaseUrl();
+  if (!url) {
+    grantStore = new InMemoryGrantStore();
+    return Promise.resolve(grantStore);
+  }
+  if (!grantStorePending) {
+    grantStorePending = import("./store.pg")
+      .then((m) => m.PostgresGrantStore.connect(url))
+      .then((s) => {
+        grantStore = s;
+        return s;
+      })
+      .catch((e) => {
+        // Do not memoize a rejection: a database that was briefly unreachable at first use would
+        // otherwise poison every grant for the lifetime of the process.
+        grantStorePending = null;
+        throw e;
+      });
+  }
+  return grantStorePending;
+}
+
+/** Test hook — drops the cached backend so a test can swap `MYCEL_DATABASE_URL` underneath it. */
+export function resetGrantStoreForTests(): void {
+  grantStore = null;
+  grantStorePending = null;
+}
+
+// ───────────────────────────────────────────────────────────────────────────────
+// Policy counters — the ceilings behind `max_per_task` / `max_per_day` in policy.ts.
+//
+// Also in-process `Map`s, and worse than the grants: this is a SECURITY control that failed OPEN.
+// With 2 API replicas and 2 workers each holding their own counter, a `max_per_day: 40` envelope
+// permitted roughly 160 auto-approved real-world actions per day. `perTask` was never evicted
+// either — one entry per (task, rule) for the lifetime of the process.
+// ───────────────────────────────────────────────────────────────────────────────
+
+/** `task` counters are keyed by task id, `day` counters by calendar day. Both expire. */
+export type PolicyScope = "task" | "day";
+
+export interface PolicyCounterStore {
+  /** Current value; 0 when absent or expired. Never consumes budget — used for the peek. */
+  peek(projectId: string, scope: PolicyScope, key: string): Promise<number>;
+  /**
+   * Atomic `n = n + 1`, returning the NEW value.
+   *
+   * The value must be computed from the row's own current value so that under READ COMMITTED the
+   * loser of the row lock re-evaluates against the winner's committed row. Never read-then-write.
+   */
+  bump(projectId: string, scope: PolicyScope, key: string, expiresAt: Date): Promise<number>;
+  close?(): Promise<void>;
+}
+
+export class InMemoryPolicyCounters implements PolicyCounterStore {
+  private rows = new Map<string, { n: number; expiresAt: number }>();
+  private lastSweep = 0;
+
+  private k(projectId: string, scope: PolicyScope, key: string): string {
+    return `${projectId} ${scope} ${key}`;
+  }
+
+  async peek(projectId: string, scope: PolicyScope, key: string): Promise<number> {
+    const row = this.rows.get(this.k(projectId, scope, key));
+    if (!row || row.expiresAt <= Date.now()) return 0;
+    return row.n;
+  }
+
+  async bump(projectId: string, scope: PolicyScope, key: string, expiresAt: Date): Promise<number> {
+    this.sweep();
+    const k = this.k(projectId, scope, key);
+    const row = this.rows.get(k);
+    // An expired row is a fresh window, not a continuation — same rule the SQL uses.
+    const n = !row || row.expiresAt <= Date.now() ? 1 : row.n + 1;
+    this.rows.set(k, { n, expiresAt: !row || row.expiresAt <= Date.now() ? expiresAt.getTime() : row.expiresAt });
+    return n;
+  }
+
+  private sweep(): void {
+    const now = Date.now();
+    if (now - this.lastSweep < SWEEP_INTERVAL_MS) return;
+    this.lastSweep = now;
+    for (const [k, v] of this.rows) if (v.expiresAt <= now) this.rows.delete(k);
+  }
+
+  /** Test hook: forces a sweep regardless of the throttle, and reports how many rows remain. */
+  sweepNow(): number {
+    this.lastSweep = 0;
+    this.sweep();
+    return this.rows.size;
+  }
+
+  clear(): void {
+    this.rows.clear();
+    this.lastSweep = 0;
+  }
+}
+
+let policyCounters: PolicyCounterStore | null = null;
+let policyCountersPending: Promise<PolicyCounterStore> | null = null;
+
+export function getPolicyCounters(): Promise<PolicyCounterStore> {
+  if (policyCounters) return Promise.resolve(policyCounters);
+  const url = databaseUrl();
+  if (!url) {
+    policyCounters = new InMemoryPolicyCounters();
+    return Promise.resolve(policyCounters);
+  }
+  if (!policyCountersPending) {
+    policyCountersPending = import("./store.pg")
+      .then((m) => m.PostgresPolicyCounters.connect(url))
+      .then((s) => {
+        policyCounters = s;
+        return s;
+      })
+      .catch((e) => {
+        policyCountersPending = null;
+        throw e;
+      });
+  }
+  return policyCountersPending;
+}
+
+/**
+ * Test hook — clears the IN-MEMORY counters, synchronously.
+ *
+ * Deliberately a no-op against Postgres. `resetPolicyCounters()` is called by tests that do not
+ * await it, and more importantly a shared database is not something a test may truncate: a live-pg
+ * test scopes itself with a unique project/task id instead (see `freshProjectId` in test/helpers).
+ */
+export function resetInMemoryPolicyCounters(): void {
+  if (policyCounters instanceof InMemoryPolicyCounters) policyCounters.clear();
+}
+
+/** Test hook — drops the cached backend so a test can swap `MYCEL_DATABASE_URL` underneath it. */
+export function resetPolicyCounterStoreForTests(): void {
+  policyCounters = null;
+  policyCountersPending = null;
+}

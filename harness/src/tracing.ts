@@ -1,13 +1,22 @@
 // Observability. Every task and every contract event is traced. Two sinks:
 //   - LocalLog (always on): one JSONL file per task under MYCEL_LOG_DIR.
-//   - Langfuse (opt-in): full trace + timeline per task, self-hosted or cloud.
-// Langfuse is dynamically imported so the harness has no hard dependency on it —
-// `npm i langfuse` and set the keys to turn it on.
+//   - Langfuse (opt-in): an OPERATOR'S OWN sink, not a product feature. Dynamically imported and
+//     inert unless LANGFUSE_SECRET_KEY + LANGFUSE_PUBLIC_KEY are set, so `npm i langfuse` plus your
+//     own keys points every trace at your own Langfuse org. Nobody is provisioned one by us.
+//
+// READ THIS BEFORE RE-ADDING PER-PROJECT PROVISIONING. There used to be a `langfuse.provision.ts`
+// that created a Langfuse project per Mycel project and minted per-project keys, so each business
+// got its own isolated tracing. It called Langfuse's Organization Management API, which does not
+// exist on Langfuse Cloud on any plan — self-hosted Enterprise only. It could never have worked
+// against the deployment it was written for, and it is gone.
+//
+// What replaced it for CUSTOMERS is `traces.ts`: the durable event log, folded into a span tree and
+// served at `GET /v1/tasks/:id/trace` under the same scope check as the task. That is the tenant-safe
+// trace view. Langfuse below is for whoever runs this kernel debugging their own agent, nothing more.
 import { mkdirSync } from "node:fs";
 import { appendFile } from "node:fs/promises";
 import { join } from "node:path";
 import { loadConfig, type LangfuseConfig } from "./config";
-import { keysForProject, perProjectTracing } from "./langfuse.provision";
 import type { Task, TaskEvent } from "./contract";
 
 // Non-blocking JSONL appends, serialized per file so lines never interleave and the event loop is
@@ -79,16 +88,14 @@ class LangfuseObserver implements Observer {
   }
 
   onTaskStart(task: Task): void {
-    // `project_id` is the tenancy key, and it has to be here.
+    // Everything goes to ONE Langfuse project — the operator's own. There is no per-tenant project
+    // to route to (see the header), so tags are the only segmentation there is: without project_id
+    // a multi-tenant operator's traces are indistinguishable except by raw task id.
     //
-    // The cloud design is deliberately ONE Langfuse project with traces tagged per tenant, because
-    // creating a Langfuse project per customer needs the Instance Management API, which is
-    // Enterprise Edition. That design only works if there is something to filter on — without
-    // project_id, every tenant's traces are indistinguishable except by raw task id, and the
-    // "segmented by tags" plan has no segment.
-    //
-    // Tags as well as metadata: Langfuse can filter a trace list by tag, so these are what make a
-    // per-project view possible at all, rather than just visible once you already found the trace.
+    // Tags as well as metadata, because Langfuse can filter a trace list by tag — that is what makes
+    // a per-project view possible at all, rather than just visible once you already found the trace.
+    // Note this is an operator convenience, NOT a tenancy boundary; the boundary is the scope check
+    // on `GET /v1/tasks/:id/trace`, and nothing customer-facing reads from here.
     const tags = [
       `project:${task.project_id ?? "none"}`,
       `wedge:${task.wedge}`,
@@ -173,74 +180,25 @@ let llmDirReady = false;
 let cached: Observer | null = null;
 
 /**
- * Whether Langfuse is off, wired up, or configured-but-broken.
+ * The process-wide observer.
  *
- * The third state is the dangerous one and used to be invisible: the `langfuse` package is an
- * optional peer installed by the setup script only if you opt in, so setting the keys later gives you
- * a single `console.warn` at boot and no traces — while any UI that keys off "are the keys set?"
- * cheerfully shows a traces link pointing at an empty dashboard. Reported so the UI can tell the
- * difference instead of guessing.
+ * One observer for the whole kernel, not one per project. The per-project variant existed only to
+ * hold per-project Langfuse keys, and those came from provisioning that cannot work (see the header).
+ * Tenancy on traces is enforced on the READ side — `GET /v1/tasks/:id/trace` takes the same scope
+ * check as the task itself — which is where it belonged all along.
  */
-export type TracingState = "off" | "active" | "unavailable";
-let tracingState: TracingState = "off";
-export function langfuseState(): TracingState {
-  return tracingState;
-}
-
 export async function getObserver(): Promise<Observer> {
   if (cached) return cached;
   const cfg = loadConfig();
   const observers: Observer[] = [new LocalLogObserver(cfg.logsDir)];
   if (cfg.langfuse) {
     const lf = await LangfuseObserver.create(cfg.langfuse);
+    // Null means the optional `langfuse` package isn't installed; it has already warned. A missing
+    // debugging sink must never fail a customer's run, so we carry on with the local log.
     if (lf) observers.push(lf);
-    tracingState = lf ? "active" : "unavailable";
-  } else if (perProjectTracing()) {
-    // Per-project tracing needs no shared keys, so `cfg.langfuse` is legitimately absent here.
-    tracingState = "active";
   }
   cached = new MultiObserver(observers);
   return cached;
-}
-
-/**
- * The observer for one tenant.
- *
- * Traces contain a founder's customers' data, so each project writes to its OWN Langfuse project
- * rather than to a shared one filtered by tag. A tag is a promise about our query construction; a
- * separate project is a boundary — the founder's key reads their traces and nothing else, which is
- * the posture the rest of the kernel already takes.
- *
- * Cached per project because building a client per run would open a connection pool per task.
- * Falls back to the shared observer when per-project tracing isn't configured, which is what a
- * self-hosted single-tenant install wants: one founder, one project, no indirection.
- */
-const perProject = new Map<string, Observer>();
-
-export async function getObserverFor(projectId?: string, displayName?: string): Promise<Observer> {
-  if (!projectId || !perProjectTracing()) return getObserver();
-  const hit = perProject.get(projectId);
-  if (hit) return hit;
-
-  const cfg = loadConfig();
-  const observers: Observer[] = [new LocalLogObserver(cfg.logsDir)];
-  const keys = await keysForProject(projectId, displayName ?? "Mycel");
-  if (keys) {
-    const lf = await LangfuseObserver.create({
-      publicKey: keys.publicKey,
-      secretKey: keys.secretKey,
-      baseUrl: process.env.LANGFUSE_HOST ?? "https://cloud.langfuse.com",
-    });
-    if (lf) observers.push(lf);
-    tracingState = lf ? "active" : "unavailable";
-  } else {
-    // Provisioning failed or Langfuse is down. The run still happens and still writes its durable
-    // local log — losing a trace is never worth failing a customer's work.
-    tracingState = "unavailable";
-  }
-  const built = new MultiObserver(observers);
-  perProject.set(projectId, built);
-  return built;
 }
 
 // ── test seams ──

@@ -60,7 +60,7 @@ test("reads are ungated: no approval, data returned, secret resolved server-side
     project_id: "p", kind: "custom", name: "bank", owner: { kind: "founder", id: "founder" },
     config: { api_url: `http://127.0.0.1:${port}` }, secret_ref: "env:READ_SECRET",
   });
-  const nonce = registerActionGrant({ task_id: "rt1", connectionIds: [conn.id] });
+  const nonce = await registerActionGrant({ task_id: "rt1", connectionIds: [conn.id] });
 
   const res = await app.request("/v1/internal/reads/list_transactions", {
     method: "POST",
@@ -95,7 +95,7 @@ test("reads stay scoped: bad nonce, ungranted connection, and host escape are al
     project_id: "p", kind: "custom", name: "not-granted", owner: { kind: "founder", id: "founder" },
     config: { api_url: "http://127.0.0.1:1" },
   });
-  const nonce = registerActionGrant({ task_id: "rt1", connectionIds: [granted.id] });
+  const nonce = await registerActionGrant({ task_id: "rt1", connectionIds: [granted.id] });
   const H = { authorization: `Bearer ${nonce}`, "content-type": "application/json" };
 
   const bad = await app.request("/v1/internal/reads/x", { method: "POST", headers: { authorization: "Bearer nope" }, body: "{}" });
@@ -121,7 +121,7 @@ test("reads are size-capped so a huge response can't blow up the run", async () 
     project_id: "p", kind: "custom", name: "big", owner: { kind: "founder", id: "founder" },
     config: { api_url: `http://127.0.0.1:${port}` },
   });
-  const nonce = registerActionGrant({ task_id: "rt1", connectionIds: [conn.id] });
+  const nonce = await registerActionGrant({ task_id: "rt1", connectionIds: [conn.id] });
 
   const res = await app.request("/v1/internal/reads/fetch", {
     method: "POST",

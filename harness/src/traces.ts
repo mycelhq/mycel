@@ -1,8 +1,9 @@
 // Run tracing, read out of the event log we already write.
 //
-// This replaces Langfuse. Not because Langfuse is bad, but because its Organization Management API
-// (the thing that would have let a founder's project get its own trace project) is not available on
-// Langfuse Cloud at all — self-hosted Enterprise only. Meanwhile every fact a trace view needs is
+// This replaces per-project Langfuse tracing. Not because Langfuse is bad — it is still available as
+// an operator's own opt-in sink in tracing.ts — but because its Organization Management API (the
+// thing that would have let a founder's project get its own trace project) is not available on
+// Langfuse Cloud at all, self-hosted Enterprise only. Meanwhile every fact a trace view needs is
 // already in the `events` table: what ran, in what order, with what arguments, what it cost. The
 // gap was never the recording. It was that nothing read it back.
 //

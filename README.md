@@ -71,7 +71,8 @@ correction becomes a grounding example. The wedge gets better from being used, n
 logins. A project key sees only its data; a member sees their org. Proven with isolation tests.
 
 **Any model, fully traced.** Route any LLM through the proxy (OpenAI-compatible directly, others via
-LiteLLM). Keys stay server-side; model + token budget pinned per task; every call logged to Langfuse.
+LiteLLM). Keys stay server-side; model + token budget pinned per task; every call logged to the
+kernel's own durable event log, and readable back as a span tree at `GET /v1/tasks/:id/trace`.
 
 **The frontend is generated, not imported.** No `@mycel/react` to install. A **skill** teaches your
 coding agent to generate a brand-fitting workspace UI against the event contract. The hard artifact
@@ -95,7 +96,7 @@ Interface ─► your API (proxy + auth) ─► Sandboxed agent (grounded by the
 ```
 
 Contract: `POST /v1/tasks` → SSE events → approvals → artifacts. **Same surface, local or cloud** —
-only the backends (sandbox, Postgres, S3, Langfuse) change.
+only the backends (sandbox, Postgres, S3) change.
 
 ## The `/v1` contract (server-to-server)
 
@@ -125,7 +126,7 @@ Consuming it (topology, proxy routes, SSE) and the honest security limitations a
 | `MYCEL_DATABASE_URL` | — | Postgres for **everything** (tasks, service surface, tenants); falls back to in-memory |
 | `MYCEL_PROXY_MODE` | `0` | route model calls through the harness (keys never in the sandbox) |
 | `MYCEL_ARTIFACTS` | inline | `inline` \| `fs:<dir>` \| `s3://…` |
-| `LANGFUSE_*` | — | opt-in tracing |
+| `LANGFUSE_*` | — | optional, bring-your-own Langfuse for your own LLM debugging. Traces are always available at `GET /v1/tasks/:id/trace` without it; nothing is provisioned for you |
 
 ## Try it with no keys
 

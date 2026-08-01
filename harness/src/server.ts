@@ -92,8 +92,7 @@ import {
   revokeClientSessions,
   type ClientScope,
 } from "./portal";
-import { langfuseState, traceLlmCall } from "./tracing";
-import { perProjectTracing, traceUrlFor } from "./langfuse.provision";
+import { traceLlmCall } from "./tracing";
 import { loadWedge, wedgesDir } from "./wedge";
 import { runWorkflow } from "./workflows";
 
@@ -773,22 +772,9 @@ export function createServer(store: Store): Hono {
     });
   });
 
-  /**
-   * Where this business's traces live.
-   *
-   * Returns null until the project has actually run something, because provisioning is lazy — and
-   * a link to a Langfuse project that doesn't exist yet is the empty-dashboard failure the tracing
-   * state was added to prevent.
-   */
-  app.get("/v1/projects/:id/tracing", async (c) => {
-    const p = identity.getProject(c.req.param("id") ?? "");
-    if (!p || !inScope(accessible(c), p.id)) return c.json({ error: "not found" }, 404);
-    return c.json({
-      per_project: perProjectTracing(),
-      state: langfuseState(),
-      url: (await traceUrlFor(p.id)) ?? null,
-    });
-  });
+  // `GET /v1/projects/:id/tracing` used to report which Langfuse project a business's traces went
+  // to. There is no external trace store any more: a run's trace is read back from our own event log
+  // at `GET /v1/tasks/:id/trace`, per task, under the same scope check as the task itself.
 
   /** Where this business's portal lives, and the state of any custom domain. Members only. */
   app.get("/v1/projects/:id/domain", async (c) => {
@@ -1385,14 +1371,10 @@ export function createServer(store: Store): Hono {
     return c.json({
       version: "v0.1",
       wedges,
-      langfuse_url: cfg.langfuse?.baseUrl ?? null,
-      // True when each business gets its OWN Langfuse project rather than a filtered view of a
-      // shared one. The difference matters: a filter is a promise about our query construction,
-      // a separate project is a boundary.
-      tracing_per_project: perProjectTracing(),
-      // "configured" is not "working" — see langfuseState(). A UI that links to traces should check
-      // this, not the url, or it sends people to an empty dashboard.
-      tracing: langfuseState(),
+      // No `langfuse_url` / `tracing` state any more. Tracing was an optional external sink that
+      // could be configured-but-broken, so a UI had to ask whether it was working before linking to
+      // it. It isn't optional now: every run's trace is folded from the event log the kernel always
+      // writes, at `GET /v1/tasks/:id/trace`, so a client can just ask for it.
       store: databaseUrl() ? "postgres" : "memory",
       sandbox: cfg.sandboxBackend,
     });
@@ -1767,7 +1749,7 @@ export function createServer(store: Store): Hono {
   const ALLOWED_LLM_PATHS = new Set(["chat/completions", "completions", "embeddings", "responses"]);
   app.post("/v1/internal/llm/:path{.+}", async (c) => {
     const nonce = (c.req.header("authorization") ?? "").replace(/^Bearer\s+/i, "");
-    const grant = getGrant(nonce);
+    const grant = await getGrant(nonce);
     if (!grant) return c.json({ error: "invalid proxy token" }, 401);
     const path = c.req.param("path");
     if (!ALLOWED_LLM_PATHS.has(path)) return c.json({ error: `path not allowed: ${path}` }, 403);
@@ -2678,13 +2660,13 @@ export function createServer(store: Store): Hono {
    * `?meta=1` returns the list without content, which is what a first look wants.
    */
   app.get("/v1/internal/artifacts", async (c) => {
-    const grant = getActionGrant((c.req.header("authorization") ?? "").replace(/^Bearer\s+/i, ""));
+    const grant = await getActionGrant((c.req.header("authorization") ?? "").replace(/^Bearer\s+/i, ""));
     if (!grant) return c.json({ ok: false, error: "invalid action token" }, 401);
     return c.json({ ok: true, artifacts: await store.listArtifacts(grant.task_id) });
   });
 
   app.get("/v1/internal/artifacts/:id", async (c) => {
-    const grant = getActionGrant((c.req.header("authorization") ?? "").replace(/^Bearer\s+/i, ""));
+    const grant = await getActionGrant((c.req.header("authorization") ?? "").replace(/^Bearer\s+/i, ""));
     if (!grant) return c.json({ ok: false, error: "invalid action token" }, 401);
     const a = await store.getArtifact(c.req.param("id"));
     if (!a || a.task_id !== grant.task_id) return c.json({ ok: false, error: "not found" }, 404);
@@ -2701,7 +2683,7 @@ export function createServer(store: Store): Hono {
   });
 
   app.post("/v1/internal/records/upsert", async (c) => {
-    const grant = getActionGrant((c.req.header("authorization") ?? "").replace(/^Bearer\s+/i, ""));
+    const grant = await getActionGrant((c.req.header("authorization") ?? "").replace(/^Bearer\s+/i, ""));
     if (!grant) return c.json({ ok: false, error: "invalid action token" }, 401);
     const task = await store.getTask(grant.task_id);
     if (!task) return c.json({ ok: false, error: "unknown task" }, 404);
@@ -2728,7 +2710,7 @@ export function createServer(store: Store): Hono {
   });
 
   app.post("/v1/internal/records/query", async (c) => {
-    const grant = getActionGrant((c.req.header("authorization") ?? "").replace(/^Bearer\s+/i, ""));
+    const grant = await getActionGrant((c.req.header("authorization") ?? "").replace(/^Bearer\s+/i, ""));
     if (!grant) return c.json({ ok: false, error: "invalid action token" }, 401);
     const task = await store.getTask(grant.task_id);
     if (!task) return c.json({ ok: false, error: "unknown task" }, 404);
@@ -2884,7 +2866,7 @@ export function createServer(store: Store): Hono {
   // Internal: the agent reads and advances ITS OWN case. Not an outward action (no real-world side
   // effect), so it isn't gated — but it is scoped to this run's case and traced onto the timeline.
   app.get("/v1/internal/case", async (c) => {
-    const grant = getActionGrant((c.req.header("authorization") ?? "").replace(/^Bearer\s+/i, ""));
+    const grant = await getActionGrant((c.req.header("authorization") ?? "").replace(/^Bearer\s+/i, ""));
     if (!grant) return c.json({ ok: false, error: "invalid action token" }, 401);
     if (!grant.caseId) return c.json({ ok: false, error: "this task is not part of a case" }, 404);
     const kase = await domain.getCase(grant.caseId);
@@ -2893,7 +2875,7 @@ export function createServer(store: Store): Hono {
   });
 
   app.post("/v1/internal/case/update", async (c) => {
-    const grant = getActionGrant((c.req.header("authorization") ?? "").replace(/^Bearer\s+/i, ""));
+    const grant = await getActionGrant((c.req.header("authorization") ?? "").replace(/^Bearer\s+/i, ""));
     if (!grant) return c.json({ ok: false, error: "invalid action token" }, 401);
     if (!grant.caseId) return c.json({ ok: false, error: "this task is not part of a case" }, 404);
     const kase = await domain.getCase(grant.caseId);
@@ -3111,7 +3093,7 @@ export function createServer(store: Store): Hono {
   // silent guess is the failure mode this whole system exists to remove.
   app.post("/v1/internal/knowledge/gap", async (c) => {
     const nonce = (c.req.header("authorization") ?? "").replace(/^Bearer\s+/i, "");
-    const grant = getActionGrant(nonce);
+    const grant = await getActionGrant(nonce);
     if (!grant) return c.json({ ok: false, error: "invalid action token" }, 401);
     const b = (await c.req.json().catch(() => ({}))) as { question?: string; fallback?: string };
     const question = typeof b.question === "string" ? b.question.trim() : "";
@@ -3413,7 +3395,7 @@ export function createServer(store: Store): Hono {
   // args — it cannot define or edit the code. Pure computation, so no approval gate; traced like a
   // tool call so the founder sees which computation ran on what inputs.
   app.post("/v1/internal/workflows/:name", async (c) => {
-    const grant = getActionGrant((c.req.header("authorization") ?? "").replace(/^Bearer\s+/i, ""));
+    const grant = await getActionGrant((c.req.header("authorization") ?? "").replace(/^Bearer\s+/i, ""));
     if (!grant) return c.json({ ok: false, error: "invalid action token" }, 401);
     const task = await store.getTask(grant.task_id);
     if (!task) return c.json({ ok: false, error: "unknown task" }, 404);
@@ -3438,7 +3420,7 @@ export function createServer(store: Store): Hono {
   // task timeline so the founder can see exactly what data was pulled.
   app.post("/v1/internal/reads/:capability", async (c) => {
     const nonce = (c.req.header("authorization") ?? "").replace(/^Bearer\s+/i, "");
-    const grant = getActionGrant(nonce);
+    const grant = await getActionGrant(nonce);
     if (!grant) return c.json({ ok: false, error: "invalid action token" }, 401);
     const capability = c.req.param("capability");
     const params = (await c.req.json().catch(() => ({}))) as Record<string, unknown>;
@@ -3490,7 +3472,7 @@ export function createServer(store: Store): Hono {
   // traces it. Connection secrets never enter the sandbox; every action passes a human.
   app.post("/v1/internal/actions/:capability", async (c) => {
     const nonce = (c.req.header("authorization") ?? "").replace(/^Bearer\s+/i, "");
-    const grant = getActionGrant(nonce);
+    const grant = await getActionGrant(nonce);
     if (!grant) return c.json({ ok: false, error: "invalid action token" }, 401);
     const capability = c.req.param("capability");
     const payload = (await c.req.json().catch(() => ({}))) as Record<string, unknown>;

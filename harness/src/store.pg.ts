@@ -15,7 +15,7 @@ import type {
   TaskStatus,
 } from "./contract";
 import { sizeOf, stripContent } from "./store";
-import type { NewArtifact, Store } from "./store";
+import type { GrantKind, GrantStore, NewArtifact, PolicyCounterStore, PolicyScope, Store } from "./store";
 
 const { Pool } = pg;
 
@@ -436,5 +436,175 @@ export class PostgresStore implements Store {
     // No-op: the pool is shared process-wide. See pool.ts — the first store to end
     // it would close the connections every other store is still using. Shutdown calls
     // closeAllPools() once.
+  }
+}
+
+/**
+ * Grants, in Postgres, so a nonce minted by a worker validates on an API replica.
+ *
+ * The row is short-lived by construction: `expires_at` is set at mint time and is part of every
+ * lookup's WHERE clause, so an expired grant is refused by the QUERY. The sweep below only reclaims
+ * space — if it never ran, nothing would authorise that should not. The other way round (a sweeper
+ * that must be on time for the security property to hold) is the bug this design avoids.
+ */
+export class PostgresGrantStore implements GrantStore {
+  readonly durable = true;
+  private lastSweep = 0;
+
+  private constructor(private pool: pg.Pool) {}
+
+  static async connect(url: string): Promise<PostgresGrantStore> {
+    const pool = getPool(url);
+    const self = new PostgresGrantStore(pool);
+    await self.init();
+    return self;
+  }
+
+  private async init(): Promise<void> {
+    // Same reason as every other init here: four kernels boot together on a deploy and
+    // `CREATE TABLE IF NOT EXISTS` is not concurrency-safe. See schema-lock.ts.
+    await withSchemaLock(this.pool, async (client) => {
+      await client.query(`
+        CREATE TABLE IF NOT EXISTS grants (
+          kind text NOT NULL,
+          nonce text NOT NULL,
+          payload jsonb NOT NULL DEFAULT '{}',
+          expires_at timestamptz NOT NULL,
+          created_at timestamptz NOT NULL DEFAULT now(),
+          PRIMARY KEY (kind, nonce)
+        );
+      `);
+      // The lookup is the hot path — every model call in proxy mode presents a grant — so it must
+      // be an index probe on the primary key and nothing else. (kind, nonce) is the PK, both are
+      // supplied, so this is a single unique-index lookup, not a scan with a filter.
+      await client.query(`ALTER TABLE grants ADD COLUMN IF NOT EXISTS created_at timestamptz NOT NULL DEFAULT now();`);
+      // Only for the sweep. Nothing on the hot path uses it.
+      await client.query(`CREATE INDEX IF NOT EXISTS grants_expiry_idx ON grants (expires_at);`);
+    });
+  }
+
+  async put(kind: GrantKind, nonce: string, payload: Record<string, unknown>, expiresAt: Date): Promise<void> {
+    await this.pool.query(
+      `INSERT INTO grants (kind, nonce, payload, expires_at) VALUES ($1,$2,$3,$4)
+       ON CONFLICT (kind, nonce) DO UPDATE SET payload=EXCLUDED.payload, expires_at=EXCLUDED.expires_at`,
+      [kind, nonce, JSON.stringify(payload), expiresAt.toISOString()],
+    );
+    void this.maybeSweep();
+  }
+
+  async get(kind: GrantKind, nonce: string): Promise<Record<string, unknown> | undefined> {
+    // `expires_at > now()` is in the query, not in JavaScript, and not delegated to the sweeper:
+    // the clock that decides whether a capability is still live is the database's, shared by every
+    // replica, and it is consulted on the same round trip that fetches the row.
+    const r = await this.pool.query(
+      `SELECT payload FROM grants WHERE kind=$1 AND nonce=$2 AND expires_at > now()`,
+      [kind, nonce],
+    );
+    return r.rows[0]?.payload ?? undefined;
+  }
+
+  async del(kind: GrantKind, nonce: string): Promise<void> {
+    await this.pool.query(`DELETE FROM grants WHERE kind=$1 AND nonce=$2`, [kind, nonce]);
+  }
+
+  /**
+   * Reclaim expired rows. Throttled per process, fired off a write, and its failure is ignored —
+   * it is housekeeping, not enforcement. No `setInterval`: a timer in a module every test imports
+   * keeps the event loop alive and turns a passing suite into one that never exits.
+   */
+  private async maybeSweep(): Promise<void> {
+    const now = Date.now();
+    if (now - this.lastSweep < 60_000) return;
+    this.lastSweep = now;
+    await this.pool.query(`DELETE FROM grants WHERE expires_at <= now() - interval '1 hour'`).catch(() => {});
+  }
+
+  async close(): Promise<void> {
+    // No-op — the pool is shared. See pool.ts.
+  }
+}
+
+/**
+ * Policy counters, in Postgres, incremented atomically.
+ *
+ * The ceiling is the point. Two API replicas and two workers each counting to 40 in their own heap
+ * is a `max_per_day: 40` envelope that permits 160 — a security control that fails open by four
+ * times, silently, and only in production.
+ */
+export class PostgresPolicyCounters implements PolicyCounterStore {
+  private lastSweep = 0;
+
+  private constructor(private pool: pg.Pool) {}
+
+  static async connect(url: string): Promise<PostgresPolicyCounters> {
+    const pool = getPool(url);
+    const self = new PostgresPolicyCounters(pool);
+    await self.init();
+    return self;
+  }
+
+  private async init(): Promise<void> {
+    await withSchemaLock(this.pool, async (client) => {
+      await client.query(`
+        CREATE TABLE IF NOT EXISTS policy_counters (
+          project_id text NOT NULL,
+          scope text NOT NULL,
+          key text NOT NULL,
+          n int NOT NULL DEFAULT 0,
+          expires_at timestamptz NOT NULL,
+          created_at timestamptz NOT NULL DEFAULT now(),
+          PRIMARY KEY (project_id, scope, key)
+        );
+      `);
+      await client.query(`ALTER TABLE policy_counters ADD COLUMN IF NOT EXISTS created_at timestamptz NOT NULL DEFAULT now();`);
+      await client.query(`CREATE INDEX IF NOT EXISTS policy_counters_expiry_idx ON policy_counters (expires_at);`);
+    });
+  }
+
+  async peek(projectId: string, scope: PolicyScope, key: string): Promise<number> {
+    // `project_id` is NOT NULL and carries a "-" sentinel for "no project" rather than a NULL,
+    // because tenant scoping in this codebase fails CLOSED: `project_id=$1` never matches NULL, so
+    // an unscoped counter stored as NULL would read as zero forever and the ceiling would vanish.
+    const r = await this.pool.query(
+      `SELECT n FROM policy_counters WHERE project_id=$1 AND scope=$2 AND key=$3 AND expires_at > now()`,
+      [projectId, scope, key],
+    );
+    return r.rows[0]?.n ?? 0;
+  }
+
+  async bump(projectId: string, scope: PolicyScope, key: string, expiresAt: Date): Promise<number> {
+    // One statement, and every written value is computed from the row's OWN current value
+    // (`policy_counters.n + 1`) — the rule `bumpPacing` in domain.pg.ts establishes. `ON CONFLICT
+    // DO UPDATE` takes the row lock and, under READ COMMITTED, re-reads the winner's committed row
+    // before evaluating the SET, so two replicas incrementing at the same instant produce n and
+    // n+1. A SELECT followed by an UPDATE would lose one of them.
+    const r = await this.pool.query(
+      `INSERT INTO policy_counters (project_id, scope, key, n, expires_at)
+       VALUES ($1,$2,$3,1,$4)
+       ON CONFLICT (project_id, scope, key) DO UPDATE SET
+         -- An expired row is a new window, not a continuation: reset to 1 and re-stamp the expiry.
+         n = CASE WHEN policy_counters.expires_at <= now() THEN 1 ELSE policy_counters.n + 1 END,
+         expires_at = CASE WHEN policy_counters.expires_at <= now() THEN EXCLUDED.expires_at
+                           ELSE policy_counters.expires_at END
+       RETURNING n`,
+      [projectId, scope, key, expiresAt.toISOString()],
+    );
+    void this.maybeSweep();
+    return r.rows[0].n;
+  }
+
+  private async maybeSweep(): Promise<void> {
+    const now = Date.now();
+    if (now - this.lastSweep < 60_000) return;
+    this.lastSweep = now;
+    // A day behind the expiry, so a counter is never reclaimed while anything could still be
+    // reasoning about it. Housekeeping only — `peek`/`bump` already ignore expired rows.
+    await this.pool
+      .query(`DELETE FROM policy_counters WHERE expires_at <= now() - interval '1 day'`)
+      .catch(() => {});
+  }
+
+  async close(): Promise<void> {
+    // No-op — the pool is shared. See pool.ts.
   }
 }

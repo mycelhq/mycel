@@ -127,7 +127,7 @@ test("intake: the agent reports what it didn't know, and it lands in the founder
     created_at: now,
     updated_at: now,
   } as never);
-  const nonce = registerActionGrant({ task_id: "intake-task-1", connectionIds: [] });
+  const nonce = await registerActionGrant({ task_id: "intake-task-1", connectionIds: [] });
 
   const report = (question: string, fallback?: string) =>
     api(app, "internal/knowledge/gap", {
@@ -196,7 +196,7 @@ test("intake: a gap can be dismissed when it isn't worth answering", async () =>
     created_at: now,
     updated_at: now,
   } as never);
-  const nonce = registerActionGrant({ task_id: "intake-task-2", connectionIds: [] });
+  const nonce = await registerActionGrant({ task_id: "intake-task-2", connectionIds: [] });
   const r = await api(app, "internal/knowledge/gap", {
     method: "POST",
     headers: { authorization: `Bearer ${nonce}` },

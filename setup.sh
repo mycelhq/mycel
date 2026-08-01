@@ -100,15 +100,11 @@ case "$PROVIDER" in
 esac
 PKEY="$(asksecret "  ${PKEY_VAR} for ${MODEL}")"
 
-# ── optional Langfuse tracing ───────────────────────────────────────────────
-say ""
-LF_SECRET=""; LF_PUBLIC=""; LF_HOST=""
-if yesno "${B}Enable Langfuse tracing?${N} ${D}(open-source observability; self-host or cloud)${N}" "n"; then
-  LF_HOST="$(ask "  Langfuse host" "https://cloud.langfuse.com")"
-  LF_PUBLIC="$(ask "  LANGFUSE_PUBLIC_KEY" "")"
-  LF_SECRET="$(asksecret "  LANGFUSE_SECRET_KEY")"
-  say "    ${D}self-host: docker compose up at github.com/langfuse/langfuse${N}"
-fi
+# No tracing prompt. Every run's trace is served from the kernel's own event log at
+# GET /v1/tasks/:id/trace — nothing to configure, so nothing to ask. Anyone who wants Langfuse on top
+# for their own LLM debugging sets LANGFUSE_PUBLIC_KEY / LANGFUSE_SECRET_KEY themselves and runs
+# `npm install langfuse`; see .env.example. It was a prompt here when it looked like a product
+# feature, which it is not.
 
 # ── write .env ──────────────────────────────────────────────────────────────
 ENV_FILE="$HERE/.env"
@@ -121,7 +117,6 @@ if [ -f "$ENV_FILE" ]; then cp "$ENV_FILE" "$ENV_FILE.bak"; warn "backed up exis
   echo "$PKEY_VAR=$PKEY"
   [ -n "$DAYTONA_KEY" ] && echo "DAYTONA_API_KEY=$DAYTONA_KEY"
   echo "MYCEL_LOG_DIR=.mycel/logs"
-  [ -n "$LF_SECRET" ] && { echo "LANGFUSE_SECRET_KEY=$LF_SECRET"; echo "LANGFUSE_PUBLIC_KEY=$LF_PUBLIC"; echo "LANGFUSE_HOST=$LF_HOST"; }
   echo "PORT=4000"
 } > "$ENV_FILE"
 ok "wrote .env"
@@ -130,7 +125,6 @@ ok "wrote .env"
 say ""
 say "${B}Installing dependencies${N}"
 ( cd "$HERE" && npm install >/dev/null 2>&1 ) && ok "npm install done" || warn "npm install had issues — run it manually"
-[ -n "$LF_SECRET" ] && ( cd "$HERE" && npm install langfuse >/dev/null 2>&1 ) && ok "langfuse installed" || true
 
 # ── done ────────────────────────────────────────────────────────────────────
 say ""

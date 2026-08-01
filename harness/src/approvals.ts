@@ -83,7 +83,7 @@ export async function awaitApproval(
   const task = await store.getTask(taskId);
   const decisionByPolicy = req.requireHuman
     ? { auto: false, reason: "platform rules require a human on this send" }
-    : evaluatePolicy(loadWedge(task?.wedge ?? "")?.manifest, {
+    : await evaluatePolicy(loadWedge(task?.wedge ?? "")?.manifest, {
         action: req.action,
         payload: req.preview,
         taskId,

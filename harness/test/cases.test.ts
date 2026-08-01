@@ -82,7 +82,7 @@ test("cases: the agent can read and advance its own case, scoped to its run", as
   const kase = (await api(app, "cases", { method: "POST", body: JSON.stringify({ wedge: WEDGE, title: "agent test" }) })).json;
   const spawned = (await api(app, `cases/${kase.id}/tasks`, { method: "POST", body: JSON.stringify({ task_type: "source_property" }) })).json;
 
-  const nonce = registerActionGrant({ task_id: spawned.id, connectionIds: [], caseId: kase.id });
+  const nonce = await registerActionGrant({ task_id: spawned.id, connectionIds: [], caseId: kase.id });
   const H = { authorization: `Bearer ${nonce}`, "content-type": "application/json" };
 
   const read = await (await app.request("/v1/internal/case", { headers: H })).json();
@@ -104,7 +104,7 @@ test("cases: the agent can read and advance its own case, scoped to its run", as
   assert.equal((await app.request("/v1/internal/case", { headers: { authorization: "Bearer nope" } })).status, 401);
 
   // a run with no case says so rather than leaking someone else's
-  const orphan = registerActionGrant({ task_id: spawned.id, connectionIds: [] });
+  const orphan = await registerActionGrant({ task_id: spawned.id, connectionIds: [] });
   assert.equal((await app.request("/v1/internal/case", { headers: { authorization: `Bearer ${orphan}` } })).status, 404);
 
   await domain.listCases(); // sanity: store still healthy

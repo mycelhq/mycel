@@ -112,7 +112,7 @@ test("action proxy: a platform-illegal send is refused BEFORE a human is asked",
     project_id: "p", kind: "composio", name: "ig", owner: { kind: "founder", id: "f" },
     config: { toolkit: "instagram" },
   });
-  const nonce = registerActionGrant({ task_id: "gt1", connectionIds: [conn.id] });
+  const nonce = await registerActionGrant({ task_id: "gt1", connectionIds: [conn.id] });
 
   const res = await app.request("/v1/internal/actions/INSTAGRAM_SEND_DM", {
     method: "POST",

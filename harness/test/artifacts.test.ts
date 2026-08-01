@@ -140,7 +140,7 @@ test("artifacts: the agent can read what the run was given, and only that run's 
   });
   const art = (await res.json()) as { id: string };
 
-  const nonce = registerActionGrant({ task_id: mine.id, connectionIds: [] });
+  const nonce = await registerActionGrant({ task_id: mine.id, connectionIds: [] });
   const read = await api(app, `internal/artifacts/${art.id}`, { headers: { authorization: `Bearer ${nonce}` } });
   assert.equal(read.status, 200);
   assert.equal(read.json.encoding, "utf8", "CSV is readable prose, so it stays text");
@@ -150,7 +150,7 @@ test("artifacts: the agent can read what the run was given, and only that run's 
   assert.equal(listed.json.artifacts.length, 1);
 
   // The isolation that matters: one run cannot open another's documents, even in the same project.
-  const other = registerActionGrant({ task_id: theirs.id, connectionIds: [] });
+  const other = await registerActionGrant({ task_id: theirs.id, connectionIds: [] });
   const cross = await api(app, `internal/artifacts/${art.id}`, { headers: { authorization: `Bearer ${other}` } });
   assert.equal(cross.status, 404);
   assert.equal(

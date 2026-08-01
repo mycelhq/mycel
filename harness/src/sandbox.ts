@@ -14,7 +14,7 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
-import { loadConfig } from "./config";
+import { loadConfig, reachableFromOtherHosts } from "./config";
 import { ensureSnapshot, snapshotName } from "./sandbox.snapshot";
 
 export interface ExecResult {
@@ -333,8 +333,48 @@ export async function createSandbox(): Promise<Sandbox> {
  * Returns null when fine, or a human-readable reason. The caller decides how loud to be; `daytona`
  * without the SDK is fatal, because the alternative is accepting work we know will fail.
  */
+/**
+ * Can the sandbox call BACK?
+ *
+ * The same lesson as the missing SDK, one layer out. A Daytona microVM is a different machine on a
+ * different network; `MYCEL_PUBLIC_URL` is the only thing that tells the runtime what address to
+ * bake into `MYCEL_GATE_URL`, `MYCEL_ACTIONS_URL`, `MYCEL_READS_URL`, `MYCEL_CASE_URL`,
+ * `MYCEL_WORKFLOWS_URL`, `MYCEL_GAPS_URL`, `MYCEL_RECORDS_URL` and — in proxy mode — the model
+ * base URL. Left at its default, every one of those is `http://127.0.0.1:4000`, which inside the
+ * microVM is the microVM. Nothing listens there.
+ *
+ * The failure that produces is the worst kind available: the kernel boots, answers /health, passes
+ * its load-balancer check, accepts tasks, and each task dies at its first callback — the agent
+ * cannot ask for approval, cannot send anything, and in proxy mode cannot even reach a model. The
+ * fleet is green and the product does no work. Exactly the shape of the missing-SDK bug, and it
+ * survived for the same reason: nothing on the boot path had an opinion about it.
+ *
+ * Split out from the async preflight below and kept synchronous on purpose, so `index.ts` can run
+ * it BEFORE binding the port. The SDK/snapshot checks can take minutes on a cold snapshot build and
+ * must not hold the listener closed; this one is a string comparison.
+ *
+ * Not fatal for `local` or `docker`: on a laptop the loopback default is the correct answer, and
+ * the docker backend publishes the sandbox port onto the host's loopback anyway.
+ */
+export function sandboxReachability(backend: string, publicUrl: string): string | null {
+  if (backend !== "daytona") return null;
+  if (reachableFromOtherHosts(publicUrl)) return null;
+  const shown = (publicUrl ?? "").trim() || "<unset>";
+  return (
+    `sandbox backend "daytona" is selected but MYCEL_PUBLIC_URL is ${shown} — an address that ` +
+    `means "this machine". A Daytona sandbox is not this machine, so every callback the runtime ` +
+    `injects (gate, actions, reads, case, workflows, gaps, records, and the model proxy) would ` +
+    `resolve inside the sandbox itself. Set MYCEL_PUBLIC_URL to a hostname the sandbox can reach ` +
+    `(in the AWS stack: https://sandbox.<domain>, see infra/sandbox.tf).`
+  );
+}
+
 export async function sandboxPreflight(backend: string): Promise<string | null> {
   if (backend !== "daytona") return null;
+  // First, because it is free and because a harness the sandbox cannot call back is just as
+  // unusable as a harness with no SDK — and far less obvious from the outside.
+  const unreachable = sandboxReachability(backend, loadConfig().publicUrl);
+  if (unreachable) return unreachable;
   try {
     await import(DAYTONA_PKG);
   } catch (e) {

@@ -74,7 +74,7 @@ test("stress test: a bookkeeping agency is expressible end to end", async () => 
   ok("task: episode runs inside the case", done?.status === "succeeded" && episode.case_id === kase.id);
 
   // grant for the agent-facing surfaces
-  const nonce = registerActionGrant({ task_id: episode.id, connectionIds: [bankConn.id, mailConn.id], caseId: kase.id });
+  const nonce = await registerActionGrant({ task_id: episode.id, connectionIds: [bankConn.id, mailConn.id], caseId: kase.id });
   const AH = { authorization: `Bearer ${nonce}`, "content-type": "application/json" };
 
   // 5. READ the bank feed — ungated

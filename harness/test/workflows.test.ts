@@ -79,7 +79,7 @@ test("workflows: the agent calls them by name over the internal endpoint, traced
   const { store, app } = makeApp();
   const kase = (await api(app, "cases", { method: "POST", body: JSON.stringify({ wedge: "property-sourcer", title: "wf" }) })).json;
   const task = (await api(app, `cases/${kase.id}/tasks`, { method: "POST", body: JSON.stringify({ task_type: "source_property" }) })).json;
-  const nonce = registerActionGrant({ task_id: task.id, connectionIds: [], caseId: kase.id });
+  const nonce = await registerActionGrant({ task_id: task.id, connectionIds: [], caseId: kase.id });
   const H = { authorization: `Bearer ${nonce}`, "content-type": "application/json" };
 
   const res = await app.request("/v1/internal/workflows/yields", {

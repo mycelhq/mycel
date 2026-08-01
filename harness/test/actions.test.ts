@@ -32,7 +32,7 @@ test("action proxy: nonce → human gate → execute → outbound message; secre
   await store.createTask({ id: "t1", project_id: "p", wedge: "w", task_type: "x", actor: { kind: "user", id: "a" }, input: {}, constraints: { max_runtime_s: 300, max_cost_usd: 1, approval_required: false }, tools: [], status: "running", cost_usd: 0, created_at: now, updated_at: now } as any);
   const conn = await domain.createConnection({ project_id: "p", kind: "webhook", name: "sink", owner: { kind: "founder", id: "founder" }, config: { url: `http://127.0.0.1:${port}/` }, secret_ref: "env:SINK_SECRET" });
   const thread = await domain.createThread({ project_id: "p", client_id: "c", channel_id: "ch", status: "open" });
-  const nonce = registerActionGrant({ task_id: "t1", connectionIds: [conn.id], threadId: thread.id });
+  const nonce = await registerActionGrant({ task_id: "t1", connectionIds: [conn.id], threadId: thread.id });
 
   // the sandbox calls the action proxy — this BLOCKS on the human gate
   const callP = app.request("/v1/internal/actions/send_webhook", {
@@ -76,7 +76,7 @@ test("action proxy: rejected action does not execute", async () => {
   const now = new Date().toISOString();
   await store.createTask({ id: "t2", project_id: "p", wedge: "w", task_type: "x", actor: { kind: "user", id: "a" }, input: {}, constraints: { max_runtime_s: 300, max_cost_usd: 1, approval_required: false }, tools: [], status: "running", cost_usd: 0, created_at: now, updated_at: now } as any);
   const conn = await domain.createConnection({ project_id: "p", kind: "webhook", name: "sink2", owner: { kind: "founder", id: "founder" }, config: { url: "http://127.0.0.1:1/" } });
-  const nonce = registerActionGrant({ task_id: "t2", connectionIds: [conn.id] });
+  const nonce = await registerActionGrant({ task_id: "t2", connectionIds: [conn.id] });
 
   const callP = app.request("/v1/internal/actions/send_webhook", { method: "POST", headers: { authorization: `Bearer ${nonce}`, "content-type": "application/json" }, body: JSON.stringify({ connection_id: conn.id, body: "no" }) });
   let approvalId: string | undefined;
