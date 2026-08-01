@@ -9,6 +9,25 @@ import { randomUUID } from "node:crypto";
 import type { KnowledgeGap } from "./intake";
 import type { Case, CaseEvent, Channel, Record_, Client, Connection, KnowledgeItem, Message, Schedule, Thread, TriggerSub } from "./contract";
 
+/** Shared shape for the record read paths so the tenant filter can't be added to one and not the other. */
+export interface RecordQuery {
+  /** Tenant scope. Fails closed — see `queryRecords`. */
+  project_id?: string;
+  wedge?: string;
+  collection?: string;
+  case_id?: string;
+  where?: Record<string, unknown>;
+}
+
+/** Filter for `listCases`. `project_id` is the tenant scope and fails closed (see `listCases`). */
+export interface CaseFilter {
+  project_id?: string;
+  wedge?: string;
+  status?: Case["status"];
+  client_id?: string;
+  stage?: string;
+}
+
 export interface DomainStore {
   // connections (secrets referenced, never stored in the clear here)
   createConnection(c: Omit<Connection, "id" | "created_at">): Promise<Connection>;
@@ -46,6 +65,14 @@ export interface DomainStore {
   getClient(id: string): Promise<Client | undefined>;
   listClients(): Promise<Client[]>;
   findClientByHandle(handle: string): Promise<Client | undefined>;
+  /**
+   * Patch profile / handles / metadata / preferences. Clients were create-and-read-only until now,
+   * so a customer's timezone or tone preference could only be captured by rewriting the whole row.
+   */
+  updateClient(
+    id: string,
+    patch: Partial<Pick<Client, "display_name" | "handles" | "metadata" | "preferences">>,
+  ): Promise<Client | undefined>;
 
   // threads + messages
   createThread(t: Omit<Thread, "id" | "created_at" | "updated_at">): Promise<Thread>;
@@ -59,15 +86,28 @@ export interface DomainStore {
   /** Idempotent: matches on (wedge, collection, key) and updates in place. */
   upsertRecord(r: Omit<Record_, "id" | "created_at" | "updated_at">): Promise<Record_>;
   getRecord(id: string): Promise<Record_ | undefined>;
-  /** `where` matches equality on top-level data fields. */
-  queryRecords(q: { wedge?: string; collection?: string; case_id?: string; where?: Record<string, unknown>; limit?: number }): Promise<Record_[]>;
+  /**
+   * `where` matches equality on top-level data fields.
+   *
+   * `project_id` is the TENANT filter and it fails closed: pass it and you get only rows whose
+   * project_id is exactly that string — a row with no project_id is NOT in scope. Callers that
+   * hold a single project (the action proxy, the portal) must push the id down here rather than
+   * filter the result, because a post-filter only protects the rows the query happened to return
+   * and silently leaks once a `limit` truncates someone else's data into the window.
+   */
+  queryRecords(q: RecordQuery & { limit?: number }): Promise<Record_[]>;
   deleteRecord(id: string): Promise<boolean>;
-  countRecords(q: { wedge?: string; collection?: string; case_id?: string; where?: Record<string, unknown> }): Promise<number>;
+  countRecords(q: RecordQuery): Promise<number>;
 
   // cases (long-lived engagements)
   createCase(c: Omit<Case, "id" | "created_at" | "updated_at" | "history"> & { history?: CaseEvent[] }): Promise<Case>;
   getCase(id: string): Promise<Case | undefined>;
-  listCases(filter?: { wedge?: string; status?: Case["status"]; client_id?: string; stage?: string }): Promise<Case[]>;
+  /**
+   * `project_id` is the TENANT filter and it fails closed, exactly like `queryRecords`: a Case with
+   * no project_id is never returned when a project is asked for. Cases carry a client's whole
+   * engagement history, so "unscoped row is visible to everyone" is not an acceptable default.
+   */
+  listCases(filter?: CaseFilter): Promise<Case[]>;
   updateCase(
     id: string,
     patch: Partial<Pick<Case, "stage" | "status" | "data" | "title" | "due_at" | "closed_at">>,
@@ -245,6 +285,20 @@ export class InMemoryDomainStore implements DomainStore {
     const h = normalizeHandle(handle);
     return [...this.clients.values()].find((c) => c.handles.includes(h));
   }
+  async updateClient(
+    id: string,
+    patch: Partial<Pick<Client, "display_name" | "handles" | "metadata" | "preferences">>,
+  ): Promise<Client | undefined> {
+    const c = this.clients.get(id);
+    if (!c) return undefined;
+    // `defined()` for the same reason every other patch here uses it: an absent key must not
+    // assign `undefined` over real data. Handles are re-normalized so lookup keeps working.
+    const clean = defined(patch);
+    if (clean.handles) clean.handles = clean.handles.map(normalizeHandle);
+    Object.assign(c, clean);
+    c.updated_at = now();
+    return c;
+  }
 
   async createThread(t: Omit<Thread, "id" | "created_at" | "updated_at">): Promise<Thread> {
     const th: Thread = { ...t, id: randomUUID(), created_at: now(), updated_at: now() };
@@ -295,7 +349,11 @@ export class InMemoryDomainStore implements DomainStore {
   async getRecord(id: string): Promise<Record_ | undefined> {
     return this.records.get(id);
   }
-  private matches(r: Record_, q: { wedge?: string; collection?: string; case_id?: string; where?: Record<string, unknown> }): boolean {
+  private matches(r: Record_, q: RecordQuery): boolean {
+    // Fail closed: once a project is named, an unscoped row (project_id undefined) is OUT, not in.
+    // `q.project_id && r.project_id !== q.project_id` would have let every legacy unscoped record
+    // answer every tenant's query.
+    if (q.project_id !== undefined && r.project_id !== q.project_id) return false;
     if (q.wedge && r.wedge !== q.wedge) return false;
     if (q.collection && r.collection !== q.collection) return false;
     if (q.case_id && r.case_id !== q.case_id) return false;
@@ -304,7 +362,7 @@ export class InMemoryDomainStore implements DomainStore {
     }
     return true;
   }
-  async queryRecords(q: { wedge?: string; collection?: string; case_id?: string; where?: Record<string, unknown>; limit?: number }): Promise<Record_[]> {
+  async queryRecords(q: RecordQuery & { limit?: number }): Promise<Record_[]> {
     return [...this.records.values()]
       .filter((r) => this.matches(r, q))
       .sort((a, b) => (a.created_at < b.created_at ? 1 : -1))
@@ -313,7 +371,7 @@ export class InMemoryDomainStore implements DomainStore {
   async deleteRecord(id: string): Promise<boolean> {
     return this.records.delete(id);
   }
-  async countRecords(q: { wedge?: string; collection?: string; case_id?: string; where?: Record<string, unknown> }): Promise<number> {
+  async countRecords(q: RecordQuery): Promise<number> {
     return [...this.records.values()].filter((r) => this.matches(r, q)).length;
   }
 
@@ -326,9 +384,11 @@ export class InMemoryDomainStore implements DomainStore {
   async getCase(id: string): Promise<Case | undefined> {
     return this.cases.get(id);
   }
-  async listCases(filter: { wedge?: string; status?: Case["status"]; client_id?: string; stage?: string } = {}): Promise<Case[]> {
+  async listCases(filter: CaseFilter = {}): Promise<Case[]> {
     return [...this.cases.values()]
       .filter((k) =>
+        // Tenant scope first, and strict — an unscoped Case is invisible to a scoped query.
+        (filter.project_id === undefined || k.project_id === filter.project_id) &&
         (!filter.wedge || k.wedge === filter.wedge) &&
         (!filter.status || k.status === filter.status) &&
         (!filter.client_id || k.client_id === filter.client_id) &&

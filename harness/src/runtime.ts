@@ -283,7 +283,20 @@ export async function runOpenCodeTask(
   try {
     if (ctx.shouldAbort()) throw new Error(`aborted: ${ctx.shouldAbort()}`);
     const sessionId = await oc.createSession(`mycel-${task.id}`);
-    await oc.sendPrompt(sessionId, buildPrompt(task, wedge), promptModel);
+    try {
+      await oc.sendPrompt(sessionId, buildPrompt(task, wedge), promptModel);
+    } catch (e) {
+      // Attach the agent's own log before rethrowing.
+      //
+      // OpenCode answers a failed prompt with `500 UnknownError ... check server logs for details`
+      // and a reference id — and those logs are inside the sandbox, which the orchestrator destroys
+      // in its `finally`. So the one artefact that explains the failure is deleted microseconds
+      // after it is written, and every such failure looks identical from out here.
+      //
+      // Reading it costs one exec on a sandbox that is about to die anyway. Tail only: a long run's
+      // log is mostly token streaming, and the interesting part is always the end.
+      throw new Error(`${(e as Error).message}\n--- opencode.log (tail) ---\n${await tailAgentLog(sandbox)}`);
+    }
 
     abortWatch = setInterval(() => {
       if (ctx.shouldAbort()) abort.abort();
@@ -508,3 +521,18 @@ function shellQuote(v: string): string {
 
 /** Test seam: the prompt is a cost decision, so its shape is worth asserting directly. */
 export const buildAgentsMdForTest = buildAgentsMd;
+
+/**
+ * The last few KB of OpenCode's own log, or a note saying why we could not get it.
+ *
+ * Never throws: this runs on the failure path, and a diagnostic that can fail the run it is trying
+ * to explain is worse than no diagnostic.
+ */
+async function tailAgentLog(sandbox: Sandbox): Promise<string> {
+  try {
+    const r = await sandbox.exec("tail -c 4000 /tmp/opencode.log 2>/dev/null || echo '(no log)'");
+    return (r.stdout || r.stderr || "(empty)").trim();
+  } catch (e) {
+    return `(could not read: ${(e as Error).message})`;
+  }
+}

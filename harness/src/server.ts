@@ -14,6 +14,16 @@ import { buildChecklist, listBlueprints, loadBlueprint, provision } from "./blue
 import { bearer, requireApiKey, safeEqual } from "./auth";
 import { awaitApproval, failWaitersForTask, resolveApproval } from "./approvals";
 import { actionPreview, executeAction, executeRead } from "./actions";
+import { capabilitiesForConnection, guardSend, isMessagingSend } from "./outreach/guard";
+import { getClientContext, updateClientContext } from "./client-context";
+import {
+  intakeDedupeKey,
+  intakeSourceForChannelKind,
+  lookupIntakeReplay,
+  normalizeIntake,
+  rememberIntake,
+  type NormalizedIntake,
+} from "./intake-normalize";
 import { mountLinkedIn } from "./linkedin/routes";
 import { getActionGrant } from "./actiongrants";
 import { getArtifactBackend } from "./artifacts";
@@ -137,6 +147,22 @@ export function createServer(store: Store): Hono {
   const writeProjectId = (c: import("hono").Context) =>
     identity.resolveWriteProject(c.get("scope"), c.req.header("x-mycel-project"));
   const inScope = (set: Set<string>, pid?: string) => !!pid && set.has(pid);
+
+  /**
+   * Does this client id name a client in this project?
+   *
+   * Every route that lets a caller attach a task to a client must ask. `task.client_id` is what the
+   * client-context façade joins on, so writing an unchecked string there lets someone point their
+   * own task at a victim's client and have their artifacts surface inside that client's context —
+   * and, in the other direction, plant content in a context a rival's operator reads as their own.
+   * The check is deliberately strict on both sides: no client, or a client in another project, is a
+   * refusal, never a silently-dropped field.
+   */
+  const clientInProject = async (clientId: string, projectId: string): Promise<boolean> => {
+    if (!clientId || !projectId) return false;
+    const row = await domain.getClient(clientId);
+    return !!row && row.project_id === projectId;
+  };
 
   /**
    * Which granted connection a capability refers to.
@@ -471,6 +497,9 @@ export function createServer(store: Store): Hono {
         constraints: clampConstraints({}, cfg.maxCostCeilingUsd, cfg.maxRuntimeCeilingS),
         tools: [],
         output_schema: loadWedge(channel.wedge)?.manifest.task_types?.[channel.task_type]?.output_schema,
+        source: "portal",
+        client_id: sc.client_id,
+        assigned_to: "agent",
         status: "queued",
         cost_usd: 0,
         created_at: now,
@@ -507,11 +536,12 @@ export function createServer(store: Store): Hono {
 
   app.get("/v1/portal/cases", async (c) => {
     const sc = client(c);
-    const cases = await domain.listCases({ client_id: sc.client_id });
+    // Scope in the QUERY, not after it. A portal session holds exactly one project, and the old
+    // post-filter (`!x.project_id || …`) admitted any Case that happened to carry no project_id.
+    const cases = await domain.listCases({ project_id: sc.project_id, client_id: sc.client_id });
     // Only what a customer should see: where their engagement is up to, not the agent's internals.
     return c.json(
       cases
-        .filter((x) => !x.project_id || x.project_id === sc.project_id)
         .map((x) => ({
           id: x.id,
           title: x.title,
@@ -1140,6 +1170,12 @@ export function createServer(store: Store): Hono {
       if (existing) return c.json(existing, 200);
     }
 
+    // A client_id on a task decides whose context that task's artifacts show up in, so it is
+    // checked against the caller's own project before it is stored. See `clientInProject`.
+    if (body.client_id !== undefined && !(await clientInProject(body.client_id, projectId))) {
+      return c.json({ error: "unknown client_id for this project" }, 400);
+    }
+
     const cfg = loadConfig();
     const constraints = clampConstraints(body.constraints, cfg.maxCostCeilingUsd, cfg.maxRuntimeCeilingS);
     const now = new Date().toISOString();
@@ -1154,6 +1190,12 @@ export function createServer(store: Store): Hono {
       tools: body.tools ?? [],
       // Default the task's output_schema from the wedge's task_type when the caller didn't set one.
       output_schema: body.output_schema ?? types?.[body.task_type]?.output_schema,
+      // Posted directly, so the surface is the API unless the caller names a truer one.
+      source: body.source ?? "api",
+      client_id: body.client_id,
+      case_id: body.case_id,
+      assigned_to: body.assigned_to ?? "agent",
+      confidence_score: body.confidence_score,
       status: "queued",
       cost_usd: 0,
       created_at: now,
@@ -1167,13 +1209,14 @@ export function createServer(store: Store): Hono {
     return c.json(task, 201);
   });
 
-  // GET /v1/tasks — list for the operator portal (newest first; ?status= ?wedge= ?limit=)
+  // GET /v1/tasks — list for the operator portal (newest first; ?status= ?wedge= ?client_id= ?limit=)
   app.get("/v1/tasks", async (c) => {
     const status = c.req.query("status") as TaskStatus | undefined;
     const wedge = c.req.query("wedge");
+    const clientId = c.req.query("client_id") || undefined;
     const limit = c.req.query("limit") ? Number(c.req.query("limit")) : undefined;
     const set = accessible(c);
-    const tasks = await store.listTasks({ status, wedge, limit: (limit ?? 100) * 4 });
+    const tasks = await store.listTasks({ status, wedge, client_id: clientId, limit: (limit ?? 100) * 4 });
     return c.json(tasks.filter((t) => inScope(set, t.project_id)).slice(0, limit ?? 100));
   });
 
@@ -1351,6 +1394,49 @@ export function createServer(store: Store): Hono {
     const t = await store.getTask(c.req.param("id"));
     if (!t || !inScope(accessible(c), t.project_id)) return c.json({ error: "not found" }, 404);
     return c.json(t);
+  });
+
+  /**
+   * Patch assignment / confidence / client linkage mid-run — an agent step reporting how sure it
+   * was, or an operator routing a task to a human.
+   *
+   * Narrow on purpose. `status` has its own transitions, cost is accrued not set, and `input` is
+   * immutable once a run is reading it. Only fields whose value can legitimately change while the
+   * work is in flight are here, and `client_id` is validated against the caller's own project
+   * before it is written.
+   */
+  app.patch("/v1/tasks/:id", async (c) => {
+    const t = await store.getTask(c.req.param("id"));
+    if (!t || !inScope(accessible(c), t.project_id)) return c.json({ error: "not found" }, 404);
+    const b = (await c.req.json().catch(() => ({}))) as Record<string, unknown>;
+    const patch: Parameters<Store["updateTask"]>[1] = {};
+
+    if (b.assigned_to !== undefined) {
+      if (b.assigned_to !== "agent" && b.assigned_to !== "human") {
+        return c.json({ error: 'assigned_to must be "agent" or "human"' }, 400);
+      }
+      patch.assigned_to = b.assigned_to;
+    }
+    if ("confidence_score" in b) {
+      if (b.confidence_score === null) patch.confidence_score = null;
+      else if (typeof b.confidence_score === "number" && b.confidence_score >= 0 && b.confidence_score <= 1) {
+        patch.confidence_score = b.confidence_score;
+      } else {
+        return c.json({ error: "confidence_score must be null or a number in [0,1]" }, 400);
+      }
+    }
+    if ("client_id" in b) {
+      if (b.client_id === null) {
+        patch.client_id = undefined;
+      } else if (typeof b.client_id === "string" && (await clientInProject(b.client_id, t.project_id!))) {
+        patch.client_id = b.client_id;
+      } else {
+        return c.json({ error: "unknown client_id for this project" }, 400);
+      }
+    }
+
+    const updated = await store.updateTask(t.id, patch);
+    return c.json(updated);
   });
 
   // GET /v1/tasks/:id/trace — the run as a span tree, folded from the durable event log.
@@ -2319,6 +2405,7 @@ export function createServer(store: Store): Hono {
       display_name: typeof b.display_name === "string" ? b.display_name : undefined,
       handles: Array.isArray(b.handles) ? (b.handles as string[]) : [],
       metadata: (b.metadata as Record<string, unknown>) ?? {},
+      preferences: (b.preferences as Record<string, unknown>) ?? undefined,
     });
     return c.json(client, 201);
   });
@@ -2331,6 +2418,33 @@ export function createServer(store: Store): Hono {
     if (!client || !inScope(accessible(c), client.project_id)) return c.json({ error: "not found" }, 404);
     const threads = await domain.listThreadsForClient(client.id);
     return c.json({ ...client, threads });
+  });
+
+  /**
+   * Everything the business knows about this customer, in one read: profile + preferences,
+   * conversations, open engagements, what has already been delivered, and any knowledge tagged to
+   * them. See client-context.ts for what "preferences" and "prior deliverables" mean concretely.
+   */
+  app.get("/v1/clients/:id/context", async (c) => {
+    const client = await domain.getClient(c.req.param("id"));
+    if (!client || !inScope(accessible(c), client.project_id)) return c.json({ error: "not found" }, 404);
+    return c.json(await getClientContext(domain, store, client.id));
+  });
+
+  /** Patch the writable half (profile + preferences). metadata/preferences merge, never replace. */
+  app.patch("/v1/clients/:id/context", async (c) => {
+    const client = await domain.getClient(c.req.param("id"));
+    if (!client || !inScope(accessible(c), client.project_id)) return c.json({ error: "not found" }, 404);
+    const b = (await c.req.json().catch(() => ({}))) as Record<string, unknown>;
+    const updated = await updateClientContext(domain, client.id, {
+      display_name: typeof b.display_name === "string" ? b.display_name : undefined,
+      handles: Array.isArray(b.handles) ? (b.handles as string[]) : undefined,
+      metadata: b.metadata && typeof b.metadata === "object" ? (b.metadata as Record<string, unknown>) : undefined,
+      preferences:
+        b.preferences && typeof b.preferences === "object" ? (b.preferences as Record<string, unknown>) : undefined,
+    });
+    if (!updated) return c.json({ error: "not found" }, 404);
+    return c.json(await getClientContext(domain, store, updated.id));
   });
 
   /** Mint a portal link for a client. Returned once — only the hash is stored. */
@@ -2592,8 +2706,14 @@ export function createServer(store: Store): Hono {
     if (!grant) return c.json({ ok: false, error: "invalid action token" }, 401);
     const task = await store.getTask(grant.task_id);
     if (!task) return c.json({ ok: false, error: "unknown task" }, 404);
+    // An agent run belongs to exactly one project, so the tenant filter goes INTO the query. The
+    // previous post-filter left `count` computed across every tenant (a cross-project row count is
+    // still a disclosure), and its `!task.project_id ||` escape hatch meant an unattributed task
+    // could read the whole table. A task with no project reads nothing.
+    if (!task.project_id) return c.json({ ok: false, error: "task has no project scope" }, 403);
     const b = (await c.req.json().catch(() => ({}))) as Record<string, unknown>;
     const q = {
+      project_id: task.project_id,
       wedge: task.wedge,
       collection: typeof b.collection === "string" ? b.collection : undefined,
       case_id: typeof b.case_id === "string" ? b.case_id : undefined,
@@ -2601,12 +2721,11 @@ export function createServer(store: Store): Hono {
       limit: typeof b.limit === "number" ? Math.min(b.limit, 500) : undefined,
     };
     const [rows, count] = await Promise.all([domain.queryRecords(q), domain.countRecords(q)]);
-    const scoped = rows.filter((r) => !task.project_id || r.project_id === task.project_id);
     await emitEvent(store, grant.task_id, "tool.called", {
       tool: "records:query",
       args: { collection: q.collection, where: q.where },
     });
-    return c.json({ ok: true, count, records: scoped });
+    return c.json({ ok: true, count, records: rows });
   });
 
   /** Shared validation for a record write. Returns an explicit status — never infer it from the
@@ -2709,6 +2828,11 @@ export function createServer(store: Store): Hono {
       id: randomUUID(),
       project_id: kase.project_id,
       case_id: kase.id,
+      // Inherited, not re-supplied: an episode of a case is for the case's client by definition,
+      // which is also what makes it show up in that client's context without a join through Case.
+      client_id: kase.client_id,
+      source: "case",
+      assigned_to: "agent",
       wedge: kase.wedge,
       task_type: String(b.task_type),
       actor: { kind: "system", id: `case:${kase.id}` },
@@ -3062,63 +3186,197 @@ export function createServer(store: Store): Hono {
     return c.json({ ok: true, knowledge_id: knowledgeId });
   });
 
-  // Inbound webhook: a message arrives on a channel. Resolve the client, append to the thread,
-  // and spawn the task that handles it. The product proxies its provider's webhook (Postmark/
-  // Twilio/…) here after verifying the provider signature — hence it sits behind the API key.
-  app.post("/v1/channels/:id/inbound", async (c) => {
-    const channel = await domain.getChannel(c.req.param("id"));
-    if (!channel || !inScope(accessible(c), channel.project_id)) return c.json({ error: "unknown channel" }, 404);
-    const pid = channel.project_id;
-    const b = (await c.req.json().catch(() => ({}))) as {
-      from?: { handle?: string; name?: string };
-      body?: string;
-      subject?: string;
-    };
-    const handle = b.from?.handle ?? "anonymous";
-    let client = await domain.findClientByHandle(handle);
-    if (!client || client.project_id !== pid) {
+  // ── Intake: normalize → resolve client/thread → create task ──
+  // Channel inbound and the form POST are the same pipeline with different adapters. The other ways
+  // a task is born (schedule, case episode, POST /v1/tasks) are spawn paths, not intake, and stay
+  // as they are.
+
+  async function acceptIntake(args: {
+    projectId: string;
+    wedge: string;
+    taskType: string;
+    channelId?: string;
+    normalized: NormalizedIntake;
+  }): Promise<{ task_id: string; thread_id?: string; client_id: string; replayed?: boolean }> {
+    // Providers retry. Without this, a Postmark redelivery of the same email is a second run, a
+    // second reply to the customer, and a second charge. Keyed per project — see intakeDedupeKey.
+    const dedupe = intakeDedupeKey(args.projectId, args.normalized);
+    const replayOf = lookupIntakeReplay(dedupe);
+    if (replayOf) {
+      const existing = await store.getTask(replayOf);
+      // Only replay a task that is still in THIS project: the key is project-scoped, so this can
+      // only fail if the row vanished, but the check costs nothing and closes the branch properly.
+      if (existing && existing.project_id === args.projectId) {
+        return {
+          task_id: existing.id,
+          client_id: existing.client_id ?? args.normalized.client.handle,
+          thread_id: typeof existing.input.thread_id === "string" ? existing.input.thread_id : undefined,
+          replayed: true,
+        };
+      }
+    }
+
+    let client = await domain.findClientByHandle(args.normalized.client.handle);
+    if (!client || client.project_id !== args.projectId) {
       client = await domain.createClient({
-        project_id: pid,
-        display_name: b.from?.name,
-        handles: [handle],
+        project_id: args.projectId,
+        display_name: args.normalized.client.name,
+        handles: [args.normalized.client.handle],
         metadata: {},
       });
     }
-    const thread = await domain.findOrCreateThread(client.id, channel.id, pid, b.subject);
-    await domain.addMessage({
-      thread_id: thread.id,
-      direction: "inbound",
-      author: client.id,
-      body: b.body ?? "",
-    });
-    const history = await domain.listMessages(thread.id);
+
+    // A thread needs a channel to hang off. Form intake without one still creates a task — it is
+    // just not a conversation, and pretending otherwise would mean inventing a channel row.
+    let threadId: string | undefined;
+    let history: { direction: string; body: string }[] = [];
+    if (args.channelId) {
+      const thread = await domain.findOrCreateThread(
+        client.id,
+        args.channelId,
+        args.projectId,
+        args.normalized.subject,
+      );
+      await domain.addMessage({
+        thread_id: thread.id,
+        direction: "inbound",
+        author: client.id,
+        body: args.normalized.body,
+      });
+      threadId = thread.id;
+      history = (await domain.listMessages(thread.id)).map((m) => ({ direction: m.direction, body: m.body }));
+    }
 
     const cfg = loadConfig();
     const now = new Date().toISOString();
     const task: Task = {
       id: randomUUID(),
-      project_id: pid,
-      wedge: channel.wedge,
-      task_type: channel.task_type,
+      project_id: args.projectId,
+      wedge: args.wedge,
+      task_type: args.taskType,
       actor: { kind: "user", id: client.id },
       input: {
-        message: b.body ?? "",
-        subject: b.subject,
-        thread_id: thread.id, // links the run's action grant to this conversation
+        message: args.normalized.body,
+        subject: args.normalized.subject,
+        ...(threadId ? { thread_id: threadId } : {}), // links the run's action grant to this conversation
         client: { id: client.id, display_name: client.display_name, handles: client.handles },
-        history: history.map((m) => ({ direction: m.direction, body: m.body })),
+        ...(history.length ? { history } : {}),
+        ...(args.normalized.metadata ? { intake_metadata: args.normalized.metadata } : {}),
       },
       constraints: clampConstraints({}, cfg.maxCostCeilingUsd, cfg.maxRuntimeCeilingS),
       tools: [],
-      output_schema: loadWedge(channel.wedge)?.manifest.task_types?.[channel.task_type]?.output_schema,
+      output_schema: loadWedge(args.wedge)?.manifest.task_types?.[args.taskType]?.output_schema,
+      source: args.normalized.source,
+      client_id: client.id,
+      assigned_to: "agent",
       status: "queued",
       cost_usd: 0,
       created_at: now,
       updated_at: now,
     };
     await store.createTask(task);
+    rememberIntake(dedupe, task.id);
     await enqueueTask(store, task.id);
-    return c.json({ task_id: task.id, thread_id: thread.id, client_id: client.id }, 201);
+    return { task_id: task.id, thread_id: threadId, client_id: client.id };
+  }
+
+  // Inbound webhook: a message arrives on a channel. The product proxies its provider's webhook
+  // (Postmark/Twilio/…) here after verifying the provider signature — hence it sits behind the API
+  // key. Missing sender or body fails closed: the old `handle ?? "anonymous"` fallback quietly
+  // merged every unidentifiable inbound into one shared client and threaded strangers together.
+  app.post("/v1/channels/:id/inbound", async (c) => {
+    const channel = await domain.getChannel(c.req.param("id"));
+    if (!channel || !inScope(accessible(c), channel.project_id)) return c.json({ error: "unknown channel" }, 404);
+    if (!channel.project_id) return c.json({ error: "channel has no project scope" }, 400);
+
+    const source = intakeSourceForChannelKind(channel.kind);
+    if (!source) {
+      return c.json(
+        { error: `channel kind "${channel.kind}" has no intake adapter yet`, code: "intake.unknown_source" },
+        400,
+      );
+    }
+
+    let raw: unknown;
+    try {
+      raw = await c.req.json();
+    } catch {
+      return c.json({ error: "intake payload must be valid JSON", code: "intake.malformed" }, 400);
+    }
+
+    const normalized = normalizeIntake(source, raw);
+    if (!normalized.ok) return c.json(normalized.error, 400);
+
+    const out = await acceptIntake({
+      projectId: channel.project_id,
+      wedge: channel.wedge,
+      taskType: channel.task_type,
+      channelId: channel.id,
+      normalized: normalized.value,
+    });
+    return c.json(out, out.replayed ? 200 : 201);
+  });
+
+  /**
+   * Form intake — the same normalizer path as channel inbound, for a website contact form.
+   * Body: the canonical form envelope plus either `channel_id` (inherits wedge/task_type/project
+   * and opens a thread) or `wedge` + `task_type` (X-Mycel-Project required).
+   */
+  app.post("/v1/intake/form", async (c) => {
+    let raw: unknown;
+    try {
+      raw = await c.req.json();
+    } catch {
+      return c.json({ error: "intake payload must be valid JSON", code: "intake.malformed" }, 400);
+    }
+    if (!raw || typeof raw !== "object" || Array.isArray(raw)) {
+      return c.json({ error: "intake payload must be a JSON object", code: "intake.malformed" }, 400);
+    }
+    const body = raw as Record<string, unknown>;
+
+    let projectId: string | undefined;
+    let wedge: string | undefined;
+    let taskType: string | undefined;
+    let channelId: string | undefined;
+
+    if (typeof body.channel_id === "string") {
+      const channel = await domain.getChannel(body.channel_id);
+      if (!channel || !inScope(accessible(c), channel.project_id)) {
+        return c.json({ error: "unknown channel" }, 404);
+      }
+      projectId = channel.project_id;
+      wedge = channel.wedge;
+      taskType = channel.task_type;
+      channelId = channel.id;
+    } else {
+      projectId = writeProjectId(c) ?? undefined;
+      if (!projectId) return c.json({ error: "specify a project (X-Mycel-Project header)" }, 400);
+      if (typeof body.wedge !== "string" || typeof body.task_type !== "string") {
+        return c.json({ error: "channel_id or wedge+task_type are required" }, 400);
+      }
+      wedge = body.wedge;
+      taskType = body.task_type;
+      if (!loadWedge(wedge)) return c.json({ error: `unknown wedge: ${wedge}` }, 400);
+      if (!identity.projectAllowsWedge(projectId, wedge)) {
+        return c.json({ error: `wedge "${wedge}" is not enabled for this project` }, 403);
+      }
+    }
+    if (!projectId) return c.json({ error: "channel has no project scope" }, 400);
+
+    // Strip the routing keys before normalizing so they don't land in metadata as unknown form
+    // fields — they are ours, not the form's. Any other extra still passes through the adapter.
+    const { channel_id: _c, wedge: _w, task_type: _t, ...formPayload } = body;
+    const normalized = normalizeIntake("form", formPayload);
+    if (!normalized.ok) return c.json(normalized.error, 400);
+
+    const out = await acceptIntake({
+      projectId,
+      wedge: wedge!,
+      taskType: taskType!,
+      channelId,
+      normalized: normalized.value,
+    });
+    return c.json(out, out.replayed ? 200 : 201);
   });
 
   // Internal: deterministic workflows. The agent calls a NAMED function the wedge ships, with JSON
@@ -3213,12 +3471,49 @@ export function createServer(store: Store): Hono {
     const conn = picked.id ? await domain.getConnection(picked.id) : undefined;
     if (!conn) return c.json({ ok: false, error: "no granted connection for this action" }, 400);
 
+    // PLATFORM GUARD — runs BEFORE the approval gate on purpose. A send Instagram will never
+    // deliver, or one past WhatsApp's 24h window, is refused here rather than parked in a founder's
+    // approval queue for five minutes so they can authorise something the platform then rejects.
+    // Refusing costs nothing; a wasted approval costs the one resource we can't buy more of.
+    const cap = capabilitiesForConnection(conn);
+    let requireHuman = false;
+    if (isMessagingSend(cap, capability)) {
+      const outbound = {
+        thread:
+          typeof payload.thread === "string" ? payload.thread
+          : typeof payload.thread_id === "string" ? payload.thread_id
+          : grant.threadId,
+        to: typeof payload.to === "string" ? payload.to : undefined,
+        text: String(payload.body ?? payload.text ?? payload.message ?? ""),
+        template: payload.template as { name: string; language: string } | undefined,
+      };
+      // The reply window is measured from the customer's last inbound, which the thread already
+      // records — without it every windowed platform would look permanently closed.
+      let lastInboundAt: string | undefined;
+      if (cap.reply_window_h !== null && grant.threadId) {
+        const msgs = await domain.listMessages(grant.threadId);
+        for (const m of msgs) if (m.direction === "inbound") lastInboundAt = m.created_at;
+      }
+      const verdict = guardSend(cap, outbound, { last_inbound_at: lastInboundAt });
+      if (!verdict.allow) {
+        await emitEvent(store, grant.task_id, "tool.result", {
+          tool: `${conn.kind}:${capability}`,
+          ok: false,
+          detail: verdict.reason,
+        });
+        return c.json({ ok: false, code: verdict.code, error: verdict.reason }, 200);
+      }
+      requireHuman = verdict.force_approval === true;
+    }
+
     // HUMAN APPROVAL GATE — suspends the task, surfaces a preview, waits for approve/reject.
     const preview = actionPreview(conn, capability, payload);
     const { decision, edited } = await awaitApproval(store, grant.task_id, {
       action: `${conn.kind}:${capability}`,
       risk: "high",
       preview,
+      // A cold initiate on a ban-risk account cannot be auto-approved by a wedge policy.
+      requireHuman,
     });
     // auto_approved means a wedge policy envelope allowed it — proceed, exactly like a human yes.
     if (decision !== "approved" && decision !== "auto_approved") {

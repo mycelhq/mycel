@@ -53,7 +53,21 @@ function settle(id: string, outcome: ApprovalOutcome): boolean {
 export async function awaitApproval(
   store: Store,
   taskId: string,
-  req: { action: string; risk: Risk; preview: Record<string, unknown>; ttlMs?: number },
+  req: {
+    action: string;
+    risk: Risk;
+    preview: Record<string, unknown>;
+    ttlMs?: number;
+    /**
+     * Skip the policy envelope entirely — a real human must decide this one.
+     *
+     * Set by callers that know something the wedge manifest doesn't: the outreach guard raises it
+     * for a cold initiate on a ban-risk account. Without it, `cold_initiate_requires_approval`
+     * would be dead the moment a wedge declares any matching `auto_approve` rule, because the
+     * policy check runs first and never sees the guard's verdict.
+     */
+    requireHuman?: boolean;
+  },
 ): Promise<{ approvalId: string; decision: ApprovalDecision; edited?: Record<string, unknown> }> {
   const approval = await store.createApproval({
     task_id: taskId,
@@ -67,12 +81,14 @@ export async function awaitApproval(
   // human. The approval is still recorded (with the reason) so it lands in the batch-review queue —
   // autonomy is auditable, not invisible. No policy → the human gate, exactly as before.
   const task = await store.getTask(taskId);
-  const decisionByPolicy = evaluatePolicy(loadWedge(task?.wedge ?? "")?.manifest, {
-    action: req.action,
-    payload: req.preview,
-    taskId,
-    projectId: task?.project_id,
-  });
+  const decisionByPolicy = req.requireHuman
+    ? { auto: false, reason: "platform rules require a human on this send" }
+    : evaluatePolicy(loadWedge(task?.wedge ?? "")?.manifest, {
+        action: req.action,
+        payload: req.preview,
+        taskId,
+        projectId: task?.project_id,
+      });
   if (decisionByPolicy.auto) {
     await store.setApproval(approval.approval_id, "auto_approved", decisionByPolicy.reason);
     await audit({

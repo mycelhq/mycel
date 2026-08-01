@@ -7,7 +7,7 @@ import { getPool } from "./pool";
 import { withSchemaLock } from "./schema-lock";
 import type { KnowledgeGap } from "./intake";
 import type { Cadence, Case, CaseEvent, Record_, Channel, Client, Connection, ConnectionKind, ConnectionOwner, KnowledgeItem, Message, Schedule, Thread, TriggerSub } from "./contract";
-import { normalizeHandle, type DomainStore } from "./domain";
+import { normalizeHandle, type CaseFilter, type DomainStore, type RecordQuery } from "./domain";
 
 const { Pool } = pg;
 const iso = (v: unknown) => new Date(v as string).toISOString();
@@ -76,6 +76,7 @@ export class PostgresDomainStore implements DomainStore {
           display_name text,
           handles jsonb NOT NULL DEFAULT '[]',
           metadata jsonb NOT NULL DEFAULT '{}',
+          preferences jsonb,
           created_at timestamptz NOT NULL DEFAULT now(),
           updated_at timestamptz NOT NULL DEFAULT now()
         );
@@ -177,6 +178,9 @@ export class PostgresDomainStore implements DomainStore {
         CREATE INDEX IF NOT EXISTS records_query_idx ON records (wedge, collection);
         CREATE INDEX IF NOT EXISTS records_data_idx ON records USING gin (data);
       `);
+      // Idempotent migration for installs that predate Client.preferences. Nullable, so an existing
+      // row reads as "no preferences captured" rather than as an empty set of them.
+      await client.query(`ALTER TABLE clients ADD COLUMN IF NOT EXISTS preferences jsonb;`);
     });
   }
 
@@ -385,13 +389,19 @@ export class PostgresDomainStore implements DomainStore {
   // ── clients ──
   private toClient = (r: any): Client => ({
     id: r.id, project_id: r.project_id ?? undefined, display_name: r.display_name ?? undefined,
-    handles: r.handles ?? [], metadata: r.metadata ?? {}, created_at: iso(r.created_at), updated_at: iso(r.updated_at),
+    handles: r.handles ?? [], metadata: r.metadata ?? {},
+    preferences: r.preferences ?? undefined,
+    created_at: iso(r.created_at), updated_at: iso(r.updated_at),
   });
   async createClient(c: Omit<Client, "id" | "created_at" | "updated_at">): Promise<Client> {
     const handles = (c.handles ?? []).map(normalizeHandle);
     const r = await this.pool.query(
-      `INSERT INTO clients (id, project_id, display_name, handles, metadata) VALUES ($1,$2,$3,$4,$5) RETURNING *`,
-      [randomUUID(), c.project_id ?? null, c.display_name ?? null, JSON.stringify(handles), JSON.stringify(c.metadata ?? {})],
+      `INSERT INTO clients (id, project_id, display_name, handles, metadata, preferences) VALUES ($1,$2,$3,$4,$5,$6) RETURNING *`,
+      [
+        randomUUID(), c.project_id ?? null, c.display_name ?? null,
+        JSON.stringify(handles), JSON.stringify(c.metadata ?? {}),
+        c.preferences === undefined ? null : JSON.stringify(c.preferences),
+      ],
     );
     return this.toClient(r.rows[0]);
   }
@@ -405,6 +415,31 @@ export class PostgresDomainStore implements DomainStore {
   }
   async findClientByHandle(handle: string): Promise<Client | undefined> {
     const r = await this.pool.query(`SELECT * FROM clients WHERE handles @> $1::jsonb LIMIT 1`, [JSON.stringify([normalizeHandle(handle)])]);
+    return r.rows[0] ? this.toClient(r.rows[0]) : undefined;
+  }
+  async updateClient(
+    id: string,
+    patch: Partial<Pick<Client, "display_name" | "handles" | "metadata" | "preferences">>,
+  ): Promise<Client | undefined> {
+    // COALESCE leaves an omitted key at its current value, which is what the in-memory `defined()`
+    // does — the two backends must agree here or memory-backed tests can't catch a divergence.
+    const handles = patch.handles !== undefined ? patch.handles.map(normalizeHandle) : undefined;
+    const r = await this.pool.query(
+      `UPDATE clients SET
+         display_name = COALESCE($2, display_name),
+         handles      = COALESCE($3::jsonb, handles),
+         metadata     = COALESCE($4::jsonb, metadata),
+         preferences  = COALESCE($5::jsonb, preferences),
+         updated_at   = now()
+       WHERE id=$1 RETURNING *`,
+      [
+        id,
+        patch.display_name ?? null,
+        handles === undefined ? null : JSON.stringify(handles),
+        patch.metadata === undefined ? null : JSON.stringify(patch.metadata),
+        patch.preferences === undefined ? null : JSON.stringify(patch.preferences),
+      ],
+    );
     return r.rows[0] ? this.toClient(r.rows[0]) : undefined;
   }
 
@@ -480,15 +515,18 @@ export class PostgresDomainStore implements DomainStore {
     const r = await this.pool.query(`SELECT * FROM records WHERE id=$1`, [id]);
     return r.rows[0] ? this.toRec(r.rows[0]) : undefined;
   }
-  private recWhere(q: { wedge?: string; collection?: string; case_id?: string; where?: Record<string, unknown> }) {
+  private recWhere(q: RecordQuery) {
     const where: string[] = []; const vals: unknown[] = [];
+    // Tenant scope, fail-closed: `project_id=$n` never matches a NULL project_id in SQL, which is
+    // exactly what we want — an unscoped legacy row does not belong to whoever happens to ask.
+    if (q.project_id !== undefined) { vals.push(q.project_id); where.push(`project_id=$${vals.length}`); }
     for (const [col, val] of [["wedge", q.wedge], ["collection", q.collection], ["case_id", q.case_id]] as const) {
       if (val) { vals.push(val); where.push(`${col}=$${vals.length}`); }
     }
     if (q.where && Object.keys(q.where).length) { vals.push(JSON.stringify(q.where)); where.push(`data @> $${vals.length}::jsonb`); }
     return { clause: where.length ? "WHERE " + where.join(" AND ") : "", vals };
   }
-  async queryRecords(q: { wedge?: string; collection?: string; case_id?: string; where?: Record<string, unknown>; limit?: number }): Promise<Record_[]> {
+  async queryRecords(q: RecordQuery & { limit?: number }): Promise<Record_[]> {
     const { clause, vals } = this.recWhere(q);
     vals.push(q.limit ?? 200);
     const r = await this.pool.query(`SELECT * FROM records ${clause} ORDER BY created_at DESC LIMIT $${vals.length}`, vals);
@@ -498,7 +536,7 @@ export class PostgresDomainStore implements DomainStore {
     const r = await this.pool.query(`DELETE FROM records WHERE id=$1`, [id]);
     return (r.rowCount ?? 0) > 0;
   }
-  async countRecords(q: { wedge?: string; collection?: string; case_id?: string; where?: Record<string, unknown> }): Promise<number> {
+  async countRecords(q: RecordQuery): Promise<number> {
     const { clause, vals } = this.recWhere(q);
     const r = await this.pool.query(`SELECT COUNT(*)::int AS n FROM records ${clause}`, vals);
     return r.rows[0]?.n ?? 0;
@@ -525,8 +563,10 @@ export class PostgresDomainStore implements DomainStore {
     const r = await this.pool.query(`SELECT * FROM cases WHERE id=$1`, [id]);
     return r.rows[0] ? this.toCase(r.rows[0]) : undefined;
   }
-  async listCases(filter: { wedge?: string; status?: Case["status"]; client_id?: string; stage?: string } = {}): Promise<Case[]> {
+  async listCases(filter: CaseFilter = {}): Promise<Case[]> {
     const where: string[] = []; const vals: unknown[] = [];
+    // Same fail-closed tenant scope as records: NULL project_id never equals a supplied id.
+    if (filter.project_id !== undefined) { vals.push(filter.project_id); where.push(`project_id=$${vals.length}`); }
     for (const [col, val] of [["wedge", filter.wedge], ["status", filter.status], ["client_id", filter.client_id], ["stage", filter.stage]] as const) {
       if (val) { vals.push(val); where.push(`${col}=$${vals.length}`); }
     }

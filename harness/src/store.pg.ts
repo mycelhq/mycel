@@ -84,6 +84,14 @@ export class PostgresStore implements Store {
       await client.query(`ALTER TABLE tasks ADD COLUMN IF NOT EXISTS event_seq int NOT NULL DEFAULT 0;`);
       await client.query(`ALTER TABLE tasks ADD COLUMN IF NOT EXISTS project_id text;`);
       await client.query(`ALTER TABLE tasks ADD COLUMN IF NOT EXISTS case_id uuid;`);
+      // Phase-1 routing columns: which customer the work is for, which surface it came in on, who
+      // owns the next move, and how sure the agent was. Nullable and additive, so every existing
+      // row stays valid and reads as "unknown" rather than as a wrong default.
+      await client.query(`ALTER TABLE tasks ADD COLUMN IF NOT EXISTS client_id text;`);
+      await client.query(`ALTER TABLE tasks ADD COLUMN IF NOT EXISTS source text;`);
+      await client.query(`ALTER TABLE tasks ADD COLUMN IF NOT EXISTS assigned_to text;`);
+      await client.query(`ALTER TABLE tasks ADD COLUMN IF NOT EXISTS confidence_score double precision;`);
+      await client.query(`CREATE INDEX IF NOT EXISTS tasks_client_idx ON tasks (client_id);`);
       // Uploads. Additive so an existing install keeps every artifact it already has, and the
       // defaults are what those rows always were: agent-written UTF-8 text.
       await client.query(`
@@ -107,6 +115,12 @@ export class PostgresStore implements Store {
       id: r.id,
       project_id: r.project_id ?? undefined,
       case_id: r.case_id ?? undefined,
+      client_id: r.client_id ?? undefined,
+      source: r.source ?? undefined,
+      assigned_to: r.assigned_to ?? undefined,
+      // pg returns double precision as a number already, but null must stay null rather than
+      // becoming 0 — "no confidence reported" and "zero confidence" are different answers.
+      confidence_score: r.confidence_score === null || r.confidence_score === undefined ? undefined : Number(r.confidence_score),
       wedge: r.wedge,
       task_type: r.task_type,
       actor: r.actor,
@@ -124,12 +138,16 @@ export class PostgresStore implements Store {
 
   async createTask(t: Task): Promise<Task> {
     await this.pool.query(
-      `INSERT INTO tasks (id, project_id, case_id, wedge, task_type, actor, input, constraints, tools, output_schema, status, cost_usd, created_at, updated_at)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)`,
+      `INSERT INTO tasks (id, project_id, case_id, client_id, source, assigned_to, confidence_score, wedge, task_type, actor, input, constraints, tools, output_schema, status, cost_usd, created_at, updated_at)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18)`,
       [
         t.id,
         t.project_id ?? null,
         t.case_id ?? null,
+        t.client_id ?? null,
+        t.source ?? null,
+        t.assigned_to ?? null,
+        t.confidence_score ?? null,
         t.wedge,
         t.task_type,
         JSON.stringify(t.actor),
@@ -151,11 +169,14 @@ export class PostgresStore implements Store {
     return r.rows[0] ? this.rowToTask(r.rows[0]) : undefined;
   }
 
-  async listTasks(filter: { status?: TaskStatus; wedge?: string; limit?: number } = {}): Promise<Task[]> {
+  async listTasks(
+    filter: { status?: TaskStatus; wedge?: string; client_id?: string; limit?: number } = {},
+  ): Promise<Task[]> {
     const where: string[] = [];
     const vals: unknown[] = [];
     if (filter.status) { vals.push(filter.status); where.push(`status=$${vals.length}`); }
     if (filter.wedge) { vals.push(filter.wedge); where.push(`wedge=$${vals.length}`); }
+    if (filter.client_id) { vals.push(filter.client_id); where.push(`client_id=$${vals.length}`); }
     vals.push(filter.limit ?? 100);
     const sql =
       `SELECT * FROM tasks ${where.length ? "WHERE " + where.join(" AND ") : ""} ` +
@@ -173,6 +194,32 @@ export class PostgresStore implements Store {
     } else {
       await this.pool.query(`UPDATE tasks SET status=$2, updated_at=now() WHERE id=$1`, [id, status]);
     }
+  }
+
+  async updateTask(
+    id: string,
+    patch: Partial<Pick<Task, "assigned_to" | "confidence_score" | "source" | "client_id" | "case_id">>,
+  ): Promise<Task | undefined> {
+    // Built column by column rather than with COALESCE, because COALESCE cannot express "set this
+    // to NULL" — and clearing a client link or a confidence score is a legitimate patch.
+    const sets: string[] = [];
+    const vals: unknown[] = [];
+    const set = (col: string, val: unknown) => {
+      vals.push(val);
+      sets.push(`${col}=$${vals.length}`);
+    };
+    if (patch.assigned_to !== undefined) set("assigned_to", patch.assigned_to);
+    if ("confidence_score" in patch) set("confidence_score", patch.confidence_score ?? null);
+    if (patch.source !== undefined) set("source", patch.source);
+    if ("client_id" in patch) set("client_id", patch.client_id ?? null);
+    if ("case_id" in patch) set("case_id", patch.case_id ?? null);
+    if (!sets.length) return this.getTask(id);
+    vals.push(id);
+    await this.pool.query(
+      `UPDATE tasks SET ${sets.join(", ")}, updated_at=now() WHERE id=$${vals.length}`,
+      vals,
+    );
+    return this.getTask(id);
   }
 
   async addCost(id: string, delta: number): Promise<void> {
@@ -327,6 +374,17 @@ export class PostgresStore implements Store {
       `SELECT id, task_id, name, content_type, created_at, encoding, size_bytes, source, client_id, uploaded_by
        FROM artifacts WHERE task_id=$1 ORDER BY created_at`,
       [taskId],
+    );
+    return r.rows.map((row: any) => stripContent(this.rowToArtifact({ ...row, content: "" })));
+  }
+
+  async listArtifactsForTasks(taskIds: string[]): Promise<Omit<Artifact, "content">[]> {
+    // An empty list must not become an unfiltered scan of every artifact in the database.
+    if (!taskIds.length) return [];
+    const r = await this.pool.query(
+      `SELECT id, task_id, name, content_type, created_at, encoding, size_bytes, source, client_id, uploaded_by
+       FROM artifacts WHERE task_id = ANY($1::uuid[]) ORDER BY created_at DESC`,
+      [taskIds],
     );
     return r.rows.map((row: any) => stripContent(this.rowToArtifact({ ...row, content: "" })));
   }

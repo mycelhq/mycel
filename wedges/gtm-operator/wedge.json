@@ -1,0 +1,45 @@
+{
+  "wedge": "gtm-operator",
+  "title": "GTM Operator (cadence only — task types not landed yet)",
+  "cases": {
+    "stages": [
+      "prospect",
+      "touch_1",
+      "touch_2",
+      "touch_3",
+      "replied",
+      "booked",
+      "closed_lost"
+    ],
+    "initial": "prospect"
+  },
+  "workflows": [
+    {
+      "name": "next_touch",
+      "description": "Whether to send the next outbound touch, which stage to move to, and how long to wait. ALWAYS call this before drafting a follow-up; it stops on reply, on booking, and on opt-out.",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "stage": { "type": "string" },
+          "has_reply": { "type": "boolean" },
+          "opt_out": { "type": "boolean" },
+          "days_since_last_touch": { "type": ["number", "null"] },
+          "touch_count": { "type": "number" }
+        },
+        "required": ["stage"]
+      },
+      "output_schema": {
+        "type": "object",
+        "properties": {
+          "should_send": { "type": "boolean" },
+          "mark_closed": { "type": "boolean" },
+          "next_stage": { "type": "string" },
+          "touch_number": { "type": "number" },
+          "next_touch_after_days": { "type": ["number", "null"] },
+          "reason": { "type": "string" }
+        },
+        "required": ["should_send", "mark_closed", "next_stage", "reason"]
+      }
+    }
+  ]
+}

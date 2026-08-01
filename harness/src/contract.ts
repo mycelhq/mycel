@@ -19,12 +19,53 @@ export interface Constraints {
   approval_required: boolean;
 }
 
+/**
+ * Where a task originated — the intake surface. Distinct from `actor` (WHO caused it): a portal
+ * message and an inbound email can both carry actor.kind "user".
+ * Keep this closed and short; map an unknown channel to `"channel"` rather than inventing one-offs.
+ */
+export type TaskSource =
+  | "email"
+  | "form"
+  | "slack"
+  | "upload"
+  | "api"
+  | "schedule"
+  | "portal"
+  | "case"
+  | "channel";
+
+/** Who currently owns the next action on the task. */
+export type TaskAssignee = "agent" | "human";
+
 export interface Task {
   id: string;
   /** The project (tenant) this task belongs to. Reads are filtered by the caller's projects. */
   project_id?: string;
-  /** The case (long-lived engagement) this task is an episode of, when there is one. */
+  /**
+   * The case (long-lived engagement) this task is an episode of, when there is one.
+   * This IS the task hierarchy — there is no `parent_task_id`. Sub-work is another episode of the
+   * same Case (or a new Case), not a child Task row.
+   */
   case_id?: string;
+  /**
+   * Customer this work is for. Reachable via case/input too, but duplicated top-level so
+   * list/filter and the client-context façade don't need a join through either.
+   */
+  client_id?: string;
+  /** Intake surface that created this task (`api` when POSTed directly). */
+  source?: TaskSource;
+  /**
+   * Who owns the next action. Defaults to `agent`. Set to `human` when an operator must act
+   * (review, override) — assignment can outlive a single `awaiting_approval` gate, so it is not
+   * merely inferred from status or the last TaskEvent.
+   */
+  assigned_to?: TaskAssignee;
+  /**
+   * 0..1 confidence from the last agent step that reported one; omitted until something sets it,
+   * `null` once explicitly cleared. Mutable mid-run via `Store.updateTask`.
+   */
+  confidence_score?: number | null;
   wedge: string;
   task_type: string;
   actor: { kind: "user" | "business" | "system"; id: string };
@@ -126,6 +167,11 @@ export interface CreateTaskInput {
   constraints?: Partial<Constraints>;
   tools?: string[];
   output_schema?: unknown;
+  source?: TaskSource;
+  client_id?: string;
+  case_id?: string;
+  assigned_to?: TaskAssignee;
+  confidence_score?: number | null;
 }
 
 // ── The service surface: who the work is for, where it comes from/goes, and the external
@@ -236,6 +282,11 @@ export interface Client {
   display_name?: string;
   handles: string[]; // normalized emails/phones/ids used to match inbound
   metadata: Record<string, unknown>;
+  /**
+   * Operational preferences (tone, timezone, billing cadence, …) — client-scoped settings the
+   * façade reads and writes directly. NOT grounding knowledge; that is a `KnowledgeItem`.
+   */
+  preferences?: Record<string, unknown>;
   created_at: string;
   updated_at: string;
 }

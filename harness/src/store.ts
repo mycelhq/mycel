@@ -17,7 +17,7 @@ export interface Store {
   createTask(t: Task): Promise<Task>;
   getTask(id: string): Promise<Task | undefined>;
   /** Most-recent-first list for the operator portal. */
-  listTasks(filter?: { status?: TaskStatus; wedge?: string; limit?: number }): Promise<Task[]>;
+  listTasks(filter?: { status?: TaskStatus; wedge?: string; client_id?: string; limit?: number }): Promise<Task[]>;
   /**
    * How many tasks these projects created since `sinceIso`.
    *
@@ -32,6 +32,16 @@ export interface Store {
   sumCostSince(projectIds: string[], sinceIso: string): Promise<number>;
   /** Set status; on a failure/terminal state, pass the reason so it's persisted on the task. */
   setStatus(id: string, status: TaskStatus, error?: string): Promise<void>;
+  /**
+   * Patch the mutable routing/confidence fields. Keys absent from `patch` are left alone; pass an
+   * explicit `null` (or `undefined` under a present key) to clear one. Deliberately narrow — status
+   * has `setStatus`, cost has `addCost`, and `input`/`constraints` are fixed at creation because a
+   * run already reading them must not have them changed underneath it.
+   */
+  updateTask(
+    id: string,
+    patch: Partial<Pick<Task, "assigned_to" | "confidence_score" | "source" | "client_id" | "case_id">>,
+  ): Promise<Task | undefined>;
   addCost(id: string, delta: number): Promise<void>;
   appendEvent(taskId: string, type: EventType, data?: Record<string, unknown>): Promise<TaskEvent>;
   eventsAfter(taskId: string, afterId: number): Promise<TaskEvent[]>;
@@ -51,6 +61,12 @@ export interface Store {
   /** A task's artifacts, metadata only — `content` is stripped, because a list of 30MB PDFs
    *  rendered into JSON is a way to run a server out of memory from a UI. */
   listArtifacts(taskId: string): Promise<Omit<Artifact, "content">[]>;
+  /**
+   * The same metadata-only list across several tasks in one round trip — how the client-context
+   * façade answers "what have we already delivered to this client". Content stays stripped for the
+   * same reason it is on `listArtifacts`: this fans out over a client's entire history.
+   */
+  listArtifactsForTasks(taskIds: string[]): Promise<Omit<Artifact, "content">[]>;
   /** Non-terminal tasks (queued/provisioning/running/awaiting_approval/validating). */
   listUnfinished(): Promise<Task[]>;
   /** Release resources (e.g. the pg pool) on graceful shutdown. Optional. */
@@ -100,10 +116,13 @@ export class InMemoryStore implements Store {
     return this.tasks.get(id);
   }
 
-  async listTasks(filter: { status?: TaskStatus; wedge?: string; limit?: number } = {}): Promise<Task[]> {
+  async listTasks(
+    filter: { status?: TaskStatus; wedge?: string; client_id?: string; limit?: number } = {},
+  ): Promise<Task[]> {
     let all = [...this.tasks.values()];
     if (filter.status) all = all.filter((t) => t.status === filter.status);
     if (filter.wedge) all = all.filter((t) => t.wedge === filter.wedge);
+    if (filter.client_id) all = all.filter((t) => t.client_id === filter.client_id);
     all.sort((a, b) => (a.created_at < b.created_at ? 1 : -1)); // newest first
     return all.slice(0, filter.limit ?? 100);
   }
@@ -115,6 +134,23 @@ export class InMemoryStore implements Store {
       if (error !== undefined) t.error = error;
       t.updated_at = new Date().toISOString();
     }
+  }
+
+  async updateTask(
+    id: string,
+    patch: Partial<Pick<Task, "assigned_to" | "confidence_score" | "source" | "client_id" | "case_id">>,
+  ): Promise<Task | undefined> {
+    const t = this.tasks.get(id);
+    if (!t) return undefined;
+    // `"k" in patch` rather than `!== undefined` for the nullable fields: clearing a client link or
+    // a confidence score is a real intent and must not be indistinguishable from not mentioning it.
+    if (patch.assigned_to !== undefined) t.assigned_to = patch.assigned_to;
+    if ("confidence_score" in patch) t.confidence_score = patch.confidence_score;
+    if (patch.source !== undefined) t.source = patch.source;
+    if ("client_id" in patch) t.client_id = patch.client_id;
+    if ("case_id" in patch) t.case_id = patch.case_id;
+    t.updated_at = new Date().toISOString();
+    return t;
   }
 
   async addCost(id: string, delta: number): Promise<void> {
@@ -212,6 +248,15 @@ export class InMemoryStore implements Store {
     return [...this.artifacts.values()]
       .filter((a) => a.task_id === taskId)
       .sort((a, b) => a.created_at.localeCompare(b.created_at))
+      .map(stripContent);
+  }
+
+  async listArtifactsForTasks(taskIds: string[]): Promise<Omit<Artifact, "content">[]> {
+    if (!taskIds.length) return [];
+    const wanted = new Set(taskIds);
+    return [...this.artifacts.values()]
+      .filter((a) => wanted.has(a.task_id))
+      .sort((a, b) => b.created_at.localeCompare(a.created_at)) // newest first, like every other list
       .map(stripContent);
   }
 
