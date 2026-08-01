@@ -25,6 +25,7 @@ import {
   type NormalizedIntake,
 } from "./intake-normalize";
 import { mountLinkedIn } from "./linkedin/routes";
+import { mountGtm } from "./gtm/routes";
 import { getActionGrant } from "./actiongrants";
 import { getArtifactBackend } from "./artifacts";
 import { subscribe } from "./bus";
@@ -1883,6 +1884,17 @@ export function createServer(store: Store): Hono {
   // ── LinkedIn: self-hosted session, opt-in ── /v1/linkedin/* lives in linkedin/routes.ts. It gets
   // the tenancy helpers rather than re-deriving them, so scoping has one definition.
   mountLinkedIn(app, {
+    getConnection: (id) => domain.getConnection(id),
+    accessible,
+    writeProjectId,
+    inScope,
+  });
+
+  // ── Outreach sequencer ── /v1/gtm/* lives in gtm/routes.ts. Propose a campaign, approve it once,
+  // and a five-minute Schedule walks each prospect's Case through the sequence under pacing.
+  mountGtm(app, {
+    store,
+    domain,
     getConnection: (id) => domain.getConnection(id),
     accessible,
     writeProjectId,

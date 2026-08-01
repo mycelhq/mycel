@@ -112,6 +112,59 @@ export function engagementMultiplier(e: Engagement): number {
   return m;
 }
 
+/**
+ * How long a counter counts for, per kind.
+ *
+ * These mirror `budgetFor`: the invitation budget is a weekly figure, the message budget is
+ * `messagesPerDay × 7` (also weekly), and InMail credits are monthly. A counter with no window is a
+ * counter that only ever goes up, which is the same as a permanent ban after the first good week.
+ */
+export const WINDOW_MS: Record<TouchKind, number> = {
+  invite: 7 * 86_400_000,
+  message: 7 * 86_400_000,
+  inmail: 30 * 86_400_000,
+  profile_view: 7 * 86_400_000,
+  follow: 7 * 86_400_000,
+};
+
+/**
+ * The pacing bookkeeping as it is persisted on `connection.config.pacing`.
+ *
+ * `windows[kind]` is the instant the current counter started counting. That single field is what
+ * makes rollover possible without a cron: a counter is live if its window began less than
+ * `WINDOW_MS[kind]` ago, and is otherwise read as zero and reset on the next write. A rolling
+ * window rather than a calendar reset, because LinkedIn's own windows roll.
+ */
+export interface PacingState {
+  used?: Partial<Record<TouchKind, number>>;
+  windows?: Partial<Record<TouchKind, string>>;
+  /** When the last touch of each kind actually went out. What the UI shows, and the spacing proof. */
+  last_at?: Partial<Record<TouchKind, string>>;
+  engagement?: Engagement;
+}
+
+/**
+ * The counters that are still inside their window, as `evaluate` wants them.
+ *
+ * Pure, and applied on READ as well as on write: a connection whose last send was three weeks ago
+ * must not still be carrying that week's total, or the account is throttled forever by arithmetic
+ * nobody can see.
+ */
+export function rollUsed(state: PacingState | undefined, now: Date = new Date()): Partial<Record<TouchKind, number>> {
+  const used = state?.used ?? {};
+  const windows = state?.windows ?? {};
+  const out: Partial<Record<TouchKind, number>> = {};
+  for (const [k, n] of Object.entries(used) as Array<[TouchKind, number | undefined]>) {
+    if (!n) continue;
+    const startedAt = Date.parse(windows[k] ?? "");
+    // No window start at all means state written by something that did not record one. Count it —
+    // dropping an unexplained counter is the permissive direction, and this is the safety check.
+    if (Number.isFinite(startedAt) && now.getTime() - startedAt >= (WINDOW_MS[k] ?? WINDOW_MS.invite)) continue;
+    out[k] = n;
+  }
+  return out;
+}
+
 export interface PacingInput {
   tier: AccountTier;
   accountAgeDays: number;
@@ -241,7 +294,7 @@ export async function assertSendAllowed(
       return { allowed: false, reason: "unknown connection", remaining: 0, budget: 0, nextAfterMs: 0 };
     }
     const cfg = (conn.config ?? {}) as Record<string, unknown>;
-    const state = (cfg.pacing ?? {}) as Partial<PacingInput> & { used?: Record<string, number> };
+    const state = (cfg.pacing ?? {}) as PacingState;
     const now = new Date();
     const offset = typeof cfg.utc_offset === "number" ? cfg.utc_offset : 0;
     const local = new Date(now.getTime() + offset * 3600_000);
@@ -249,8 +302,11 @@ export async function assertSendAllowed(
     return evaluate(kind, {
       tier: (cfg.tier as AccountTier) ?? "free",
       accountAgeDays: typeof cfg.account_age_days === "number" ? cfg.account_age_days : 0,
-      engagement: (state.engagement as Engagement) ?? { sent: 0, accepted: 0, replied: 0, flagged: 0 },
-      used: (state.used ?? {}) as Partial<Record<TouchKind, number>>,
+      engagement: state.engagement ?? { sent: 0, accepted: 0, replied: 0, flagged: 0 },
+      // Rolled here rather than trusted raw: the write side resets a stale counter on its next
+      // touch, but nothing guarantees a touch ever comes, and a campaign that has been paused for a
+      // fortnight must resume rather than stay blocked by a fortnight-old total.
+      used: rollUsed(state, now),
       localHour: local.getUTCHours(),
       localDay: local.getUTCDay(),
     });
@@ -263,4 +319,61 @@ export async function assertSendAllowed(
       nextAfterMs: 60_000,
     };
   }
+}
+
+// ── The write side: closing the loop ──────────────────────────────────────────────────────────────
+//
+// Everything above is a READ of state that, until now, nothing wrote. `assertSendAllowed` consulted
+// `connection.config.pacing` and no code path ever incremented it, so `used` stayed `{}` forever
+// (the budget never decremented) and `engagement.sent` stayed 0 forever (so `engagementMultiplier`
+// returned its cautious 0.6 default for the life of the account, whatever the account actually
+// earned). A budget that never decrements is not a budget, and a feedback loop with no feedback is
+// a constant — the two mechanisms this file's header describes were both inert.
+//
+// ATOMICITY. Two workers sending for the same connection must not lose an increment, and
+// `updateConnection` is a read-modify-write: both read `used.message = 7`, both write 8, and one
+// send is now invisible to the safety check. So these go through `DomainStore.bumpPacing`, which is
+// a single arithmetic-in-the-database statement on Postgres (see domain.pg.ts) and a
+// no-await-in-the-middle mutation in memory. See the guarantee stated on the interface.
+
+/**
+ * Record a touch that actually went out, against the window it belongs to.
+ *
+ * Call this AFTER the send succeeded, never before. A pre-increment would be safer against
+ * double-sending and worse at everything else: a failed send would permanently consume a scarce
+ * invitation the recipient never received, and this budget is the account's whole allowance.
+ */
+export async function recordTouch(
+  domain: DomainStore,
+  connectionId: string,
+  kind: TouchKind,
+  now: Date = new Date(),
+): Promise<void> {
+  const window = WINDOW_MS[kind] ?? WINDOW_MS.invite;
+  await domain.bumpPacing(connectionId, {
+    kind,
+    at: now.toISOString(),
+    windowResetBefore: new Date(now.getTime() - window).toISOString(),
+    windowStart: now.toISOString(),
+    // `engagement.sent` is the DENOMINATOR of the acceptance rate, so it counts invitations and
+    // nothing else. Counting messages here would divide a fixed number of acceptances by a much
+    // larger number, and every healthy account would read as one nobody wants to connect with.
+    engagement: kind === "invite" ? { sent: 1 } : undefined,
+  });
+}
+
+/**
+ * Record how a touch landed. This is the half `engagementMultiplier` actually scores on.
+ *
+ * `accepted` and `replied` are the signals LinkedIn reads too, which is the point: read them first
+ * and throttle ourselves before they throttle us.
+ */
+export async function recordEngagement(
+  domain: DomainStore,
+  connectionId: string,
+  delta: { accepted?: number; replied?: number; flagged?: number },
+  now: Date = new Date(),
+): Promise<void> {
+  if (!delta.accepted && !delta.replied && !delta.flagged) return;
+  await domain.bumpPacing(connectionId, { at: now.toISOString(), engagement: delta });
 }

@@ -28,6 +28,26 @@ export interface CaseFilter {
   stage?: string;
 }
 
+/**
+ * One atomic increment of a connection's pacing bookkeeping (`config.pacing`).
+ *
+ * Deliberately dumb: it carries pre-computed instants rather than a policy, so the store does
+ * arithmetic and pacing.ts keeps the judgment about how long a window is. The store must never
+ * decide what a week means.
+ */
+export interface PacingBump {
+  /** The touch counter to increment. Omit for an engagement-only bump (a reply, an acceptance). */
+  kind?: string;
+  /** When this happened. */
+  at: string;
+  /** Reset the counter to zero first if its window started at or before this instant. */
+  windowResetBefore?: string;
+  /** The window start to stamp when a reset happens. */
+  windowStart?: string;
+  /** Added to the engagement counters. */
+  engagement?: { sent?: number; accepted?: number; replied?: number; flagged?: number };
+}
+
 export interface DomainStore {
   // connections (secrets referenced, never stored in the clear here)
   createConnection(c: Omit<Connection, "id" | "created_at">): Promise<Connection>;
@@ -38,6 +58,21 @@ export interface DomainStore {
     id: string,
     patch: Partial<Pick<Connection, "name" | "config" | "secret_ref">>,
   ): Promise<Connection | undefined>;
+  /**
+   * ATOMICALLY increment the pacing counters on a connection.
+   *
+   * THE GUARANTEE: concurrent bumps for the same connection never lose an increment. `updateConnection`
+   * cannot promise that — it reads the row into JS, merges, and writes back, so two workers that
+   * read `used.message = 7` both write 8 and one real send becomes invisible to the safety check
+   * that is supposed to keep the account alive. On Postgres this is one statement whose SET
+   * expression reads the row's own current value (`… + 1`), which READ COMMITTED re-evaluates
+   * against the winning row version after the row lock is released — the same reason
+   * `UPDATE t SET n = n + 1` is safe. In memory it is a read-and-write with no `await` between the
+   * two, which the single-threaded event loop makes indivisible.
+   *
+   * Returns the updated connection so a caller can see the new totals without a second read.
+   */
+  bumpPacing(connectionId: string, bump: PacingBump): Promise<Connection | undefined>;
 
   // trigger subscriptions (reactive counterpart to schedules)
   createTriggerSub(t: Omit<TriggerSub, "id" | "created_at" | "updated_at">): Promise<TriggerSub>;
@@ -190,6 +225,35 @@ export class InMemoryDomainStore implements DomainStore {
   }
   async listConnections(): Promise<Connection[]> {
     return [...this.connections.values()];
+  }
+  async bumpPacing(connectionId: string, bump: PacingBump): Promise<Connection | undefined> {
+    const c = this.connections.get(connectionId);
+    if (!c) return undefined;
+    // NOT A SINGLE `await` BELOW THIS LINE, and that is the whole guarantee in this backend: an
+    // async function only yields at an await, so read-merge-write with none of them is indivisible
+    // however many callers are in flight. Add one and two concurrent sends silently share a
+    // counter. (Postgres gets the real one — see domain.pg.ts.)
+    const cfg = { ...(c.config ?? {}) } as Record<string, unknown>;
+    const p = { ...((cfg.pacing ?? {}) as Record<string, unknown>) };
+    const used = { ...((p.used ?? {}) as Record<string, number>) };
+    const windows = { ...((p.windows ?? {}) as Record<string, string>) };
+    const lastAt = { ...((p.last_at ?? {}) as Record<string, string>) };
+    const eng = { sent: 0, accepted: 0, replied: 0, flagged: 0, ...((p.engagement ?? {}) as Record<string, number>) };
+
+    if (bump.kind) {
+      const started = Date.parse(windows[bump.kind] ?? "");
+      const cutoff = Date.parse(bump.windowResetBefore ?? "");
+      const expired = !Number.isFinite(started) || (Number.isFinite(cutoff) && started <= cutoff);
+      used[bump.kind] = expired ? 1 : (used[bump.kind] ?? 0) + 1;
+      if (expired && bump.windowStart) windows[bump.kind] = bump.windowStart;
+      lastAt[bump.kind] = bump.at;
+    }
+    for (const k of ["sent", "accepted", "replied", "flagged"] as const) {
+      eng[k] = (eng[k] ?? 0) + (bump.engagement?.[k] ?? 0);
+    }
+
+    c.config = { ...cfg, pacing: { ...p, used, windows, last_at: lastAt, engagement: eng } };
+    return c;
   }
 
   private triggerSubs = new Map<string, TriggerSub>();

@@ -22,7 +22,9 @@
 import type { Connection, ConnectionOwner } from "../contract";
 import { getDomainStore } from "../domain";
 import { getSecret, setSecret, deleteSecret } from "../secrets";
-import { assertSendAllowed } from "../pacing";
+import { assertSendAllowed, recordEngagement, recordTouch } from "../pacing";
+import { touchFor } from "./capabilities";
+import { noteInboundReplies } from "../gtm/replies";
 import { startLogin, submitChallenge, type BrowserDriver, type PendingLogin } from "./login";
 import { ProxyRequiredError, redactProxy, requireProxy } from "./proxy";
 import { forgetUsage, usageFor, type AccountUsage } from "./meter";
@@ -253,6 +255,35 @@ export function _setPacing(fn: PacingCheck | null): void {
 }
 
 /**
+ * Spend the touch this action costs — the other half of `assertSendAllowed`.
+ *
+ * THE BUG THIS EXISTS TO CLOSE: pacing read `connection.config.pacing` and nothing on any path ever
+ * wrote it. So `used` was permanently `{}` (the weekly allowance never decremented, and an account
+ * could be driven straight through its real limit while every check said "allowed"), and
+ * `engagement.sent` was permanently 0, which pins `engagementMultiplier` to its cautious 0.6
+ * default whatever the account earns. A sequencer on top of that open loop is a machine for getting
+ * a founder's account restricted.
+ *
+ * It takes the CAPABILITY ID, not a touch kind, so the mapping stays `touchFor`'s single decision:
+ * a step composed later out of any capability spends the right budget without anyone remembering to
+ * update a second table. `touchFor` returns "invite" for an unknown id, so a miss over-charges the
+ * scarcest budget, which is the safe direction.
+ *
+ * Never throws. A failed increment is logged loudly (it is a safety-relevant loss) but it must not
+ * turn a message the recipient already received into a reported failure — the caller would retry,
+ * and a duplicate DM is a worse outcome than one uncounted touch.
+ */
+export async function noteLinkedInTouch(connectionId: string, action: string): Promise<void> {
+  const kind = touchFor(action);
+  if (!kind) return; // reads and free actions cost nothing
+  try {
+    await recordTouch(getDomainStore(), connectionId, kind);
+  } catch (e) {
+    console.error(`[mycel] pacing counter NOT incremented for ${action} on ${connectionId}:`, e);
+  }
+}
+
+/**
  * Send a message on a connected LinkedIn account. Called by the action executor AFTER approval.
  *
  * This is the single outbound door: the approval gate is upstream, pacing is here, the proxy rule is
@@ -276,7 +307,11 @@ export async function sendLinkedInMessage(
   }
 
   try {
-    return await sendMessage(session, await voyagerCtx(conn), threadUrn, text);
+    const res = await sendMessage(session, await voyagerCtx(conn), threadUrn, text);
+    // Only a send LinkedIn accepted spends budget. Charging for a failure would burn allowance on
+    // messages nobody received; charging before the call would do it on every transport blip.
+    if (res.ok) await noteLinkedInTouch(conn.id, "send_message");
+    return res;
   } catch (e) {
     if (e instanceof ProxyRequiredError) return { ok: false, detail: e.message };
     // Never echo the message body back in an error.
@@ -302,6 +337,24 @@ export async function syncLinkedInInbox(conn: Connection): Promise<SyncResult> {
     await getDomainStore().updateConnection(conn.id, {
       config: { ...conn.config, sync_token: result.syncToken },
     });
+  }
+
+  // THE FEEDBACK HALF OF PACING. A reply is the strongest positive signal LinkedIn scores, and this
+  // is the only place in the system that learns one — so the engagement counter is written here or
+  // it is never written at all, and `engagementMultiplier` scores every account as if nobody had
+  // ever answered it.
+  //
+  // Counted through the sequencer's cases rather than off the raw inbound list, for two reasons:
+  // it dedupes (a prospect who sends four messages is one reply, not four, and inflating the
+  // numerator would silently EARN budget), and it excludes inbound from people this account never
+  // contacted — recruiters, spam — who are not in the denominator `sent` measures either.
+  //
+  // Wrapped: an inbox sync that fails because of bookkeeping would cost the founder their messages.
+  try {
+    const newReplies = await noteInboundReplies(getDomainStore(), conn, result.inbound);
+    if (newReplies > 0) await recordEngagement(getDomainStore(), conn.id, { replied: newReplies });
+  } catch (e) {
+    console.error(`[mycel] inbound reply bookkeeping failed for ${conn.id}:`, e);
   }
   return result;
 }

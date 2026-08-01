@@ -18,6 +18,7 @@ import type { Cadence, Schedule, Task } from "./contract";
 import { loadConfig } from "./config";
 import type { DomainStore } from "./domain";
 import { runTask } from "./orchestrator";
+import { ADVANCE_TASK_TYPE, advanceSequences } from "./gtm/sequence";
 import type { Store } from "./store";
 
 /** The next due time strictly after `from`. Pure — no clock reads. UTC throughout. */
@@ -81,6 +82,32 @@ export async function fireSchedule(
     updated_at: iso,
   };
   await store.createTask(task);
+
+  /**
+   * The outreach tick is harness work, not agent work.
+   *
+   * Every other schedule spawns a run: a model reads the input and decides what to do. This one
+   * must not, for two reasons. The copy it sends was written and approved days ago, so there is
+   * nothing to decide and an LLM call per prospect would be pure cost; and the tick fires every
+   * five minutes, all day, per project.
+   *
+   * It is kicked off WITHOUT being awaited, exactly like `runTask` above, because `fireSchedule`
+   * runs inside the scheduler's tick loop and that loop refuses to overlap itself — a synchronous
+   * batch here would hold up every other schedule in the deployment behind LinkedIn's latency.
+   */
+  if (s.task_type === ADVANCE_TASK_TYPE) {
+    void advanceSequences(store, domain, { project_id: s.project_id, now })
+      .then(async (summary) => {
+        await store.setStatus(task.id, "succeeded");
+        return summary;
+      })
+      .catch(async (e) => {
+        console.error("[mycel] outreach tick error:", e);
+        await store.setStatus(task.id, "failed", String((e as Error)?.message ?? e)).catch(() => {});
+      });
+    return task;
+  }
+
   void runTask(store, task.id).catch((e) => console.error("[mycel] scheduled runTask error:", e));
   return task;
 }

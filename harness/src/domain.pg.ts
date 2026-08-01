@@ -7,7 +7,7 @@ import { getPool } from "./pool";
 import { withSchemaLock } from "./schema-lock";
 import type { KnowledgeGap } from "./intake";
 import type { Cadence, Case, CaseEvent, Record_, Channel, Client, Connection, ConnectionKind, ConnectionOwner, KnowledgeItem, Message, Schedule, Thread, TriggerSub } from "./contract";
-import { normalizeHandle, type CaseFilter, type DomainStore, type RecordQuery } from "./domain";
+import { normalizeHandle, type CaseFilter, type DomainStore, type PacingBump, type RecordQuery } from "./domain";
 
 const { Pool } = pg;
 const iso = (v: unknown) => new Date(v as string).toISOString();
@@ -219,6 +219,62 @@ export class PostgresDomainStore implements DomainStore {
     );
     return r.rows[0] ? this.toConn(r.rows[0]) : undefined;
   }
+  /**
+   * The atomic pacing increment (see the interface for the guarantee).
+   *
+   * ONE statement, on purpose. Every value it writes is computed from the row's OWN current value
+   * inside the same UPDATE, so this is `n = n + 1` wearing a jsonb costume: when two replicas send
+   * for the same account at the same instant, the second blocks on the row lock and then
+   * re-evaluates its SET expression against the first one's committed row. Read the state into JS
+   * and merge it there — which is what `updateConnection` does — and the second write silently
+   * erases the first, which for a LinkedIn budget means sends the safety check never sees.
+   *
+   * The CASE on `windows->>kind` is the rollover: a counter whose window opened longer ago than the
+   * caller's `windowResetBefore` restarts at 1 under a fresh window instead of accumulating for
+   * ever. Doing it here rather than in a sweeper means there is no state that goes stale between
+   * jobs.
+   */
+  async bumpPacing(connectionId: string, bump: PacingBump): Promise<Connection | undefined> {
+    const e = bump.engagement ?? {};
+    // Built against a parameter offset because the two branches below bind different lead
+    // parameters, and an UPDATE that binds a parameter it never references is a bind error.
+    const engagementSql = (n: number) => `jsonb_build_object(
+        'sent',     coalesce((config->'pacing'->'engagement'->>'sent')::int, 0)     + $${n}::int,
+        'accepted', coalesce((config->'pacing'->'engagement'->>'accepted')::int, 0) + $${n + 1}::int,
+        'replied',  coalesce((config->'pacing'->'engagement'->>'replied')::int, 0)  + $${n + 2}::int,
+        'flagged',  coalesce((config->'pacing'->'engagement'->>'flagged')::int, 0)  + $${n + 3}::int)`;
+    const engVals = [e.sent ?? 0, e.accepted ?? 0, e.replied ?? 0, e.flagged ?? 0];
+
+    // Engagement-only bump (a reply landed, an invitation was accepted): no counter, no window.
+    if (!bump.kind) {
+      const r = await this.pool.query(
+        `UPDATE connections SET config = coalesce(config, '{}'::jsonb) || jsonb_build_object('pacing',
+           coalesce(config->'pacing', '{}'::jsonb) || jsonb_build_object('engagement', ${engagementSql(2)}))
+         WHERE id=$1 RETURNING *`,
+        [connectionId, ...engVals],
+      );
+      return r.rows[0] ? this.toConn(r.rows[0]) : undefined;
+    }
+
+    // `$8` is the window-reset cutoff; a missing window start reads as -infinity, i.e. expired.
+    const expired = `coalesce((config->'pacing'->'windows'->>$7)::timestamptz, '-infinity'::timestamptz) <= $8::timestamptz`;
+    const r = await this.pool.query(
+      `UPDATE connections SET config = coalesce(config, '{}'::jsonb) || jsonb_build_object('pacing',
+         coalesce(config->'pacing', '{}'::jsonb) || jsonb_build_object(
+           'used', coalesce(config->'pacing'->'used', '{}'::jsonb) || jsonb_build_object($7::text,
+             CASE WHEN ${expired} THEN 1
+                  ELSE coalesce((config->'pacing'->'used'->>$7)::int, 0) + 1 END),
+           'windows', coalesce(config->'pacing'->'windows', '{}'::jsonb) || jsonb_build_object($7::text,
+             CASE WHEN ${expired} THEN $9::text
+                  ELSE coalesce(config->'pacing'->'windows'->>$7, $9::text) END),
+           'last_at', coalesce(config->'pacing'->'last_at', '{}'::jsonb) || jsonb_build_object($7::text, $2::text),
+           'engagement', ${engagementSql(3)}))
+       WHERE id=$1 RETURNING *`,
+      [connectionId, bump.at, ...engVals, bump.kind, bump.windowResetBefore ?? bump.at, bump.windowStart ?? bump.at],
+    );
+    return r.rows[0] ? this.toConn(r.rows[0]) : undefined;
+  }
+
   async recordGap(
     g: Omit<KnowledgeGap, "hits" | "task_ids" | "status" | "first_seen" | "last_seen"> & { task_id?: string },
   ): Promise<KnowledgeGap> {
