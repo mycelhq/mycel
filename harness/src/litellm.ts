@@ -40,10 +40,20 @@ interface StoredKey {
 function modelsForPlan(plan: Plan | undefined): string[] {
   const ceiling = PLAN_MAX_TIER[plan ?? "self_hosted"] ?? "deep";
   const order: ModelTier[] = ["fast", "standard", "deep"];
-  return order
-    .slice(0, order.indexOf(ceiling) + 1)
-    // The proxy speaks bare model ids; our tier map is provider-qualified.
-    .map((t) => TIER_MODELS[t].replace(/^[a-z]+\//, ""));
+  // Provider-qualified, exactly as TIER_MODELS names them and exactly as they are registered with
+  // the proxy (`model_name: "openai/gpt-5.6-luna"`, see scripts/litellm-models.js).
+  //
+  // This used to strip the prefix, under the comment "the proxy speaks bare model ids". That was a
+  // belief about the proxy, not a fact about it: LiteLLM matches a key's allowlist against the
+  // registered `model_name` verbatim. Once the models were registered provider-qualified, every
+  // request was refused with "key not allowed to access model", after the model itself had already
+  // resolved — an authorization failure wearing the costume of a configuration one.
+  //
+  // TIER_MODELS is the single source of truth for these strings. Three places had quietly grown
+  // their own convention: this allowlist, the proxy grant, and the sandbox's own config. Only the
+  // sandbox one is genuinely different, and for a reason — inside the sandbox the provider is
+  // `mycel`, which is what keeps the real key out of it.
+  return order.slice(0, order.indexOf(ceiling) + 1).map((t) => TIER_MODELS[t]);
 }
 
 /**
