@@ -46,6 +46,7 @@ import { getGrant } from "./proxygrants";
 import { hasSecret, setSecret } from "./secrets";
 import { stripContent as stripArtifactContent } from "./store";
 import { taskClientId } from "./runtime";
+import { buildTrace } from "./traces";
 import type { Store } from "./store";
 import {
   connConfig as composioConnConfig,
@@ -1350,6 +1351,22 @@ export function createServer(store: Store): Hono {
     const t = await store.getTask(c.req.param("id"));
     if (!t || !inScope(accessible(c), t.project_id)) return c.json({ error: "not found" }, 404);
     return c.json(t);
+  });
+
+  // GET /v1/tasks/:id/trace — the run as a span tree, folded from the durable event log.
+  //
+  // Same tenancy check as every other task read: the trace is strictly a projection of events the
+  // operator can already stream, so it must be exactly as reachable and no more. Operator plane
+  // only — it carries costs and tool arguments, which is the half of a run the portal deliberately
+  // hides from clients (see PORTAL_EVENTS below).
+  app.get("/v1/tasks/:id/trace", async (c) => {
+    const taskId = c.req.param("id") ?? "";
+    const t = await store.getTask(taskId);
+    if (!t || !inScope(accessible(c), t.project_id)) return c.json({ error: "not found" }, 404);
+    // `0` is "from the beginning" — a trace is the whole run by definition; there is no replay
+    // cursor to honour here.
+    const trace = buildTrace(await store.eventsAfter(taskId, 0));
+    return c.json({ ...trace, task_id: taskId, status: t.status, wedge: t.wedge, task_type: t.task_type });
   });
 
   /**
