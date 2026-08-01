@@ -27,19 +27,35 @@ import type pg from "pg";
 const SCHEMA_LOCK_ID = 0x6d7963_65; // "myce"
 
 export async function withSchemaLock<T>(pool: pg.Pool, fn: (client: pg.PoolClient) => Promise<T>): Promise<T> {
-  // A dedicated client, not `pool.query`: a session-level advisory lock belongs to the connection
-  // that took it, and the pool is free to hand the release to a different one.
+  // A dedicated client, not `pool.query`: the lock and the DDL must be the same connection, and the
+  // pool is free to hand two `pool.query` calls to two different ones.
   const client = await pool.connect();
   try {
-    await client.query("SELECT pg_advisory_lock($1)", [SCHEMA_LOCK_ID]);
+    // TRANSACTION-scoped, and the DDL runs inside that same transaction.
+    //
+    // This was `pg_advisory_lock` + `pg_advisory_unlock`, which is session-scoped. That is correct
+    // against a direct connection and quietly wrong through a transaction-mode pooler, where the
+    // backend is returned to the pool at COMMIT: the lock would be released early, or released on
+    // behalf of a different client, and the concurrent-DDL crash this exists to prevent would come
+    // back on exactly the boots it was written for.
+    //
+    // The transaction-scoped form has no such ambiguity — the lock is released by COMMIT or
+    // ROLLBACK, by definition, in either pooling mode. Postgres runs DDL transactionally, so
+    // wrapping it costs nothing; a failed migration now rolls back whole rather than leaving half a
+    // schema behind. (No `CREATE INDEX CONCURRENTLY` anywhere, which is the one thing that could
+    // not live inside this transaction.)
+    await client.query("BEGIN");
     try {
-      // The callback runs its DDL on THIS client, not on the pool. Taking a second connection
-      // while holding the lock doubles the connection cost of a boot and starves a small pool:
-      // with six containers and a pool of five, two of them never get a client at all.
-      return await fn(client);
-    } finally {
-      // Best effort. If this throws, the lock dies with the session anyway.
-      await client.query("SELECT pg_advisory_unlock($1)", [SCHEMA_LOCK_ID]).catch(() => {});
+      await client.query("SELECT pg_advisory_xact_lock($1)", [SCHEMA_LOCK_ID]);
+      // The callback runs its DDL on THIS client, not on the pool. Taking a second connection while
+      // holding the lock doubles the connection cost of a boot and starves a small pool: with six
+      // containers and a pool of five, two of them never get a client at all.
+      const out = await fn(client);
+      await client.query("COMMIT");
+      return out;
+    } catch (e) {
+      await client.query("ROLLBACK").catch(() => {});
+      throw e;
     }
   } finally {
     client.release();

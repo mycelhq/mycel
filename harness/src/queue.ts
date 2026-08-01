@@ -18,7 +18,7 @@
 // run inline exactly as before. That keeps `npm run dev` and the whole test suite working with zero
 // setup, and means the queue is something you get by configuring Postgres rather than something you
 // must configure to get started.
-import { databaseUrl } from "./config";
+import { databaseUrl, sessionDatabaseUrl } from "./config";
 import { getPool } from "./pool";
 import { runTask } from "./orchestrator";
 import type { Store } from "./store";
@@ -32,7 +32,18 @@ let utils: WorkerUtils | null = null;
 let runner: Runner | null = null;
 let queueReady = false;
 
-const connectionString = () => databaseUrl();
+/**
+ * SESSION mode, deliberately — not the transaction pooler the rest of the kernel now uses.
+ *
+ * graphile-worker's latency comes from LISTEN/NOTIFY, and a LISTEN is a subscription owned by a
+ * session. Through a transaction-mode pooler the backend goes to another client the moment the
+ * transaction ends, so the notification is never delivered. Nothing throws: jobs just wait for the
+ * 2-second fallback poll below, which presents as "the queue feels sluggish" rather than as a broken
+ * assumption — the kind of thing that survives for months.
+ *
+ * Falls back to the single URL when no separate session URL is set, which is the self-hosted case.
+ */
+const connectionString = () => sessionDatabaseUrl() ?? databaseUrl();
 
 /**
  * How many runs one worker executes at once — the real backpressure knob.

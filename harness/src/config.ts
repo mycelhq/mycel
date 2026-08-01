@@ -101,6 +101,35 @@ export function loadConfig(): MycelConfig {
  * than the in-memory fallback the kernel already has.
  */
 export function databaseUrl(): string | undefined {
+  // Prefer the transaction-mode pooler when one is configured. See `sessionDatabaseUrl` for why
+  // there are two and which callers must not use this one.
+  const pooled = (process.env.MYCEL_DATABASE_POOLED_URL ?? "").trim();
+  if (pooled) return pooled;
+  const raw = (process.env.MYCEL_DATABASE_URL ?? "").trim();
+  return raw ? raw : undefined;
+}
+
+/**
+ * The SESSION-mode URL. Always the direct connection, never the transaction pooler.
+ *
+ * There are two because Supabase's poolers are two different things behind one hostname:
+ *
+ *   · port 5432 — SESSION mode. One Postgres backend is held for the client's whole lifetime. Every
+ *     session feature works and the ceiling is brutally low: 15 clients on nano, shared by every
+ *     replica. Two kernels at a pool of five plus a worker spends the entire budget, which is why a
+ *     read-only query from a laptop got EMAXCONNSESSION while the system was idle.
+ *   · port 6543 — TRANSACTION mode. A backend is borrowed per transaction and handed back, so
+ *     hundreds of clients share a few backends. The cost is that nothing may outlive a transaction.
+ *
+ * Almost everything here runs short autocommit queries and belongs on 6543. One thing does not:
+ * graphile-worker uses LISTEN/NOTIFY, and a LISTEN is a subscription owned by a session. In
+ * transaction mode the backend is given to someone else immediately afterwards and the notification
+ * is never delivered. Nothing errors — jobs just stop arriving until the fallback poll finds them,
+ * which presents as latency rather than as breakage, and is therefore the kind of bug that survives.
+ *
+ * Unset in a self-hosted install, where a single direct connection string is both.
+ */
+export function sessionDatabaseUrl(): string | undefined {
   const raw = (process.env.MYCEL_DATABASE_URL ?? "").trim();
   return raw ? raw : undefined;
 }
