@@ -149,6 +149,8 @@ export class LocalSandbox implements Sandbox {
  * client, which was an honest warning that nobody had.
  */
 const DAYTONA_PKG = "@daytona/sdk";
+// Matches WORKDIR in sandbox.snapshot.ts. Both must move together.
+const HOME = "/root";
 export class DaytonaSandbox implements Sandbox {
   id = "";
   // Untyped: the concrete SDK shape lives at the integration boundary, not in our core.
@@ -178,13 +180,31 @@ export class DaytonaSandbox implements Sandbox {
     return self;
   }
 
+  /**
+   * Absolute path inside the microVM.
+   *
+   * The runtime addresses files the way a shell would — `~/.config/opencode/opencode.json`,
+   * `AGENTS.md`, `knowledge/x.md`. LocalSandbox expands `~` into its temp home and DockerSandbox
+   * maps it to /root; this class did neither and handed the string straight to `fs.uploadFile`, so
+   * the config landed under a directory literally named `~`.
+   *
+   * OpenCode therefore never read it, the `mycel` provider it declares did not exist, and every run
+   * died with `ProviderModelNotFoundError: providerID "mycel", suggestions: []` — an error that
+   * reads like a wrong model name and is really a file in the wrong place. Relative paths get the
+   * home directory too, because that is where `opencode serve` runs.
+   */
+  private abs(p: string): string {
+    if (p.startsWith("/")) return p;
+    return `${HOME}/${p.replace(/^~\/?/, "")}`;
+  }
+
   async writeFile(path: string, content: string): Promise<void> {
-    await this.sb.fs.uploadFile(Buffer.from(content), path);
+    await this.sb.fs.uploadFile(Buffer.from(content), this.abs(path));
   }
 
   async readFile(path: string): Promise<string | null> {
     try {
-      const b = await this.sb.fs.downloadFile(path);
+      const b = await this.sb.fs.downloadFile(this.abs(path));
       return typeof b?.toString === "function" ? b.toString("utf8") : String(b);
     } catch {
       return null;
