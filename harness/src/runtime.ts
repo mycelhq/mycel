@@ -548,9 +548,28 @@ export const buildAgentsMdForTest = buildAgentsMd;
  * to explain is worse than no diagnostic.
  */
 async function tailAgentLog(sandbox: Sandbox): Promise<string> {
+  // /tmp/opencode.log is only what we redirected from `opencode serve` — which turns out to be the
+  // startup banner and nothing else. OpenCode writes its real diagnostics to its own log directory,
+  // so a 500 from the server left us with "opencode server listening" and no cause. Gather both, plus
+  // the newest file under each candidate directory, and say which file each chunk came from: a tail
+  // with no filename is unattributable the moment there is more than one source.
+  const CANDIDATES = [
+    "/tmp/opencode.log",
+    "$HOME/.local/share/opencode/log",
+    "$HOME/.cache/opencode/log",
+    "/root/.local/share/opencode/log",
+  ];
+  const script = CANDIDATES.map(
+    (c) =>
+      `if [ -f ${c} ]; then echo "--- ${c} ---"; tail -c 3000 ${c}; ` +
+      `elif [ -d ${c} ]; then f=$(ls -t ${c} 2>/dev/null | head -1); ` +
+      `[ -n "$f" ] && { echo "--- ${c}/$f ---"; tail -c 3000 ${c}/$f; }; fi`,
+  ).join("; ");
+
   try {
-    const r = await sandbox.exec("tail -c 4000 /tmp/opencode.log 2>/dev/null || echo '(no log)'");
-    return (r.stdout || r.stderr || "(empty)").trim();
+    const r = await sandbox.exec(`{ ${script}; } 2>/dev/null || true`);
+    const out = (r.stdout || r.stderr || "").trim();
+    return out || "(no agent log found)";
   } catch (e) {
     return `(could not read: ${(e as Error).message})`;
   }
