@@ -160,11 +160,34 @@ export class OpenCodeClient {
     return j.id ?? j.sessionID;
   }
 
+  /**
+   * Send the prompt.
+   *
+   * `model` arrives provider-prefixed ("mycel/gpt-5.6-luna") because that is how it is named
+   * everywhere else — in the tier ladder, in the config we write, in the proxy grant. OpenCode's
+   * message endpoint wants it split:
+   *
+   *     400 Expected object | null, got "mycel/gpt-5.6-luna" at ["model"]
+   *
+   * It used to take the string. This is the shape 1.17.6 wants, and it is the first thing a real run
+   * hit after the sandbox finally booted — the API had moved and nothing here had noticed, because
+   * no run had ever got this far to find out.
+   *
+   * Split on the FIRST slash only: model ids legitimately contain slashes
+   * (openrouter's "anthropic/claude-3.5-sonnet" behind a provider, for one), and splitting on all of
+   * them silently addresses the wrong model rather than failing.
+   */
   async sendPrompt(sessionId: string, text: string, model: string): Promise<void> {
+    const slash = model.indexOf("/");
+    const modelRef =
+      slash > 0
+        ? { providerID: model.slice(0, slash), modelID: model.slice(slash + 1) }
+        : null;
+
     const r = await fetch(`${this.baseUrl}/session/${sessionId}/message`, {
       method: "POST",
       headers: this.headers({ "content-type": "application/json" }),
-      body: JSON.stringify({ parts: [{ type: "text", text }], model }),
+      body: JSON.stringify({ parts: [{ type: "text", text }], model: modelRef }),
     });
     if (!r.ok) throw new Error(`send prompt failed: ${r.status} ${await r.text()}`);
   }
