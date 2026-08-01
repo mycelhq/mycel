@@ -15,6 +15,7 @@ import {
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { loadConfig } from "./config";
+import { ensureSnapshot, snapshotName } from "./sandbox.snapshot";
 
 export interface ExecResult {
   stdout: string;
@@ -153,18 +154,26 @@ export class DaytonaSandbox implements Sandbox {
   // Untyped: the concrete SDK shape lives at the integration boundary, not in our core.
   private sb: any;
 
+  /**
+   * Create a sandbox, from our snapshot by default.
+   *
+   * `client.create` is overloaded in the SDK: `CreateSandboxFromSnapshotParams` ({ snapshot }) and
+   * `CreateSandboxFromImageParams` ({ image }). We take the snapshot branch unless someone has
+   * explicitly named an image, because the image branch makes Daytona build a snapshot from that
+   * image on the spot — per sandbox, on the task's clock — whereas a named snapshot is already
+   * built and pre-pulled onto the runners. `ensureSnapshot` is memoised and normally resolves
+   * instantly, having been warmed by `sandboxPreflight` at boot.
+   */
   static async acquire(
     opts: { image?: string; envVars?: Record<string, string> } = {},
   ): Promise<DaytonaSandbox> {
     const self = new DaytonaSandbox();
     const mod: any = await import(DAYTONA_PKG);
     const client = new mod.Daytona({ apiKey: process.env.DAYTONA_API_KEY });
-    // : CreateSandboxFromImageParams({ image, envVars, autoStopInterval: 60 })
-    self.sb = await client.create({
-      image: opts.image ?? process.env.MYCEL_SANDBOX_IMAGE,
-      envVars: opts.envVars ?? {},
-      autoStopInterval: 60,
-    });
+    const base = { envVars: opts.envVars ?? {}, autoStopInterval: 60 };
+    self.sb = opts.image
+      ? await client.create({ ...base, image: opts.image })
+      : await client.create({ ...base, snapshot: await ensureSnapshot() });
     self.id = self.sb.id;
     return self;
   }
@@ -300,7 +309,9 @@ export async function createSandbox(): Promise<Sandbox> {
   const cfg = loadConfig();
   switch (cfg.sandboxBackend) {
     case "daytona":
-      return DaytonaSandbox.acquire({ image: cfg.sandboxImage });
+      // Note `sandboxImageOverride`, not `sandboxImage`: undefined unless MYCEL_SANDBOX_IMAGE was
+      // actually set, so the default path is the snapshot rather than a docker-only image name.
+      return DaytonaSandbox.acquire({ image: cfg.sandboxImageOverride });
     case "docker":
       return DockerSandbox.acquire(cfg.sandboxImage, cfg.opencodePort);
     case "local":
@@ -331,6 +342,25 @@ export async function sandboxPreflight(backend: string): Promise<string | null> 
   }
   if (!process.env.DAYTONA_API_KEY) {
     return `sandbox backend "daytona" is selected but DAYTONA_API_KEY is not set`;
+  }
+
+  // An explicit image is the founder's problem, not ours — we cannot check a registry we may have no
+  // credentials for, and someone who set MYCEL_SANDBOX_IMAGE has said they know what is there.
+  if (loadConfig().sandboxImageOverride) return null;
+
+  // Build (or find) the snapshot HERE, at boot, not on the first task.
+  //
+  // This is the same lesson as the missing SDK one directory up: an image that does not exist is a
+  // per-task failure that leaves the fleet looking green. It is also slow — a first build is
+  // minutes — and paying that once during a deploy is right, while paying it inside a customer's
+  // task is not. Memoised, so the first task finds it already resolved.
+  try {
+    await ensureSnapshot();
+  } catch (e) {
+    return (
+      `sandbox backend "daytona" is selected but its snapshot ${snapshotName()} could not be ` +
+      `built or found (${(e as Error).message})`
+    );
   }
   return null;
 }

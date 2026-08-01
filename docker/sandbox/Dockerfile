@@ -1,6 +1,10 @@
 # Mycel sandbox image — bakes the OpenCode binary so `opencode serve` starts instantly.
-# Used by the `docker` backend (local isolation) AND pushed to Daytona as the snapshot for the
-# `daytona` backend. Same image, both places. Modeled on /docker/sandbox/Dockerfile.
+# Used by the `docker` backend (local isolation): setup.sh builds it as mycel/sandbox:latest.
+#
+# The `daytona` backend does NOT use this file. It builds the same contents as a Daytona *snapshot*
+# from the definition in harness/src/sandbox.snapshot.ts — no registry to push to, no credential to
+# rotate, and Daytona pre-pulls its own snapshots so cold start is fast. Keep the two in step: the
+# opencode install below and the one there are deliberately identical.
 FROM node:22-bookworm-slim
 
 ARG OPENCODE_VERSION=1.17.6

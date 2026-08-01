@@ -28,8 +28,18 @@ export interface MycelConfig {
   sandboxBackend: SandboxBackend;
   /** Default model, provider-prefixed (e.g. "anthropic/claude-opus-4-8", "openai/gpt-...", "google/gemini-..."). Per-task override via task.input.model. */
   model: string;
-  /** Container/snapshot image for docker + daytona backends. */
+  /** Container image for the docker backend, where `mycel/sandbox:latest` is built locally by setup.sh. */
   sandboxImage: string;
+  /**
+   * Explicit registry image for the daytona backend, or undefined for the built-in snapshot.
+   *
+   * Distinct from `sandboxImage` on purpose. `mycel/sandbox:latest` is a real image on a laptop that
+   * ran `docker build`; it is a fiction in Daytona's registry, and passing it to `client.create`
+   * failed every cloud task. So daytona defaults to the snapshot we build from our own image
+   * definition (sandbox.snapshot.ts) and only takes an image when someone deliberately names one —
+   * the escape hatch for anyone shipping their own sandbox.
+   */
+  sandboxImageOverride?: string;
   /** Port OpenCode's server listens on inside the sandbox. */
   opencodePort: number;
   /** Directory for per-task JSONL event logs (always on). */
@@ -78,6 +88,7 @@ export function loadConfig(): MycelConfig {
     // no provider key to reach.
     model: process.env.MYCEL_MODEL ?? TIER_MODELS.standard,
     sandboxImage: process.env.MYCEL_SANDBOX_IMAGE ?? "mycel/sandbox:latest",
+    sandboxImageOverride: (process.env.MYCEL_SANDBOX_IMAGE ?? "").trim() || undefined,
     opencodePort: Number(process.env.OPENCODE_PORT ?? 4444),
     logsDir: process.env.MYCEL_LOG_DIR ?? ".mycel/logs",
     langfuse,
