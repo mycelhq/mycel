@@ -773,8 +773,14 @@ export class PostgresDomainStore implements DomainStore {
     const r = await this.pool.query(`SELECT * FROM knowledge WHERE id=$1`, [id]);
     return r.rows[0] ? this.toK(r.rows[0]) : undefined;
   }
-  async listKnowledge(wedge: string): Promise<KnowledgeItem[]> {
-    const r = await this.pool.query(`SELECT * FROM knowledge WHERE wedge=$1 ORDER BY created_at`, [wedge]);
+  async listKnowledge(wedge: string, projectId: string): Promise<KnowledgeItem[]> {
+    // See DomainStore.listKnowledge. `project_id=$2` never matches NULL, which gives the
+    // fail-closed semantics for free: an unscoped legacy row is in nobody's scope.
+    if (!projectId) return [];
+    const r = await this.pool.query(
+      `SELECT * FROM knowledge WHERE wedge=$1 AND project_id=$2 ORDER BY created_at`,
+      [wedge, projectId],
+    );
     return r.rows.map(this.toK);
   }
   async updateKnowledge(id: string, patch: Partial<Pick<KnowledgeItem, "name" | "content" | "metadata">>): Promise<KnowledgeItem | undefined> {

@@ -32,11 +32,17 @@ export const LIMITS = {
   maxProps: 12,
   maxPropKey: 40,
   maxPropString: 120,
+  /** Steps in a declared funnel. Longer than this is a journey map, not a funnel. */
+  maxFunnelSteps: 20,
   /**
-   * Distinct event names / paths / steps kept per project per day. Everything past it is bucketed
-   * as `__other`. Without this, one product looping `track(uuid())` writes an unbounded number of
-   * rows into a shared table — an availability bug for every other tenant, delivered by a customer
-   * who only had a for-loop in the wrong place.
+   * Distinct event names / paths / steps carried into a summary. Everything past it is bucketed as
+   * `__other`.
+   *
+   * Storage is already bounded per row — a batch holds at most `maxEventsPerBatch` events, so at
+   * most that many distinct names. This cap is about the READ: a product looping `track(uuid())`
+   * would otherwise make the rollup a million-key object that the summary serialises in full and
+   * hands to a model with a context window. The names are still counted; they just collapse into
+   * one bucket, which is also the honest report — "you emit unbounded event names" is the finding.
    */
   maxCardinalityPerDay: 200,
 } as const;
@@ -52,6 +58,11 @@ export interface NormalEvent {
 
 export interface NormalBatch {
   funnel?: string;
+  /**
+   * The funnel's ordered steps, when this batch carried the declaration. Only meaningful alongside
+   * `funnel`; a step list with no funnel name has nothing to be the order OF, and is dropped.
+   */
+  funnelSteps?: string[];
   events: NormalEvent[];
 }
 
@@ -164,6 +175,21 @@ export function normaliseBatch(raw: unknown): Normalised {
   // here as thoroughly as a field named `banana`.
   const funnel = redactName(b.f, 64) ?? undefined;
 
+  // The declared step order, when this batch carried it. Redacted like any other identifier and
+  // de-duplicated, because a repeated step would make the drop-off maths compare a step with
+  // itself. Dropped entirely without a funnel name, and dropped entirely below two steps — a
+  // one-step "funnel" has no transition, so there is nothing it could tell anyone.
+  let funnelSteps: string[] | undefined;
+  if (funnel && Array.isArray(b.fs)) {
+    const seen = new Set<string>();
+    for (const raw of b.fs.slice(0, LIMITS.maxFunnelSteps)) {
+      const step = redactName(raw);
+      if (!step || seen.has(step)) continue;
+      seen.add(step);
+    }
+    if (seen.size >= 2) funnelSteps = [...seen];
+  }
+
   const events: NormalEvent[] = [];
   for (const item of b.events) {
     if (!item || typeof item !== "object" || Array.isArray(item)) continue;
@@ -179,5 +205,5 @@ export function normaliseBatch(raw: unknown): Normalised {
     events.push(out);
   }
   if (events.length === 0) return { ok: false, status: 400, error: "no usable events" };
-  return { ok: true, batch: { ...(funnel ? { funnel } : {}), events } };
+  return { ok: true, batch: { ...(funnel ? { funnel } : {}), ...(funnelSteps ? { funnelSteps } : {}), events } };
 }

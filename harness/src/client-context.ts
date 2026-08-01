@@ -77,7 +77,7 @@ export async function getClientContext(
   for (const t of tasks) wedges.add(t.wedge);
   const knowledge: KnowledgeItem[] = [];
   for (const wedge of wedges) {
-    const items = await domain.listKnowledge(wedge);
+    const items = await domain.listKnowledge(wedge, client.project_id ?? "");
     for (const item of items) {
       if (item.metadata?.client_id === clientId) knowledge.push(item);
     }

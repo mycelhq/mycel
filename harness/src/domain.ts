@@ -171,7 +171,7 @@ export interface DomainStore {
   // living knowledge (per wedge)
   createKnowledge(k: Omit<KnowledgeItem, "id" | "created_at" | "updated_at">): Promise<KnowledgeItem>;
   getKnowledge(id: string): Promise<KnowledgeItem | undefined>;
-  listKnowledge(wedge: string): Promise<KnowledgeItem[]>;
+  listKnowledge(wedge: string, projectId: string): Promise<KnowledgeItem[]>;
   updateKnowledge(id: string, patch: Partial<Pick<KnowledgeItem, "name" | "content" | "metadata">>): Promise<KnowledgeItem | undefined>;
   deleteKnowledge(id: string): Promise<boolean>;
 
@@ -520,8 +520,25 @@ export class InMemoryDomainStore implements DomainStore {
   async getKnowledge(id: string): Promise<KnowledgeItem | undefined> {
     return this.knowledge.get(id);
   }
-  async listKnowledge(wedge: string): Promise<KnowledgeItem[]> {
-    return [...this.knowledge.values()].filter((k) => k.wedge === wedge);
+  /**
+   * Knowledge for a wedge, scoped to a tenant.
+   *
+   * `projectId` is REQUIRED and the filter fails CLOSED, matching `listCases`/`queryRecords`: a row
+   * with no project belongs to nobody rather than to everybody.
+   *
+   * It used to filter on `wedge` alone, and `runtime.ts` mounts the result into `./knowledge/` in
+   * the sandbox with AGENTS.md instructing the agent to read it before acting. So every tenant
+   * running a given wedge received every other tenant's uploaded knowledge, intake answers (pricing,
+   * fee schedules, policies) and human corrections.
+   *
+   * It was also silent CORRUPTION, not only disclosure: intake filenames are deterministic
+   * (`intake/late-fee.md` is the same name for every tenant) and the runtime keys a Map by name
+   * ordered by created_at, so the last tenant to answer a question overwrote everyone else's answer
+   * and the agent quoted a stranger's late fee to your client.
+   */
+  async listKnowledge(wedge: string, projectId: string): Promise<KnowledgeItem[]> {
+    if (!projectId) return [];
+    return [...this.knowledge.values()].filter((k) => k.wedge === wedge && k.project_id === projectId);
   }
   async updateKnowledge(
     id: string,

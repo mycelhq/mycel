@@ -145,7 +145,7 @@ export async function provision(
   }
 
   // 3. seed knowledge — skip names that already exist so a re-provision can't clobber edits
-  const existingKnowledge = new Set((await domain.listKnowledge(blueprint.wedge)).map((k) => k.name));
+  const existingKnowledge = new Set((await domain.listKnowledge(blueprint.wedge, projectId)).map((k) => k.name));
   for (const k of blueprint.seed_knowledge ?? []) {
     if (existingKnowledge.has(k.name)) continue;
     await domain.createKnowledge({

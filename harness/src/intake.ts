@@ -200,9 +200,9 @@ export async function recordAnswer(
   // The question is kept alongside the answer: months later, "£45" on its own is unreadable, and
   // the agent reads this file as prose too.
   const content = `# ${args.ask}\n\n${args.answer.trim()}\n`;
-  const existing = (await domain.listKnowledge(args.wedge)).find(
-    (k) => k.name === name && k.project_id === args.projectId,
-  );
+  // The project filter now lives in the query rather than after it. Post-filtering was correct here
+  // but it read every tenant's rows to find one, and the pattern is how the leak elsewhere survived.
+  const existing = (await domain.listKnowledge(args.wedge, args.projectId)).find((k) => k.name === name);
   if (existing) {
     const updated = await domain.updateKnowledge(existing.id, { content });
     if (updated) return updated;

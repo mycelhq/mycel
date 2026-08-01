@@ -321,21 +321,21 @@ export function getBillingStore(): BillingStore {
 
 export async function initBillingStore(): Promise<{ backend: string }> {
   const url = databaseUrl();
-  // The Postgres backend is not written yet.
+  // A configured database is always used, and a failure to reach it fails the boot.
   //
-  // Failing loudly here is deliberate. The alternative — quietly falling back to the in-memory
-  // store when a database IS configured — gives a process that accepts writes, answers reads
-  // correctly for its own lifetime, and loses everything on the next deploy. For invoices that is
-  // money; for distilled knowledge it is the founder's corrections. Both are the kind of loss you
-  // discover weeks later with no way to reconstruct it.
+  // This used to throw unconditionally, because there was no Postgres backend. The reasoning behind
+  // that throw is still the reasoning behind this branch: quietly falling back to the in-memory
+  // store when a database IS configured gives a process that accepts writes, answers reads correctly
+  // for its own lifetime, and loses everything on the next deploy. For invoices that is money — the
+  // kind of loss you discover weeks later with no way to reconstruct it. So there is no `catch` here
+  // either; a database that is configured but unreachable must stop the process, not degrade it.
   //
   // In-memory remains the correct backend when no database is configured at all, which is dev and
   // the test suite.
   if (url) {
-    throw new Error(
-      "billing: MYCEL_DATABASE_URL is set but the Postgres billing store is not implemented yet. " +
-        "Refusing to start rather than keep invoices in memory and lose them on restart.",
-    );
+    const { PostgresBillingStore } = await import("./billing.pg");
+    cached = await PostgresBillingStore.connect(url);
+    return { backend: "postgres" };
   }
   cached = new InMemoryBillingStore();
   return { backend: "memory" };

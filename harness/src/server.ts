@@ -26,6 +26,7 @@ import {
 } from "./intake-normalize";
 import { mountLinkedIn } from "./linkedin/routes";
 import { mountGtm } from "./gtm/routes";
+import { mountInsight } from "./insight/routes";
 import { getActionGrant } from "./actiongrants";
 import { getArtifactBackend } from "./artifacts";
 import { subscribe } from "./bus";
@@ -626,10 +627,17 @@ export function createServer(store: Store): Hono {
     // project's webhook secret — and the handler refuses everything when that secret is unset,
     // rather than degrading into an unauthenticated "start a run" endpoint. Exact match, not a
     // prefix: nothing else under /v1/composio/ may inherit this.
+    //
+    // `/v1/insight/events` is public here for the same reason and with the same shape: it carries
+    // its own credential, a per-project INGEST key, checked in the handler — deliberately not the
+    // founder's product key, which a near-public write path must never see. The project it writes
+    // to comes out of that key's signature. Exact match, never a prefix: `/v1/insight/summary` and
+    // `/v1/insight/key` are reads and stay behind the founder credential like everything else.
     if (
       c.req.path.startsWith("/v1/internal/") ||
       c.req.path.startsWith("/v1/invites/") ||
       c.req.path === "/v1/composio/webhook" ||
+      c.req.path === "/v1/insight/events" ||
       (c.req.path.startsWith("/v1/host/") && !!process.env.MYCEL_HOST_TOKEN) ||
       PUBLIC_AUTH.has(c.req.path)
     )
@@ -1901,6 +1909,12 @@ export function createServer(store: Store): Hono {
     inScope,
   });
 
+  // ── Product analytics ── /v1/insight/* lives in insight/routes.ts. The generated product reports
+  // what its customers actually did; the agent that wrote it reads the summary and improves it.
+  // Ingest authenticates with a per-project key and takes the project from that key's signature, so
+  // it gets no tenancy helper — there is nothing here for it to trust.
+  mountInsight(app, { domain, accessible });
+
   // ── Composio: OAuth, brokered ──
   // The founder clicks once per toolkit; Composio owns the callback and the refresh cycle. Mycel
   // exposes no public redirect route, so there's no internet-facing OAuth surface here and no
@@ -3010,7 +3024,10 @@ export function createServer(store: Store): Hono {
     const w = loadWedge(slug);
     if (!w) return c.json({ error: "unknown wedge" }, 404);
     const set = accessible(c);
-    const live = (await domain.listKnowledge(slug)).filter((k) => inScope(set, k.project_id));
+    // Query per accessible project rather than reading every tenant's rows and filtering after.
+    // The post-filter was correct, but reading globally to discard most of it is the pattern that
+    // let the same mistake go unnoticed in the runtime, where there was no filter at all.
+    const live = (await Promise.all([...set].map((pid) => domain.listKnowledge(slug, pid)))).flat();
     return c.json({
       wedge: slug,
       manifest: w.manifest,
@@ -3034,7 +3051,7 @@ export function createServer(store: Store): Hono {
     if (!wedge) return c.json({ error: `unknown wedge: ${wedgeSlug}` }, 404);
     const [gaps, knowledge] = await Promise.all([
       domain.listGaps(projectId, wedgeSlug),
-      domain.listKnowledge(wedgeSlug),
+      domain.listKnowledge(wedgeSlug, projectId),
     ]);
     return c.json(
       buildCoverage(
@@ -3122,7 +3139,8 @@ export function createServer(store: Store): Hono {
 
   app.get("/v1/wedges/:wedge/knowledge", async (c) => {
     const set = accessible(c);
-    return c.json((await domain.listKnowledge(c.req.param("wedge"))).filter((k) => inScope(set, k.project_id)));
+    const wedgeSlug = c.req.param("wedge");
+    return c.json((await Promise.all([...set].map((pid) => domain.listKnowledge(wedgeSlug, pid)))).flat());
   });
   app.post("/v1/wedges/:wedge/knowledge", async (c) => {
     const wedge = c.req.param("wedge");
@@ -3539,6 +3557,12 @@ export function createServer(store: Store): Hono {
       const task = await store.getTask(grant.task_id);
       if (task) {
         await domain.createKnowledge({
+          // project_id, which this call omitted. Without it the row belongs to no tenant: it is
+          // mounted into EVERY tenant running this wedge (listKnowledge filtered on wedge alone),
+          // and it is invisible in the founder's own UI because `inScope` requires a project — so
+          // it could be neither seen nor deleted, and an erasure request could not be satisfied.
+          // The content is the full proposed and corrected payload: recipient, amount, message body.
+          project_id: task.project_id,
           wedge: task.wedge,
           name: `correction-${new Date().toISOString().slice(0, 19)}.md`,
           content:

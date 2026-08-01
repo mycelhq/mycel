@@ -19,7 +19,7 @@ import { registerGrant, revokeGrant } from "./proxygrants";
 import type { Sandbox } from "./sandbox";
 import { loadWedge, type LoadedWedge } from "./wedge";
 import { getIdentityStore } from "./identity";
-import { isTier, modelForTier, resolveTier, wasClamped, type ModelTier } from "./models";
+import { isTier, modelForTier, resolveTier, wasClamped, TIER_MODELS, TIER_PRICE, type ModelTier } from "./models";
 import { keyForOrg } from "./litellm";
 
 export interface RuntimeCtx {
@@ -203,7 +203,10 @@ export async function runOpenCodeTask(
   // Ground the agent in the LATEST knowledge: on-disk (authored) + live (uploaded/feedback),
   // with live items overriding same-named disk files. This is how runtime edits + corrections
   // take effect without a redeploy.
-  const liveKnowledge = await domain.listKnowledge(task.wedge);
+  // Scoped to THIS task's project. Every API route already scoped correctly; this one — the only
+  // place that puts the bytes in front of a model — did not, so every tenant on a wedge was reading
+  // every other tenant's knowledge.
+  const liveKnowledge = await domain.listKnowledge(task.wedge, task.project_id ?? "");
   const knowledgeByName = new Map<string, string>();
   for (const k of wedge?.knowledge ?? []) knowledgeByName.set(k.name, k.content);
   for (const k of liveKnowledge) knowledgeByName.set(k.name, k.content);
@@ -504,15 +507,31 @@ function buildAgentsMd(task: Task, wedge: LoadedWedge | null, connections: Conne
   return parts.join("\n");
 }
 
-// Rough cost estimate. Refine per model/provider; meter via the model-gateway usage.
+/**
+ * What this run cost, from the price table the rest of the system already uses.
+ *
+ * This used to hardcode $3/$15 per million (or $5/$25 if the model name contained "opus"), which
+ * was wrong twice over: those are Anthropic's rates and we moved to OpenAI via LiteLLM, and no
+ * model id we serve contains "opus" — `openai/gpt-5-nano`, `gpt-5.6-luna`, `gpt-5.6-terra`. So the
+ * fast tier was metered at 60x its real cost.
+ *
+ * That number is not cosmetic: `spendThisMonth` enforces the plan ceiling on it, so the free tier's
+ * $2/month allowance was really about three cents and ran out after a handful of jobs. Every margin
+ * figure reasoned about in models.ts was computed from a table this function never read.
+ *
+ * Falls back to the standard tier for an unrecognised model. Over-estimating an unknown model
+ * throttles a customer early, which is recoverable; under-estimating means serving work at a loss
+ * and finding out on the invoice.
+ */
 function estimateCost(model: string, usage: Record<string, unknown>): number {
   const input = Number(usage.input_tokens ?? usage.inputTokens ?? usage.prompt_tokens ?? 0);
   const output = Number(usage.output_tokens ?? usage.outputTokens ?? usage.completion_tokens ?? 0);
-  // Opus-tier default rates ($/token). Wire a real price table when it matters.
-  const isOpus = model.includes("opus");
-  const inRate = isOpus ? 5 / 1e6 : 3 / 1e6;
-  const outRate = isOpus ? 25 / 1e6 : 15 / 1e6;
-  return input * inRate + output * outRate;
+
+  const tier = (Object.keys(TIER_MODELS) as ModelTier[]).find(
+    (t) => TIER_MODELS[t] === model || model.endsWith(TIER_MODELS[t].split("/").pop() ?? "\u0000"),
+  );
+  const price = TIER_PRICE[tier ?? "standard"];
+  return (input * price.in + output * price.out) / 1e6;
 }
 
 function shellQuote(v: string): string {

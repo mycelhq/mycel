@@ -188,20 +188,20 @@ export async function initKnowledgeStore(): Promise<{ backend: "postgres" | "mem
     cached = new InMemoryKnowledgeStore();
     return { backend: "memory" };
   }
-  // The Postgres backend is not written yet.
+  // A configured database is always used, and a failure to reach it fails the boot.
   //
-  // Failing loudly here is deliberate. The alternative — quietly falling back to the in-memory
-  // store when a database IS configured — gives a process that accepts writes, answers reads
-  // correctly for its own lifetime, and loses everything on the next deploy. For invoices that is
-  // money; for distilled knowledge it is the founder's corrections. Both are the kind of loss you
-  // discover weeks later with no way to reconstruct it.
+  // This used to throw unconditionally, because there was no Postgres backend. The reasoning behind
+  // that throw is still the reasoning behind this branch: quietly falling back to the in-memory
+  // store when a database IS configured gives a process that accepts writes, answers reads correctly
+  // for its own lifetime, and loses everything on the next deploy. For distilled knowledge that is
+  // the founder's corrections — the system silently un-learns and the same fix has to be made again,
+  // which is how someone stops bothering to make it. So there is no `catch` here either.
   //
   // In-memory remains the correct backend when no database is configured at all, which is dev and
   // the test suite.
-  throw new Error(
-    "knowledge: MYCEL_DATABASE_URL is set but the Postgres knowledge store is not implemented yet. " +
-      "Refusing to start rather than lose distilled rules on restart.",
-  );
+  const { PostgresKnowledgeStore } = await import("./knowledge.pg");
+  cached = await PostgresKnowledgeStore.connect(url);
+  return { backend: "postgres" };
 }
 
 /** Tests and shutdown. */
