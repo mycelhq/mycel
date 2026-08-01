@@ -1,0 +1,65 @@
+{
+  "wedge": "product-builder",
+  "title": "Product Builder — the founder's own Next.js app",
+  "harness": {
+    "shape": "build"
+  },
+  "task_types": {
+    "build_feature": {
+      "description": "Construct or alter the founder's Next.js product in this workspace: read the code, make the change, run it, and verify it works.",
+      "harness": {
+        "shape": "build",
+        "tier": "deep",
+        "max_runtime_s": 1800,
+        "max_cost_usd": 5,
+        "steps": 400,
+        "strict_output": false,
+        "permission": {
+          "edit": "allow",
+          "write": "allow",
+          "bash": {
+            "rm -rf /": "deny",
+            "rm -rf /*": "deny",
+            "rm -rf ~": "deny",
+            "git push*": "deny",
+            "npm publish*": "deny",
+            "*": "allow"
+          }
+        }
+      }
+    },
+    "review_diff": {
+      "description": "Read a proposed change to the product and say whether it is safe to ship, without touching anything.",
+      "harness": {
+        "shape": "decide",
+        "tier": "standard",
+        "strict_output": true
+      },
+      "output_schema": {
+        "type": "object",
+        "properties": {
+          "verdict": {
+            "type": "string",
+            "enum": [
+              "ship",
+              "fix_first",
+              "reject"
+            ]
+          },
+          "findings": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          }
+        },
+        "required": [
+          "verdict"
+        ]
+      }
+    }
+  },
+  "connections": [],
+  "approvals": [],
+  "skills": []
+}

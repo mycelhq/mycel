@@ -44,7 +44,7 @@
 import { proxiedFetch } from "./proxy";
 import { recordTransfer } from "./meter";
 
-const VOYAGER = "https://www.linkedin.com/voyager/api";
+export const VOYAGER = "https://www.linkedin.com/voyager/api";
 const GRAPHQL = `${VOYAGER}/voyagerMessagingGraphQL/graphql`;
 
 /**
@@ -270,15 +270,26 @@ export interface LiSendResult {
   detail?: string;
 }
 
+/** The result of one metered Voyager round-trip. */
+export interface VoyagerResponse {
+  ok: boolean;
+  status: number;
+  json: any;
+  decoded: number;
+}
+
 /** One metered round-trip. Everything that talks to LinkedIn goes through here, so that the proxy
- *  rule, the gzip header and the byte meter cannot be forgotten at a call site. */
+ *  rule, the gzip header and the byte meter cannot be forgotten at a call site.
+ *
+ *  Exported as `voyagerCall` (below) so the search/profile/invitation surfaces in the sibling files
+ *  are physically unable to construct a bare fetch: there is exactly one door, and it is this one. */
 async function call(
   url: string,
   session: LinkedInSession,
   ctx: VoyagerCtx,
   op: string,
   init: Record<string, unknown> = {},
-): Promise<{ ok: boolean; status: number; json: any; decoded: number }> {
+): Promise<VoyagerResponse> {
   const body = typeof init.body === "string" ? init.body : undefined;
   const res = await proxiedFetch(
     url,
@@ -309,6 +320,15 @@ async function call(
   });
   return { ok: res.ok, status: res.status, json, decoded };
 }
+
+/**
+ * The one door, for the sibling modules.
+ *
+ * search.ts, profile.ts and invites.ts all go through this rather than `proxiedFetch` directly. It
+ * is not convenience: `call` is where the proxy rule, the gzip header and the byte meter live, and a
+ * second call site that forgot any one of them would be invisible until an account got restricted.
+ */
+export const voyagerCall = call;
 
 /** Verify a session is live and capture the self URN. Returns null when the session is rejected. */
 export async function fetchSelf(

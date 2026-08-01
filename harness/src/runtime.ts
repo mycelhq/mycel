@@ -19,8 +19,9 @@ import { registerGrant, revokeGrant } from "./proxygrants";
 import type { Sandbox } from "./sandbox";
 import { loadWedge, type LoadedWedge } from "./wedge";
 import { getIdentityStore } from "./identity";
-import { isTier, modelForTier, resolveTier, wasClamped, TIER_MODELS, TIER_PRICE, type ModelTier } from "./models";
+import { modelForTier, TIER_MODELS, TIER_PRICE, type ModelTier } from "./models";
 import { keyForOrg } from "./litellm";
+import { resolveHarnessProfile, SHAPE_DEFAULTS, type HarnessProfile } from "./harness";
 
 export interface RuntimeCtx {
   emit(type: EventType, data?: Record<string, unknown>): Promise<void> | void;
@@ -77,40 +78,65 @@ export async function runOpenCodeTask(
   const cfg = loadConfig();
   const wedge = loadWedge(task.wedge);
   /**
-   * Which model, and who decided.
+   * The harness, engineered for THIS task type.
    *
-   * Order: an explicit model on the task wins (an operator debugging a specific run), then a TIER —
-   * declared by the task, else by the wedge's task_type, else by the wedge — clamped to what the
-   * org's plan may reach. A named model in a wedge manifest still works and skips tiering entirely.
+   * One config for every task was the original sin here: "build a Next.js product for this
+   * business" and "decide the next dunning step on this invoice" were handed identical tools,
+   * identical permissions, an identical model tier and — the part that actually mattered —
+   * identical credentials. The profile decides all of it, and everything below reads from it
+   * rather than re-deriving anything.
    *
-   * The clamp is downward, never a refusal: a free-tier customer asking for deep reasoning gets a
-   * cheaper answer rather than a failed run. See models.ts for why the default is deliberately not
-   * the best model available.
+   * Profiles REQUEST; the plan and the server ceilings DECIDE. `resolveHarnessProfile` has already
+   * run the tier through `resolveTier` (which clamps down, never refuses) and both budgets through
+   * the ceilings, so nothing here needs to clamp again.
    */
   const plan = task.project_id
     ? getIdentityStore().getOrg(getIdentityStore().getProject(task.project_id)?.org_id ?? "")?.plan
     : undefined;
-  const askedTier = isTier(task.input?.tier)
-    ? task.input.tier
-    : isTier(wedge?.manifest.task_types?.[task.task_type]?.tier)
-      ? (wedge!.manifest.task_types![task.task_type]!.tier as ModelTier)
-      : isTier(wedge?.manifest.tier)
-        ? (wedge!.manifest.tier as ModelTier)
-        : undefined;
-  const tier = resolveTier(askedTier, plan);
+  const profile = resolveHarnessProfile({
+    task,
+    wedge,
+    plan,
+    ceilings: { maxRuntimeS: cfg.maxRuntimeCeilingS, maxCostUsd: cfg.maxCostCeilingUsd },
+  });
+  const tier: ModelTier = profile.tier;
 
+  /**
+   * Which model. An explicit model on the task wins (an operator debugging a specific run), then a
+   * model named in the wedge manifest (which skips tiering entirely), then the profile's tier.
+   */
   const model =
     typeof task.input?.model === "string"
       ? task.input.model
       : (wedge?.manifest.model ?? modelForTier(tier) ?? cfg.model);
 
-  if (wasClamped(askedTier, plan)) {
+  if (profile.tier_clamped) {
     // Said out loud rather than silently downgraded — a founder wondering why an answer is thinner
     // than last month deserves to see the reason on the run.
     void ctx.emit("progress", {
-      note: `Ran on the ${tier} model: your plan does not include the ${askedTier} tier.`,
+      note: `Ran on the ${tier} model: your plan does not include the ${profile.requested_tier} tier.`,
     });
   }
+
+  /**
+   * The budgets, made honest on the Task itself.
+   *
+   * `max_cost_usd` takes effect immediately: `shouldAbort` in orchestrator.ts reads
+   * `task.constraints.max_cost_usd` on every tick, off this same object.
+   *
+   * `max_runtime_s` deliberately is NOT written back. `runTask` captures `deadline` from the
+   * constraint BEFORE it enters the runtime, so by the time a profile exists the clock is already
+   * running; storing a longer number here would record a budget the run never actually had. The
+   * seam is the task-creation path, which should default the constraint from
+   * `profileConstraintDefaults()` instead of from a flat 300 seconds. Until it does, a `build`
+   * profile still gets killed at whatever the creator asked for — which is the bug that burned
+   * 165k tokens and delivered nothing.
+   */
+  task.constraints.max_cost_usd = Math.min(task.constraints.max_cost_usd || profile.max_cost_usd, profile.max_cost_usd);
+
+  await ctx.emit("progress", {
+    note: `harness: ${profile.shape} profile — ${tier} tier, ${profile.max_runtime_s}s, ${profile.grants_actions ? "may act through connections" : "no connection access"}`,
+  });
 
   let config: Record<string, unknown>;
   let providerEnv: Record<string, string>;
@@ -160,57 +186,76 @@ export async function runOpenCodeTask(
     // is what keeps the real provider key out of it, and `openai/...` upstream is what LiteLLM
     // meters and budgets per org.
     nonce = await registerGrant({ base_url: base, api_key: realKey, model, task_id: task.id });
-    const built = buildOpencodeConfig(model, {
-      proxyBaseUrl: `${cfg.publicUrl}/v1/internal/llm`,
-      nonce,
-      modelId,
-    });
+    const built = buildOpencodeConfig(
+      model,
+      { proxyBaseUrl: `${cfg.publicUrl}/v1/internal/llm`, nonce, modelId },
+      profile,
+    );
     config = built.config;
     providerEnv = built.providerEnv;
     promptModel = `mycel/${modelId}`;
   } else {
-    const built = buildOpencodeConfig(model);
+    const built = buildOpencodeConfig(model, undefined, profile);
     config = built.config;
     providerEnv = built.providerEnv;
     promptModel = model;
   }
 
-  // Resolve which connections this run may act through, and mint an action token. The sandbox
-  // gets the token, never a connection secret; every action still passes the human approval gate.
+  /**
+   * Which connections this run may act through, and whether it gets a token at all.
+   *
+   * `grants_actions: false` (every `build` profile) short-circuits the whole block: no connection
+   * is even resolved, no grant is minted, and MYCEL_ACTION_TOKEN never enters the sandbox's
+   * environment. That is the least-privilege split the profiles exist for, and it is worth being
+   * precise about why it is done HERE rather than in the sandbox's permission block: the plugin's
+   * `isGated()` matches on tool NAME against a substring list ("send", "email", "pay", ...), and
+   * the tool a build uses is `bash`, which matches none of them. A shell-enabled run is therefore
+   * ungated at the plugin layer by construction. The only thing that stops a build agent emailing
+   * a customer is that it holds no credential to do it with.
+   *
+   * Not resolving the connections is also the cheapest of the two wins: the run is never even told
+   * which mailbox exists.
+   */
   const domain = getDomainStore();
-  // Only this task's project's connections are grantable — never another tenant's.
-  const allConns = (await domain.listConnections()).filter(
-    (c) => !task.project_id || c.project_id === task.project_id,
-  );
-  const wantedConns = new Set<string>([
-    ...(wedge?.manifest.connections ?? []),
-    ...(Array.isArray(task.input?.connections) ? (task.input.connections as string[]) : []),
-  ]);
-  const clientId = taskClientId(task);
-  const connectionIds = selectGrantableConnections(allConns, wantedConns, clientId).map((c) => c.id);
+  let connectionIds: string[] = [];
   let threadId: string | undefined;
-  if (typeof task.input?.thread_id === "string") {
-    threadId = task.input.thread_id;
-    const thread = await domain.getThread(threadId);
-    if (thread) {
-      const channel = (await domain.listChannels()).find((ch) => ch.id === thread.channel_id);
-      const conn = channel ? allConns.find((c) => c.id === channel.connection_id) : undefined;
-      // The reply channel goes through the same ownership gate. A thread id is caller-supplied too,
-      // so without this check it was a second route to another client's connection.
-      if (conn && entitledTo(conn, clientId) && !connectionIds.includes(conn.id)) {
-        connectionIds.push(conn.id);
+  let grantedConns: Connection[] = [];
+  let actionNonce: string | undefined;
+
+  if (profile.grants_actions) {
+    // Only this task's project's connections are grantable — never another tenant's.
+    const allConns = (await domain.listConnections()).filter(
+      (c) => !task.project_id || c.project_id === task.project_id,
+    );
+    const wantedConns = new Set<string>([
+      ...(wedge?.manifest.connections ?? []),
+      ...(Array.isArray(task.input?.connections) ? (task.input.connections as string[]) : []),
+    ]);
+    const clientId = taskClientId(task);
+    connectionIds = selectGrantableConnections(allConns, wantedConns, clientId).map((c) => c.id);
+    if (typeof task.input?.thread_id === "string") {
+      threadId = task.input.thread_id;
+      const thread = await domain.getThread(threadId);
+      if (thread) {
+        const channel = (await domain.listChannels()).find((ch) => ch.id === thread.channel_id);
+        const conn = channel ? allConns.find((c) => c.id === channel.connection_id) : undefined;
+        // The reply channel goes through the same ownership gate. A thread id is caller-supplied too,
+        // so without this check it was a second route to another client's connection.
+        if (conn && entitledTo(conn, clientId) && !connectionIds.includes(conn.id)) {
+          connectionIds.push(conn.id);
+        }
       }
     }
+    actionNonce = await registerActionGrant({ task_id: task.id, connectionIds, threadId, caseId: task.case_id });
+    grantedConns = allConns.filter((c) => connectionIds.includes(c.id));
   }
-  const actionNonce = await registerActionGrant({ task_id: task.id, connectionIds, threadId, caseId: task.case_id });
-  const grantedConns = allConns.filter((c) => connectionIds.includes(c.id));
 
   // 1. Write opencode.json + AGENTS.md, then GROUND the agent: mount the wedge's skills +
   //    knowledge and any per-task documents into the sandbox so it can fulfill the service.
   await ctx.emit("step.started", { step: "configure_sandbox" });
   await sandbox.writeFile("~/.config/opencode/opencode.json", JSON.stringify(config, null, 2));
   await sandbox.writeFile("~/.config/opencode/mycel-plugin.ts", MYCEL_PLUGIN_CODE);
-  await sandbox.writeFile("AGENTS.md", buildAgentsMd(task, wedge, grantedConns));
+  await sandbox.writeFile("AGENTS.md", buildAgentsMd(task, wedge, grantedConns, profile));
 
   // Ground the agent in the LATEST knowledge: on-disk (authored) + live (uploaded/feedback),
   // with live items overriding same-named disk files. This is how runtime edits + corrections
@@ -229,7 +274,11 @@ export async function runOpenCodeTask(
   // Skills as files, indexed in AGENTS.md rather than inlined into it. Mounting them is what makes
   // that index real — an index pointing at files nobody wrote is worse than no index, because the
   // agent will try to read them and get nothing.
-  for (const s of wedge?.skills ?? []) {
+  //
+  // Filtered by the profile: a wedge's procedures are not all relevant to every task type, and an
+  // index line for a skill this run must not use is an invitation to use it.
+  const mountedSkills = profileSkills(wedge, profile);
+  for (const s of mountedSkills) {
     await sandbox.writeFile(`skills/${s.name}`, s.content);
   }
   const documents = Array.isArray(task.input?.documents) ? (task.input.documents as unknown[]) : [];
@@ -241,16 +290,25 @@ export async function runOpenCodeTask(
       docCount++;
     }
   }
-  if (knowledgeByName.size || (wedge?.skills.length ?? 0) || docCount) {
+  if (knowledgeByName.size || mountedSkills.length || docCount) {
     await ctx.emit("progress", {
-      note: `grounded: ${knowledgeByName.size} knowledge (${liveKnowledge.length} live), ${wedge?.skills.length ?? 0} skills, ${docCount} documents`,
+      note: `grounded: ${knowledgeByName.size} knowledge (${liveKnowledge.length} live), ${mountedSkills.length} skills, ${docCount} documents`,
     });
   }
 
   // 2. Start `opencode serve` with provider creds + HTTP Basic auth.
   await ctx.emit("step.started", { step: "start_opencode" });
   const password = randomBytes(18).toString("hex");
-  const envInline = Object.entries({
+  /**
+   * The control-plane environment.
+   *
+   * Everything from MYCEL_ACTIONS_URL down is behind `grants_actions`, and it is one block rather
+   * than seven `if`s because every one of those endpoints authenticates with the SAME action token.
+   * Handing a build run the URLs without the token would only teach it to make requests that 401;
+   * handing it neither is the honest statement that this run has no control plane beyond its own
+   * filesystem.
+   */
+  const env: Record<string, string> = {
     ...providerEnv,
     OPENCODE_SERVER_USERNAME: "opencode",
     OPENCODE_SERVER_PASSWORD: password,
@@ -259,16 +317,19 @@ export async function runOpenCodeTask(
     MYCEL_GATE_TOKEN: cfg.gateToken,
     MYCEL_TASK_ID: task.id,
     MYCEL_GATE_PATTERNS: buildGatePatterns(task, wedge),
+  };
+  if (profile.grants_actions && actionNonce) {
     // Action proxy: wedge tools POST here with this token to send/charge/book through a connection.
-    MYCEL_ACTIONS_URL: `${cfg.publicUrl}/v1/internal/actions`,
+    env.MYCEL_ACTIONS_URL = `${cfg.publicUrl}/v1/internal/actions`;
     // Reads: ungated (but scoped to the same granted connections) — see AGENTS.md.
-    MYCEL_READS_URL: `${cfg.publicUrl}/v1/internal/reads`,
-    MYCEL_CASE_URL: `${cfg.publicUrl}/v1/internal/case`,
-    MYCEL_WORKFLOWS_URL: `${cfg.publicUrl}/v1/internal/workflows`,
-    MYCEL_GAPS_URL: `${cfg.publicUrl}/v1/internal/knowledge/gap`,
-    MYCEL_RECORDS_URL: `${cfg.publicUrl}/v1/internal/records`,
-    MYCEL_ACTION_TOKEN: actionNonce,
-  })
+    env.MYCEL_READS_URL = `${cfg.publicUrl}/v1/internal/reads`;
+    env.MYCEL_CASE_URL = `${cfg.publicUrl}/v1/internal/case`;
+    env.MYCEL_WORKFLOWS_URL = `${cfg.publicUrl}/v1/internal/workflows`;
+    env.MYCEL_GAPS_URL = `${cfg.publicUrl}/v1/internal/knowledge/gap`;
+    env.MYCEL_RECORDS_URL = `${cfg.publicUrl}/v1/internal/records`;
+    env.MYCEL_ACTION_TOKEN = actionNonce;
+  }
+  const envInline = Object.entries(env)
     .map(([k, v]) => `${k}=${shellQuote(v)}`)
     .join(" ");
   await sandbox.spawn(`${envInline} opencode serve --port ${cfg.opencodePort} > /tmp/opencode.log 2>&1`);
@@ -282,7 +343,7 @@ export async function runOpenCodeTask(
     await oc.waitReady(60000, ctx.shouldAbort);
   } catch (e) {
     if (nonce) await revokeGrant(nonce);
-    await revokeActionGrant(actionNonce);
+    if (actionNonce) await revokeActionGrant(actionNonce);
     const reason = String((e as Error)?.message ?? e);
     if (reason.startsWith("aborted:")) throw e;
     const log = (await sandbox.readFile("/tmp/opencode.log").catch(() => null)) ?? "";
@@ -299,7 +360,25 @@ export async function runOpenCodeTask(
     if (ctx.shouldAbort()) throw new Error(`aborted: ${ctx.shouldAbort()}`);
     const sessionId = await oc.createSession(`mycel-${task.id}`);
     try {
-      await oc.sendPrompt(sessionId, buildPrompt(task, wedge), promptModel);
+      /**
+       * Strict-output profiles use OpenCode's NATIVE structured output rather than a sentence in
+       * the prompt. Verified on 1.17.6's own OpenAPI document: POST /session/:id/message accepts
+       * `format: {type:"json_schema", schema, retryCount}`, and opencode re-prompts the model
+       * itself when the answer does not validate.
+       *
+       * That is worth doing because a schema violation is currently terminal: `runTask` validates
+       * the final text and throws, so the whole run is billed and delivers nothing. Two free
+       * retries inside the session are far cheaper than one failed task.
+       */
+      const schema = outputSchemaFor(task, wedge);
+      await oc.sendPrompt(
+        sessionId,
+        buildPrompt(task, wedge, profile),
+        promptModel,
+        profile.strict_output && schema
+          ? { format: { type: "json_schema", schema, retryCount: 2 } }
+          : undefined,
+      );
     } catch (e) {
       // Attach the agent's own log before rethrowing.
       //
@@ -387,7 +466,7 @@ export async function runOpenCodeTask(
   } finally {
     if (abortWatch) clearInterval(abortWatch);
     if (nonce) await revokeGrant(nonce);
-    await revokeActionGrant(actionNonce);
+    if (actionNonce) await revokeActionGrant(actionNonce);
   }
 
   // 6. Prefer the streamed final text; fall back to an artifact the agent wrote.
@@ -395,9 +474,42 @@ export async function runOpenCodeTask(
   return { text: finalText };
 }
 
-function buildPrompt(task: Task, wedge: LoadedWedge | null): string {
+/** The schema this run must answer in, if any. Wedge task_type first, then the task's own. */
+function outputSchemaFor(task: Task, wedge: LoadedWedge | null): unknown {
+  return wedge?.manifest.task_types?.[task.task_type]?.output_schema ?? task.output_schema;
+}
+
+/** Which of the wedge's skills this task type gets. Undefined `profile.skills` means all of them. */
+function profileSkills(wedge: LoadedWedge | null, profile: HarnessProfile) {
+  const all = wedge?.skills ?? [];
+  if (!profile.skills) return all;
+  const wanted = new Set(profile.skills.map((s) => (s.endsWith(".md") ? s : `${s}.md`)));
+  return all.filter((s) => wanted.has(s.name));
+}
+
+/**
+ * The prompt, shaped by the profile.
+ *
+ * The closing instruction is the part that genuinely differs. A `decide` run's deliverable IS the
+ * final message, and it must validate — `runTask` throws on a schema failure, so the whole run is
+ * wasted by a stray sentence of preamble. A `build` run's deliverable is a working repository, and
+ * demanding a JSON object from it produces a model that stops building in order to describe what it
+ * built.
+ */
+function buildPrompt(task: Task, wedge: LoadedWedge | null, profile?: HarnessProfile): string {
   const tt = wedge?.manifest.task_types?.[task.task_type];
-  const outputSchema = tt?.output_schema ?? task.output_schema;
+  const outputSchema = outputSchemaFor(task, wedge);
+  const shape = profile?.shape ?? "general";
+  const strict = profile?.strict_output ?? false;
+
+  const closing =
+    shape === "build"
+      ? `Do the real work: change the code, run it, and check it works before you say it does. ` +
+        `When finished, summarise what you changed and why as your last message, and write the same ` +
+        `summary to ./output/result.txt.`
+      : `Do the real work. When finished, state the final result plainly as your last message and ` +
+        `also write it to ./output/result.txt.`;
+
   return [
     tt?.description ? `Goal: ${tt.description}` : `Task type: ${task.task_type}`,
     `Input: ${JSON.stringify(task.input)}`,
@@ -405,8 +517,14 @@ function buildPrompt(task: Task, wedge: LoadedWedge | null): string {
       ? `Your knowledge base is in ./knowledge/ — read the relevant files before acting.`
       : "",
     `Any documents uploaded for this specific task are in ./inputs/.`,
-    outputSchema ? `Return a result conforming to this schema: ${JSON.stringify(outputSchema)}` : "",
-    `Do the real work. When finished, state the final result plainly as your last message and also write it to ./output/result.txt.`,
+    // Under strict output the schema is enforced by opencode's own `format: json_schema` (which
+    // retries), so restating it in prose only spends tokens telling the model something it is
+    // already constrained by.
+    outputSchema && !strict
+      ? `Return a result conforming to this schema: ${JSON.stringify(outputSchema)}`
+      : "",
+    strict ? `Your final message must be ONLY the JSON result — no preamble, no code fences.` : "",
+    closing,
   ]
     .filter(Boolean)
     .join("\n");
@@ -431,17 +549,58 @@ function skillSummary(content: string): string {
   return (line ?? "no description").slice(0, 200);
 }
 
-function buildAgentsMd(task: Task, wedge: LoadedWedge | null, connections: Connection[] = []): string {
+/**
+ * The system instructions, shaped by the profile.
+ *
+ * The profile decides whether whole SECTIONS exist, not just their wording. A `build` run holds no
+ * action token, so the action-proxy section and the knowledge-gap section are not merely
+ * discouraged — they are omitted, because instructions the agent cannot follow are worse than
+ * absent: it spends turns on them and gets 401s back.
+ */
+function buildAgentsMd(
+  task: Task,
+  wedge: LoadedWedge | null,
+  connections: Connection[] = [],
+  // Optional so the existing call sites (and the prompt-size tests) still work. Defaults to the
+  // permissive shape, which is exactly what they were asserting before profiles existed.
+  profile: HarnessProfile = defaultProfileFor(task),
+): string {
   const parts: string[] = [];
   parts.push(`# ${wedge?.manifest.title ?? `Mycel agent — ${task.wedge}`}`);
   parts.push("");
   parts.push(`You are fulfilling a "${task.task_type}" task for the "${task.wedge}" wedge.`);
-  parts.push(
-    `Use your tools to do the real work. Ground yourself in ./knowledge/ (domain playbooks, ` +
-      `policies, examples) and ./inputs/ (documents for this specific task) before acting. ` +
-      `Be concise. Write deliverables to ./output/.`,
-  );
-  if (task.case_id) {
+  if (profile.shape === "build") {
+    parts.push(
+      `This is a BUILD task: you are constructing or altering software in this workspace. Read the ` +
+        `code before you change it, make the change, and verify it actually runs. Write deliverables ` +
+        `to ./output/.`,
+    );
+    /**
+     * Said out loud rather than left for the agent to discover through failures.
+     *
+     * This run holds no action token, so every Mycel control-plane endpoint is unreachable. An agent
+     * that does not know that will burn turns curling them and reading 401s — and, worse, may decide
+     * the right way to "finish" is to email someone. Telling it plainly is cheaper than either.
+     */
+    parts.push(
+      `You have NO access to this business's email, payments, calendar or customer records, and no ` +
+        `credentials to reach them. Do not attempt to contact anyone or take any real-world action. ` +
+        `If the job seems to need one, say so in your final message and stop.`,
+    );
+  } else {
+    parts.push(
+      `Use your tools to do the real work. Ground yourself in ./knowledge/ (domain playbooks, ` +
+        `policies, examples) and ./inputs/ (documents for this specific task) before acting. ` +
+        `Be concise. Write deliverables to ./output/.`,
+    );
+  }
+  if (profile.shape === "decide") {
+    parts.push(
+      `This is a DECISION task: read, reason, and answer. You cannot create or edit files — your ` +
+        `deliverable is the final message, which must match the required schema exactly.`,
+    );
+  }
+  if (task.case_id && profile.grants_actions) {
     parts.push("");
     parts.push(`## This is part of an ongoing engagement`);
     parts.push(
@@ -476,8 +635,10 @@ function buildAgentsMd(task: Task, wedge: LoadedWedge | null, connections: Conne
     );
     for (const c of connections) parts.push(`- **${c.name}** (${c.kind}) — id \`${c.id}\``);
   }
-  // Taught unconditionally, not only when connections exist: the most valuable gaps are about
-  // judgment (pricing, tone, when to escalate), which has nothing to do with having a connection.
+  // Taught whenever the run holds a token, not only when connections exist: the most valuable gaps
+  // are about judgment (pricing, tone, when to escalate), which has nothing to do with having a
+  // connection. A run with no token cannot reach the endpoint at all, so it is omitted there.
+  if (profile.grants_actions) {
   parts.push("");
   parts.push(`## When you don't know something`);
   parts.push(
@@ -492,6 +653,7 @@ function buildAgentsMd(task: Task, wedge: LoadedWedge | null, connections: Conne
       `these questions and answers them once; the answer becomes knowledge you're given next time.\n` +
       `Ask about things specific to this business, not general knowledge. One call per distinct gap.`,
   );
+  }
   /**
    * Skills are INDEXED here and mounted as files, not inlined.
    *
@@ -504,7 +666,8 @@ function buildAgentsMd(task: Task, wedge: LoadedWedge | null, connections: Conne
    * file, so a skill whose description is vague gets skipped when it was needed, or read when it
    * was not.
    */
-  if (wedge?.skills.length) {
+  const skills = profileSkills(wedge, profile);
+  if (skills.length) {
     parts.push("");
     parts.push(`## Procedures`);
     parts.push(
@@ -512,11 +675,34 @@ function buildAgentsMd(task: Task, wedge: LoadedWedge | null, connections: Conne
         `business does the work, not general advice. Don't read them all.`,
     );
     parts.push("");
-    for (const s of wedge.skills) {
+    for (const s of skills) {
       parts.push(`- \`skills/${s.name}\` — ${skillSummary(s.content)}`);
     }
   }
   return parts.join("\n");
+}
+
+/**
+ * The permissive profile, for call sites that have no wedge or plan in hand (tests, and the
+ * `buildAgentsMd` default parameter). Deliberately the `general` shape: the pre-profile behaviour.
+ */
+function defaultProfileFor(task: Task): HarnessProfile {
+  const base = SHAPE_DEFAULTS.general;
+  return {
+    shape: "general",
+    task_type: task.task_type,
+    tier: base.tier,
+    requested_tier: base.tier,
+    tier_clamped: false,
+    max_runtime_s: base.max_runtime_s,
+    max_cost_usd: base.max_cost_usd,
+    permission: base.permission,
+    tools: base.tools,
+    instructions: ["AGENTS.md"],
+    grants_actions: base.grants_actions,
+    strict_output: base.strict_output,
+    long_lived: base.long_lived,
+  };
 }
 
 /**
@@ -552,6 +738,8 @@ function shellQuote(v: string): string {
 
 /** Test seam: the prompt is a cost decision, so its shape is worth asserting directly. */
 export const buildAgentsMdForTest = buildAgentsMd;
+/** Test seam: the closing instruction and the schema handling differ by profile. */
+export const buildPromptForTest = buildPrompt;
 
 /**
  * The last few KB of OpenCode's own log, or a note saying why we could not get it.

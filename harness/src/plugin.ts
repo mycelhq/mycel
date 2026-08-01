@@ -4,6 +4,26 @@
 // waits for a human. Deny -> the tool is blocked. This is the approval-gate
 // pattern. The exact hook name/signature follows @opencode-ai/plugin; confirm against the
 // installed version when wiring a real sandbox.
+//
+// WHAT THIS DOES AND DOES NOT GATE — read this before enabling a shell in a harness profile.
+//
+// `isGated()` below matches on the TOOL NAME, as a case-insensitive substring against the pattern
+// list. OpenCode's real tool ids (verified against 1.17.6, GET /experimental/tool/ids) are:
+// invalid, question, bash, read, glob, grep, edit, write, task, webfetch, todowrite, websearch,
+// skill, apply_patch. None of those contains "send", "email", "pay", "charge" or any other default
+// pattern. So in practice this plugin gates MCP tools and wedge-provided tools whose names happen
+// to describe an action — and it gates NOTHING that opencode ships with.
+//
+// In particular `bash` matches nothing, and `bash` is how the agent reaches everything: the action
+// proxy, the reads proxy, the case API, and the whole internet. A profile that enables the shell is
+// therefore, at this layer, ungated by construction. Widening the pattern list would not fix it —
+// the tool name is still "bash" whatever the command inside it is.
+//
+// The real boundary is the ACTION PROXY, and it is enforced by withholding a credential rather than
+// by inspecting a name: `runtime.ts` mints MYCEL_ACTION_TOKEN only when the harness profile says
+// `grants_actions`, and every side-effecting endpoint requires it. A `build` profile gets no token,
+// so its shell can curl all it likes and reach nothing that belongs to the business. See
+// SHAPE_DEFAULTS in harness.ts.
 import type { Task } from "./contract";
 import type { LoadedWedge } from "./wedge";
 

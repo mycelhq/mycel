@@ -4,6 +4,8 @@
 //   GET  /event   (SSE)                -> message.part.delta | message.part.updated | ...
 //   POST /session/:id/abort
 // Auth is HTTP Basic (opencode:<password>); Daytona preview links add x-daytona-preview-token.
+import type { HarnessProfile } from "./harness";
+import { SHAPE_DEFAULTS } from "./harness";
 
 // ---- Model + provider config (model + provider-env mapping) ----
 
@@ -55,31 +57,90 @@ export function openaiCompatibleBase(providerId: string): string | null {
   }
 }
 
-// Headless: allow by default (no interactive prompt to hang on), hard-deny catastrophes.
-// Action-level approval is added via the Mycel opencode plugin.
-const PERMISSION = {
-  "*": "allow",
-  bash: {
-    "rm -rf /": "deny",
-    "rm -rf /*": "deny",
-    "mkfs*": "deny",
-    ":(){ :|:& };:": "deny",
-  },
-};
+/**
+ * The pre-profile permission block, kept as the fallback for a call site with no profile.
+ *
+ * Headless: allow by default (there is no interactive prompt to answer, and `permission: "ask"`
+ * SUSPENDS the run waiting for a POST to /permission/:id/reply that nobody is making), hard-deny
+ * catastrophes. Action-level approval is added via the Mycel opencode plugin.
+ *
+ * Everything richer than this now lives in harness.ts, per task type.
+ */
+const PERMISSION = SHAPE_DEFAULTS.general.permission;
 
-// Native mode exports the provider key into the opencode server env. Proxy mode (when `proxy`
-// is passed) points opencode at the harness proxy with an opaque nonce — the real key never
-// enters the sandbox.
+/**
+ * The parts of the opencode config that come from the harness profile rather than from the model.
+ *
+ * Every key here was checked against the real 1.17.6 binary with `opencode debug config` and
+ * `opencode debug agent build` — see the header comment in harness.ts for the full inventory and
+ * for what is only in the newer published schema (`subagent_depth`, notably) and must NOT be
+ * emitted at this pin.
+ */
+function profileConfig(profile: HarnessProfile): Record<string, unknown> {
+  const agent: Record<string, unknown> = {};
+  // `agent.build` is the default primary agent (verified: `default_agent` falls back to "build"),
+  // so this is where per-run sampling and the iteration cap belong.
+  if (profile.temperature !== undefined) agent.temperature = profile.temperature;
+  if (profile.steps !== undefined) agent.steps = profile.steps;
+
+  const config: Record<string, unknown> = {
+    instructions: profile.instructions,
+    permission: profile.permission,
+    // Redundant with `permission` — 1.17.6 folds `tools` INTO `permission` at load — but it is the
+    // spelling the per-message `tools` map uses, and keeping both in sync means a future move to
+    // per-message toolsets is a one-line change rather than a translation layer.
+    ...(Object.keys(profile.tools).length ? { tools: profile.tools } : {}),
+    ...(Object.keys(agent).length ? { agent: { build: agent } } : {}),
+    /**
+     * Filesystem snapshots exist so a user can undo the agent's edits. A `decide` run makes no
+     * edits, so the tracking is pure cost on a run whose whole selling point is being cheap.
+     */
+    snapshot: profile.shape === "build",
+    /**
+     * Long runs need compaction or they die of context exhaustion; short ones must never compact,
+     * because compaction on a four-minute decision means the model summarised away the invoice it
+     * was reasoning about.
+     */
+    compaction: { auto: profile.long_lived },
+    /**
+     * Tool output truncation. A build greps a repository and legitimately wants the output; a
+     * decision reading three knowledge files does not need 2,000 lines of anything, and every line
+     * is billed on every subsequent turn.
+     */
+    tool_output: profile.long_lived ? { max_lines: 2000 } : { max_lines: 400 },
+  };
+  return config;
+}
+
+/**
+ * Native mode exports the provider key into the opencode server env. Proxy mode (when `proxy` is
+ * passed) points opencode at the harness proxy with an opaque nonce — the real key never enters the
+ * sandbox.
+ *
+ * `profile` is optional so that a caller with no task in hand still gets the old permissive config
+ * rather than a type error; every real run passes one.
+ */
 export function buildOpencodeConfig(
   model: string,
   proxy?: { proxyBaseUrl: string; nonce: string; modelId: string },
+  profile?: HarnessProfile,
 ): OpencodeConfig {
+  const tuned = profile
+    ? profileConfig(profile)
+    : { instructions: ["AGENTS.md"], permission: PERMISSION };
+
   if (proxy) {
     const config: Record<string, unknown> = {
       $schema: "https://opencode.ai/config.json",
-      instructions: ["AGENTS.md"],
       plugin: ["./mycel-plugin.ts"],
       model: `mycel/${proxy.modelId}`,
+      /**
+       * Side-work (session titles, summaries, compaction) runs on `small_model`, and if it is unset
+       * opencode reaches for its own default provider — which, inside a proxy-mode sandbox, does not
+       * exist and has no key. `mycel` has exactly one model registered, so that is the only honest
+       * answer here.
+       */
+      small_model: `mycel/${proxy.modelId}`,
       provider: {
         mycel: {
           npm: "@ai-sdk/openai-compatible",
@@ -87,9 +148,9 @@ export function buildOpencodeConfig(
           models: { [proxy.modelId]: { name: proxy.modelId, id: proxy.modelId } },
         },
       },
-      permission: PERMISSION,
       share: "disabled",
       autoupdate: false,
+      ...tuned,
     };
     return { config, providerEnv: {} }; // no real key in the sandbox
   }
@@ -102,12 +163,11 @@ export function buildOpencodeConfig(
 
   const config: Record<string, unknown> = {
     $schema: "https://opencode.ai/config.json",
-    instructions: ["AGENTS.md"],
     plugin: ["./mycel-plugin.ts"],
     model,
-    permission: PERMISSION,
     share: "disabled",
     autoupdate: false,
+    ...tuned,
   };
   return { config, providerEnv };
 }
@@ -177,7 +237,23 @@ export class OpenCodeClient {
    * (openrouter's "anthropic/claude-3.5-sonnet" behind a provider, for one), and splitting on all of
    * them silently addresses the wrong model rather than failing.
    */
-  async sendPrompt(sessionId: string, text: string, model: string): Promise<void> {
+  async sendPrompt(
+    sessionId: string,
+    text: string,
+    model: string,
+    /**
+     * Per-message harness controls. Verified present on POST /session/:id/message in 1.17.6's own
+     * OpenAPI document (GET /doc): `agent`, `tools` (the boolean map again), `system`, `variant`
+     * and `format`.
+     *
+     * `format: {type:"json_schema", schema, retryCount}` is OpenCode's NATIVE structured output —
+     * it re-prompts the model itself when the answer does not validate. That is strictly better
+     * than the sentence `buildPrompt` used to append ("Return a result conforming to this schema"),
+     * because a schema violation currently costs the whole task: `runTask` validates the text and
+     * throws, so the run is billed in full and delivers nothing.
+     */
+    opts?: { format?: { type: "json_schema"; schema: unknown; retryCount?: number } },
+  ): Promise<void> {
     const slash = model.indexOf("/");
     const modelRef =
       slash > 0
@@ -187,7 +263,11 @@ export class OpenCodeClient {
     const r = await fetch(`${this.baseUrl}/session/${sessionId}/message`, {
       method: "POST",
       headers: this.headers({ "content-type": "application/json" }),
-      body: JSON.stringify({ parts: [{ type: "text", text }], model: modelRef }),
+      body: JSON.stringify({
+        parts: [{ type: "text", text }],
+        model: modelRef,
+        ...(opts?.format ? { format: opts.format } : {}),
+      }),
     });
     if (!r.ok) throw new Error(`send prompt failed: ${r.status} ${await r.text()}`);
   }

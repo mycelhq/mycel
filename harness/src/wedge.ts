@@ -8,6 +8,7 @@
 import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import type { Risk } from "./contract";
+import type { HarnessProfileSpec } from "./harness";
 import type { IntakeQuestion } from "./intake";
 
 export interface WedgeTaskType {
@@ -16,11 +17,21 @@ export interface WedgeTaskType {
    *
    * Declared per task_type because a wedge does several different things — classifying an inbound
    * message is not the same work as reconciling a month. Clamped by the org's plan at run time.
+   *
+   * Kept alongside `harness.tier` as the shorter spelling: wedges already use it, and forcing a
+   * nesting level on every existing manifest to gain nothing would be a poor trade.
    */
   tier?: string;
   description?: string;
   input_schema?: unknown;
   output_schema?: unknown;
+  /**
+   * How to engineer the harness for THIS task type — tools, permissions, tier, budgets, whether
+   * the run may hold the action token. See harness.ts; every field is a request, clamped by the
+   * org's plan and the server's ceilings. Absent means the permissive `general` shape, i.e. exactly
+   * what every task got before profiles existed.
+   */
+  harness?: HarnessProfileSpec;
 }
 
 export interface WedgeApproval {
@@ -32,6 +43,8 @@ export interface WedgeApproval {
 export interface WedgeManifest {
   /** Default tier for every task_type that does not declare one. */
   tier?: string;
+  /** Wedge-wide harness defaults, overridden per task_type. See harness.ts. */
+  harness?: HarnessProfileSpec;
   wedge: string;
   title?: string;
   model?: string;

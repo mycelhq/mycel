@@ -4,6 +4,21 @@
   "task_types": {
     "chase_invoice": {
       "description": "Given an overdue invoice and the client's history, draft the right next dunning step and (on approval) send it.",
+      "harness": {
+        "shape": "decide",
+        "tier": "fast",
+        "max_runtime_s": 240,
+        "max_cost_usd": 0.5,
+        "strict_output": true,
+        "temperature": 0.1,
+        "steps": 30,
+        "skills": [
+          "chase-politely"
+        ],
+        "instructions": [
+          "knowledge/dunning-policy.md"
+        ]
+      },
       "output_schema": {
         "type": "object",
         "properties": {

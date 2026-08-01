@@ -27,6 +27,13 @@ import { touchFor } from "./capabilities";
 import { noteInboundReplies } from "../gtm/replies";
 import { startLogin, submitChallenge, type BrowserDriver, type PendingLogin } from "./login";
 import { ProxyRequiredError, redactProxy, requireProxy } from "./proxy";
+// The action modules. Each is a thin fetch plus a pure parser, so the parsers stay unit-testable
+// without a live LinkedIn session — which is the only part that survives LinkedIn changing a
+// response shape.
+import { CommercialSearchLimitError, searchPeople, type PeopleQuery } from "./search";
+import { InviteQuotaError, sendInvite, withdrawInvite, resolveProfileUrn, checkNote } from "./invites";
+import { writePeople, writeCompanies, companyStubs, type GraphScope } from "./graph";
+import { getProfile, getCompany, viewProfile, type LiProfile } from "./profile";
 import { forgetUsage, usageFor, type AccountUsage } from "./meter";
 import {
   fetchSelf,
@@ -316,6 +323,259 @@ export async function sendLinkedInMessage(
     if (e instanceof ProxyRequiredError) return { ok: false, detail: e.message };
     // Never echo the message body back in an error.
     return { ok: false, detail: `linkedin send failed: ${(e as Error)?.message ?? "unknown error"}` };
+  }
+}
+
+// ── Search, profiles, invitations ────────────────────────────────────────────────────────────────
+//
+// Everything below is the same shape as `sendLinkedInMessage` above, and that sameness is the point:
+// load the vaulted session, ask pacing whether this account may spend the touch this capability
+// costs, make ONE metered call through the account's proxy, and increment the counter only if
+// LinkedIn accepted it. A capability that skipped any of those four would be the hole the other
+// thirteen are protected from.
+//
+// The reads additionally WRITE WHAT THEY LEARNED into the graph (see graph.ts), because a read whose
+// result only ever reaches a chat window is a demo. That write is best-effort by construction: it
+// can never turn a successful LinkedIn call into a reported failure.
+
+/** The uniform result these return. Maps straight onto the action proxy's `ActionResult`. */
+export interface LiActionResult {
+  ok: boolean;
+  detail?: string;
+  /** A named, actionable failure — `linkedin_commercial_search_limit`, `linkedin_invite_quota`, … */
+  code?: string;
+  data?: Record<string, unknown>;
+}
+
+/** Load the session and the egress context, or explain why we cannot act. */
+async function open(conn: Connection): Promise<{ session: LinkedInSession; ctx: VoyagerCtx } | LiActionResult> {
+  const session = await getLinkedInSession(conn.id);
+  if (!session) return { ok: false, detail: "linkedin session not found or expired — reconnect the account" };
+  return { session, ctx: await voyagerCtx(conn) };
+}
+
+const isRefusal = (v: unknown): v is LiActionResult => typeof (v as LiActionResult)?.ok === "boolean";
+
+/**
+ * The pacing gate, keyed on the CAPABILITY ID rather than a touch kind.
+ *
+ * Same decision as `noteLinkedInTouch`: `touchFor` is the single mapping, so a capability added later
+ * is paced correctly without anyone remembering a second table. A capability that costs nothing
+ * (search, withdraw) skips the check entirely rather than consulting a budget it does not spend.
+ */
+async function paced(conn: Connection, action: string): Promise<LiActionResult | null> {
+  if (!pacingCheck) return null;
+  const kind = touchFor(action);
+  if (!kind) return null;
+  const verdict = await pacingCheck(getDomainStore(), conn.id, kind);
+  return verdict.allowed ? null : { ok: false, detail: `paced: ${verdict.reason ?? "not allowed right now"}` };
+}
+
+/**
+ * Turn a thrown LinkedIn condition into a result the founder can act on.
+ *
+ * The two named errors carry a `code` on purpose: the UI can special-case them, and more importantly
+ * a human reading "you are out of invitations this week" does something different from a human
+ * reading "invite failed". Anything else becomes a plain message — never the payload, never the note.
+ */
+function asResult(e: unknown): LiActionResult {
+  if (e instanceof CommercialSearchLimitError || e instanceof InviteQuotaError) {
+    return { ok: false, code: e.code, detail: e.message };
+  }
+  if (e instanceof ProxyRequiredError) return { ok: false, code: e.code, detail: e.message };
+  return { ok: false, detail: (e as Error)?.message ?? "linkedin call failed" };
+}
+
+/** The tenant + engagement these rows belong to. Taken from the CONNECTION, never from a payload. */
+const scopeOf = (conn: Connection, caseId?: string): GraphScope => ({ project_id: conn.project_id, case_id: caseId });
+
+/**
+ * Search people, and leave the results in the graph.
+ *
+ * A Commercial Search Limit comes back as a named code rather than a generic failure — see
+ * `CommercialSearchLimitError`. It is the one search outcome a founder must not misread as "our
+ * targeting is wrong".
+ */
+export async function searchLinkedInPeople(
+  conn: Connection,
+  q: PeopleQuery,
+  caseId?: string,
+): Promise<LiActionResult> {
+  const opened = await open(conn);
+  if (isRefusal(opened)) return opened;
+  const refused = await paced(conn, "search_people");
+  if (refused) return refused;
+  try {
+    const page = await searchPeople(opened.session, opened.ctx, q);
+    // Only a search LinkedIn actually answered spends anything, and only then is it recorded.
+    await noteLinkedInTouch(conn.id, "search_people");
+    const scope = scopeOf(conn, caseId);
+    const written = await writePeople(getDomainStore(), scope, page.people, { field: "search" });
+    // The employers named on the cards become stub company rows, which a later get_company fills in
+    // through the same JSONB merge. Searching therefore populates the company list for free.
+    const companies = await writeCompanies(getDomainStore(), scope, companyStubs(page.people));
+    return {
+      ok: true,
+      detail: `found ${page.people.length} ${page.people.length === 1 ? "person" : "people"} (via ${page.via})`,
+      data: {
+        people: page.people,
+        total: page.total,
+        next_start: page.next_start,
+        records_written: written,
+        companies_written: companies,
+      },
+    };
+  } catch (e) {
+    return asResult(e);
+  }
+}
+
+/** One profile, in detail, written to the graph under its public identifier. */
+export async function getLinkedInProfile(
+  conn: Connection,
+  profileId: string,
+  caseId?: string,
+): Promise<LiActionResult> {
+  const opened = await open(conn);
+  if (isRefusal(opened)) return opened;
+  const refused = await paced(conn, "get_profile");
+  if (refused) return refused;
+  try {
+    const profile = await getProfile(opened.session, opened.ctx, profileId);
+    await noteLinkedInTouch(conn.id, "get_profile");
+    if (!profile) return { ok: false, detail: `no profile visible to this account for "${profileId}"` };
+    const scope = scopeOf(conn, caseId);
+    await writePeople(getDomainStore(), scope, [profile], { field: "profile" });
+    await writeCompanies(getDomainStore(), scope, companyStubs([profile]));
+    return { ok: true, detail: profile.name ?? profile.public_id, data: { profile } };
+  } catch (e) {
+    return asResult(e);
+  }
+}
+
+/** One company page, written to the graph under its registrable domain. */
+export async function getLinkedInCompany(conn: Connection, slug: string): Promise<LiActionResult> {
+  const opened = await open(conn);
+  if (isRefusal(opened)) return opened;
+  const refused = await paced(conn, "get_company");
+  if (refused) return refused;
+  try {
+    const company = await getCompany(opened.session, opened.ctx, slug);
+    await noteLinkedInTouch(conn.id, "get_company");
+    if (!company) return { ok: false, detail: `no company page for "${slug}"` };
+    const written = await writeCompanies(getDomainStore(), scopeOf(conn), [company]);
+    return {
+      ok: true,
+      detail: company.name ?? slug,
+      // A company with no resolvable website cannot be keyed on a domain, so it is READ but not
+      // STORED — and the caller is told, rather than left to wonder why the CRM did not update.
+      data: { company, stored: written > 0 },
+    };
+  } catch (e) {
+    return asResult(e);
+  }
+}
+
+/**
+ * A profile view: the cheapest warm-up touch there is, and a real one.
+ *
+ * It spends `profile_view` from the weekly budget, so it is paced like any other write even though
+ * nothing is delivered. The view only reaches the target's notifications if the ACCOUNT's own
+ * profile-viewing setting is public — which nothing here can verify, so nothing here claims it.
+ */
+export async function viewLinkedInProfile(
+  conn: Connection,
+  profileId: string,
+  caseId?: string,
+): Promise<LiActionResult> {
+  const opened = await open(conn);
+  if (isRefusal(opened)) return opened;
+  const refused = await paced(conn, "view_profile");
+  if (refused) return refused;
+  try {
+    const res = await viewProfile(opened.session, opened.ctx, profileId);
+    if (!res.ok) return { ok: false, detail: res.detail };
+    await noteLinkedInTouch(conn.id, "view_profile");
+    const scope = scopeOf(conn, caseId);
+    if (res.profile) await writePeople(getDomainStore(), scope, [res.profile], { field: "profile" });
+    return { ok: true, detail: res.detail, data: { profile: res.profile } };
+  } catch (e) {
+    return asResult(e);
+  }
+}
+
+/**
+ * Send a connection request. The single most restriction-prone action in the system.
+ *
+ * It reaches the same door `send_message` does and takes the same two independent checks: the human
+ * approval gate upstream (the action proxy, or a campaign envelope that a human approved once and
+ * that is re-read from the store on every send), and store-backed pacing here. There is no bypass and
+ * this comment exists so that adding one requires deleting it.
+ *
+ * A public identifier costs one extra profile read, because a slug and a member urn are unrelated
+ * identifiers. That read is not waste — it is the "look at them first" step, and its result is
+ * written to the graph on the way past.
+ */
+export async function sendLinkedInInvite(
+  conn: Connection,
+  profileId: string,
+  note?: string,
+  caseId?: string,
+): Promise<LiActionResult> {
+  const opened = await open(conn);
+  if (isRefusal(opened)) return opened;
+
+  // The note is checked BEFORE pacing, so an over-long note fails without spending anything.
+  const checked = checkNote(note);
+  if (checked.error) return { ok: false, detail: checked.error };
+
+  const refused = await paced(conn, "send_invite");
+  if (refused) return refused;
+
+  try {
+    const { session, ctx } = opened;
+    const resolved = await resolveProfileUrn(session, ctx, profileId, (id) => getProfile(session, ctx, id));
+    if (resolved.profile) {
+      await writePeople(getDomainStore(), scopeOf(conn, caseId), [resolved.profile as LiProfile], {
+        field: "profile",
+      });
+    }
+    if (!resolved.urn) {
+      return { ok: false, detail: `could not resolve "${profileId}" to a LinkedIn member — no invitation sent` };
+    }
+    const res = await sendInvite(session, ctx, resolved.urn, checked.note);
+    // Only an invitation LinkedIn accepted spends allowance. Charging for a refusal would burn the
+    // scarcest budget in the system on requests nobody received.
+    if (res.ok) await noteLinkedInTouch(conn.id, "send_invite");
+    return res.ok
+      ? { ok: true, detail: "invitation sent", data: { invitation_id: res.invitation_id, shared_secret: res.shared_secret } }
+      : { ok: false, detail: res.detail ?? "invitation failed" };
+  } catch (e) {
+    return asResult(e);
+  }
+}
+
+/**
+ * Withdraw a pending invitation — the only action here that GIVES budget back.
+ *
+ * Free (`touch: null`) because it costs nothing to spend; worth running on everything older than
+ * three weeks, because until it is withdrawn a pending invitation is still counted against the
+ * weekly limit.
+ */
+export async function withdrawLinkedInInvite(
+  conn: Connection,
+  invitationId: string,
+  sharedSecret?: string,
+): Promise<LiActionResult> {
+  const opened = await open(conn);
+  if (isRefusal(opened)) return opened;
+  try {
+    const res = await withdrawInvite(opened.session, opened.ctx, invitationId, sharedSecret);
+    return res.ok
+      ? { ok: true, detail: "invitation withdrawn — that allowance is back", data: { invitation_id: res.invitation_id } }
+      : { ok: false, detail: res.detail ?? "withdraw failed" };
+  } catch (e) {
+    return asResult(e);
   }
 }
 
