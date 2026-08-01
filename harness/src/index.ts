@@ -12,6 +12,7 @@ import { closeQueue, initQueue, startWorker } from "./queue";
 import { createServer } from "./server";
 import { createStore } from "./store";
 import { flushLogs } from "./tracing";
+import { sandboxPreflight } from "./sandbox";
 
 const { store, backend } = await createStore();
 await initDomainStore(); // durable service surface when MYCEL_DATABASE_URL is set
@@ -33,6 +34,18 @@ const queue = await initQueue();
 // MYCEL_WORKER=0 gives an API-only replica; a worker-only container against the same database
 // scales execution independently of traffic — which is the point of having a queue at all.
 const worker = process.env.MYCEL_WORKER === "0" ? null : await startWorker(store);
+
+// Refuse to serve a backend we cannot actually use.
+//
+// With MYCEL_SANDBOX=daytona and the SDK missing, this process previously started, reported healthy
+// to the load balancer, accepted tasks and failed every one at sandbox creation. The fleet was green
+// and the product could do no work whatsoever. Exiting here turns that into a failed deployment,
+// which is loud, immediate, and rolls back on its own.
+const sandboxProblem = await sandboxPreflight(cfg.sandboxBackend);
+if (sandboxProblem) {
+  console.error(`\n  ✗ ${sandboxProblem}\n    Refusing to start: every task would fail at sandbox creation.\n`);
+  process.exit(1);
+}
 
 const scheduler = startScheduler(store, getDomainStore());
 console.log(

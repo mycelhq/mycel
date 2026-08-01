@@ -129,10 +129,25 @@ export class LocalSandbox implements Sandbox {
   }
 }
 
-// Daytona-backed sandbox. The SDK is imported dynamically so the harness core has no hard
-// dependency on it — install `@daytonaio/sdk` to use. The SDK call surface below mirrors
-// the Daytona SDK; confirm the exact TS method names against your working
-// client when you wire real credentials.
+/**
+ * Daytona-backed sandbox.
+ *
+ * The import stays dynamic so the harness core has no hard dependency — a self-hosted install using
+ * a different backend should not be made to carry 164 packages it never calls.
+ *
+ * The package is `@daytona/sdk`. It was `@daytonaio/sdk`, which is deprecated and now redirects;
+ * that older name was what this file asked for, it was never in package.json, and it was never
+ * installed anywhere — so the Daytona path had never once executed. In production, with
+ * MYCEL_SANDBOX=daytona, that meant the kernel booted, passed its health check, accepted work, and
+ * failed every task in under five seconds with `Cannot find package`. Found by running one real task
+ * against production rather than by reading the code.
+ *
+ * The call surface below has now been checked against the installed SDK — `create`, `fs.uploadFile`,
+ * `fs.downloadFile`, `process.executeCommand`, `getPreviewLink` and `delete` all exist as used. The
+ * comment that previously stood here asked the reader to confirm those names against a working
+ * client, which was an honest warning that nobody had.
+ */
+const DAYTONA_PKG = "@daytona/sdk";
 export class DaytonaSandbox implements Sandbox {
   id = "";
   // Untyped: the concrete SDK shape lives at the integration boundary, not in our core.
@@ -142,8 +157,7 @@ export class DaytonaSandbox implements Sandbox {
     opts: { image?: string; envVars?: Record<string, string> } = {},
   ): Promise<DaytonaSandbox> {
     const self = new DaytonaSandbox();
-    const pkg = "@daytonaio/sdk";
-    const mod: any = await import(pkg);
+    const mod: any = await import(DAYTONA_PKG);
     const client = new mod.Daytona({ apiKey: process.env.DAYTONA_API_KEY });
     // : CreateSandboxFromImageParams({ image, envVars, autoStopInterval: 60 })
     self.sb = await client.create({
@@ -293,4 +307,30 @@ export async function createSandbox(): Promise<Sandbox> {
     default:
       return new LocalSandbox();
   }
+}
+
+/**
+ * Can the configured sandbox backend actually be used?
+ *
+ * Called at boot so a missing backend is a startup failure rather than a per-task one. The
+ * difference is not cosmetic. When `@daytona/sdk` was absent the kernel started cleanly, reported
+ * healthy to its load balancer, accepted tasks, and failed every one of them at the moment of
+ * sandbox creation — so the fleet looked green while the product could not do any work at all. A
+ * dependency that is only exercised on the request path is a dependency you find out about from a
+ * customer.
+ *
+ * Returns null when fine, or a human-readable reason. The caller decides how loud to be; `daytona`
+ * without the SDK is fatal, because the alternative is accepting work we know will fail.
+ */
+export async function sandboxPreflight(backend: string): Promise<string | null> {
+  if (backend !== "daytona") return null;
+  try {
+    await import(DAYTONA_PKG);
+  } catch (e) {
+    return `sandbox backend "daytona" is selected but ${DAYTONA_PKG} is not installed (${(e as Error).message})`;
+  }
+  if (!process.env.DAYTONA_API_KEY) {
+    return `sandbox backend "daytona" is selected but DAYTONA_API_KEY is not set`;
+  }
+  return null;
 }

@@ -13,6 +13,7 @@
     "test": "MYCEL_RUNTIME=mock MYCEL_API_KEY=testkey MYCEL_OWNER_EMAIL=owner@test.co MYCEL_OWNER_PASSWORD=secret node --import tsx --test harness/test/*.test.ts"
   },
   "dependencies": {
+    "@daytona/sdk": "^0.203.0",
     "@hono/node-server": "^1.13.1",
     "graphile-worker": "^0.17.3",
     "hono": "^4.6.3",
