@@ -1,0 +1,467 @@
+{
+  "wedge": "product-builder",
+  "domains": ["web-development"],
+  "title": "Product Builder \u2014 the founder's own Next.js app",
+  "provides": [
+    "app_building"
+  ],
+  "_comment_internal": "It builds the founder's OWN app during onboarding. A capability of the platform, not a service the founder sells to anybody. See WedgeManifest.internal in harness/src/wedge.ts for why this is declared rather than inferred.",
+  "internal": true,
+  "harness": {
+    "shape": "build"
+  },
+  "task_types": {
+    "build_feature": {
+      "description": "Construct or alter the founder's Next.js product in this workspace: read the code, make the change, run it, and verify it works.",
+      "_comment_workspace": "Without this block the run's OUTPUT IS DELETED. resolveWorkspace() returns null for a manifest that declares no workspace, and the orchestrator then persists only result.txt before destroying the sandbox \u2014 which is exactly what happened to every product-builder run before now: the agent built the app, and the app died with the microVM. `dir` names the directory that IS the deliverable; `seed` copies business-template into it (runtime.ts calls seedWorkspace before the agent's first turn) so the agent edits a working Next.js app instead of inventing one. Declaring this also requires MYCEL_ARTIFACTS=fs|s3, because a tarball must not be stuffed inline into a Postgres row \u2014 the orchestrator refuses BEFORE provisioning rather than after half an hour of build.",
+      "_comment_verify": "THE KERNEL RUNS THIS, not the agent, after the agent stops and before the export. Non-zero exit FAILS the task. 'verify it works' has been in the build prompt forever and it is an instruction to the thing being verified \u2014 an agent that believes it ran the build and one that ran it write the same final message. Task e4dbc13f is the run this answers: it reported succeeded having produced no application at all. IT NO LONGER RUNS `npm run build`. A Next.js production build OOM'd the sandbox, and its verdict arrived after the agent had stopped, so a compile error had to be resurrected into a follow-up task instead of fixed on the spot. What is left is the CHEAP half \u2014 a typecheck, and a real `next dev` boot that must answer 200 on `/` \u2014 which costs seconds and catches most failures before a build is spent. `npm install` stays because node_modules is never seeded (nor exported) and it is idempotent. The production build moved to `require_remote_build`.",
+      "_comment_require_remote_build": "THE APP MUST HAVE COMPILED on the build plane, with the exact OpenNext toolchain that deploys it. The agent calls `mycel-build` DURING the run (kernel/harness/src/remotebuild.ts): the sandbox posts its source to one kernel endpoint authenticated by a per-run nonce, the kernel starts CodeBuild with its own role, and on failure the agent gets the TAIL OF THE REAL BUILD LOG \u2014 so it fixes the actual error and builds again, up to three times. At hand-off the kernel does not run a build; it CHECKS that one succeeded, by reading the run's own event log, which the sandbox cannot write to. That is the difference between 'the agent says it builds' and 'the kernel watched it build'. Ignored on a kernel with no build plane configured (every developer machine and the whole test suite), because a tool that was never offered must not fail the run that could not use it.",
+      "workspace": {
+        "dir": "app",
+        "seed": "business-template",
+        "verify": "npm install --no-audit --no-fund && npx tsc --noEmit && (npm run dev >/tmp/dev.log 2>&1 & echo $!>/tmp/dev.pid); for i in $(seq 30); do sleep 2; c=$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:3000/); [ \"$c\" = 200 ] && break; done; kill $(cat /tmp/dev.pid) 2>/dev/null; [ \"$c\" = 200 ] || { echo \"dev server never answered 200 on / (last ${c:-none})\"; tail -c 1500 /tmp/dev.log; exit 1; }",
+        "verify_timeout_s": 420,
+        "require_remote_build": true
+      },
+      "harness": {
+        "shape": "build",
+        "tier": "deep",
+        "_comment_max_runtime_s": "An hour. `mycel-build` BLOCKS while CodeBuild compiles \u2014 three to six minutes an attempt, up to three attempts \u2014 so as much as ~18 minutes of this budget can be spent watching a compiler. At the old 1800 that left about ten minutes to read a codebase, make a change, and fix what the first build found.",
+        "max_runtime_s": 3600,
+        "max_cost_usd": 5,
+        "steps": 400,
+        "strict_output": false,
+        "needs_connections": false,
+        "permission": {
+          "edit": "allow",
+          "bash": {
+            "rm -rf /": "deny",
+            "rm -rf /*": "deny",
+            "rm -rf ~": "deny",
+            "git push*": "deny",
+            "npm publish*": "deny",
+            "*": "allow"
+          }
+        }
+      }
+    },
+    "design_identity": {
+      "description": "Before any site is built, derive a BESPOKE visual identity for this specific business from its brand configuration and what it actually does — so the generated site feels designed for them, not filled from a template. Read the brand kit and the business's shape (what it sells, to whom, its positioning and knowledge), then commit to one coherent visual direction: an archetype, a palette rationale, a type system, a layout language with one signature motif, a section plan, and the anti-patterns to avoid for this business. Output the identity only; nothing is built here.",
+      "_comment": "The FIRST half of the two-step build. A `decide` run (no workspace, no sandbox build) that produces a VisualIdentity the founder approves before `build_feature` reads it. This is what stops every generated site converging on the seed template: the build's brief becomes a per-business identity, not a fixed scaffold. The identity is stored on Project.branding.identity (the same place the brand kit lives, which build_feature already reads) once approved. Grounded, not invented: the agent reads GET /v1/projects/:id/brand-kit and the business shape; it chooses WITHIN the founder's configured preset/fonts/accent rather than overriding them, and explains every choice.",
+      "harness": {
+        "shape": "decide",
+        "tier": "deep",
+        "max_runtime_s": 600,
+        "max_cost_usd": 1.5,
+        "strict_output": true,
+        "needs_connections": false,
+        "temperature": 0.5,
+        "steps": 40
+      },
+      "output_schema": {
+        "type": "object",
+        "required": [
+          "archetype",
+          "rationale",
+          "palette",
+          "typography",
+          "layout",
+          "sections"
+        ],
+        "properties": {
+          "archetype": {
+            "type": "string",
+            "enum": [
+              "editorial",
+              "technical",
+              "warm-organic",
+              "bold-brutalist",
+              "minimal-luxury",
+              "playful",
+              "corporate-trust"
+            ],
+            "description": "The overall visual family that best fits THIS business, chosen deliberately from its positioning — not a default. Editorial: serif, generous measure, magazine hierarchy. Technical: mono accents, grid-precise, product-doc calm. Warm-organic: soft neutrals, rounded, human. Bold-brutalist: heavy type, hard edges, high contrast. Minimal-luxury: restraint, whitespace, one accent. Playful: colour, motion, personality. Corporate-trust: structured, credible, understated."
+          },
+          "rationale": {
+            "type": "string",
+            "description": "Two to four sentences: WHY this archetype fits this specific business — grounded in what they sell, to whom, and how they position. A rationale that would fit any business is wrong."
+          },
+          "palette": {
+            "type": "object",
+            "required": ["accent_use", "neutral_temperature", "default_mode"],
+            "properties": {
+              "accent_use": {
+                "type": "string",
+                "description": "How the founder's configured accent is used in THIS identity — where it appears and where it deliberately does not. Never override the configured accent; decide its discipline."
+              },
+              "neutral_temperature": {
+                "type": "string",
+                "enum": ["cool", "neutral", "warm"],
+                "description": "The temperature of the greys/surfaces, chosen to match the archetype (warm-organic leans warm, technical leans cool)."
+              },
+              "default_mode": {
+                "type": "string",
+                "enum": ["light", "dark"],
+                "description": "Which theme the site leads in. Both ship (the switcher stays); this is the one a first visitor sees."
+              },
+              "notes": {
+                "type": "string",
+                "description": "Any palette-construction guidance specific to this business."
+              }
+            }
+          },
+          "typography": {
+            "type": "object",
+            "required": ["heading", "body", "pairing_rationale"],
+            "properties": {
+              "heading": {
+                "type": "string",
+                "description": "Heading typeface. Prefer the founder's configured heading font; propose a change only with a reason, and only a self-hostable font (no runtime CDN fetch)."
+              },
+              "body": {
+                "type": "string",
+                "description": "Body typeface."
+              },
+              "pairing_rationale": {
+                "type": "string",
+                "description": "Why this pairing reads the way the archetype needs it to."
+              },
+              "scale": {
+                "type": "string",
+                "description": "Type-scale character: e.g. 'large editorial display, tight body' vs 'restrained, even scale'."
+              }
+            }
+          },
+          "layout": {
+            "type": "object",
+            "required": ["hero_shape", "grid", "signature_motif"],
+            "properties": {
+              "hero_shape": {
+                "type": "string",
+                "enum": ["stack", "split", "lede"],
+                "description": "The fold arrangement, chosen for this business. Mirrored into content/marketing.ts heroShape and the live kit."
+              },
+              "grid": {
+                "type": "string",
+                "description": "The composition language: column grid, asymmetry, bento, editorial rag — what makes the page's structure distinctive."
+              },
+              "rhythm": {
+                "type": "string",
+                "description": "Spacing/density character: airy and luxurious vs dense and utilitarian."
+              },
+              "signature_motif": {
+                "type": "string",
+                "description": "THE ONE distinctive element that makes this site recognisably this business's — a hairline system, a numbered index, an oversized wordmark, a mono metadata rail, a duotone image treatment. One, executed everywhere; not five decorations. This is the single most important field for making the site not look templated."
+              }
+            }
+          },
+          "motion": {
+            "type": "string",
+            "description": "Restraint level and any signature interaction — e.g. 'none beyond hover' vs 'a single scroll-reveal on the hero'. Never decorative motion inside /portal."
+          },
+          "sections": {
+            "type": "array",
+            "description": "The ordered section plan for the marketing page, each with the intent it serves for THIS business. The order is an argument; deviate from the default hero→proof→offer→how→close when the business calls for it, and say why in the intent.",
+            "items": {
+              "type": "object",
+              "required": ["kind", "intent"],
+              "properties": {
+                "kind": { "type": "string", "description": "Section kind, e.g. hero, proof, services, steps, statement, work, closing, or a bespoke one you name." },
+                "intent": { "type": "string", "description": "What this section must accomplish for this specific business, in one line." }
+              }
+            }
+          },
+          "voice": {
+            "type": "string",
+            "description": "The copy tone this identity implies — how the words should sound, matched to the visual archetype."
+          },
+          "avoid": {
+            "type": "array",
+            "items": { "type": "string" },
+            "description": "Anti-patterns to avoid for THIS business specifically — the clichés that would make it look like everyone else in its category."
+          }
+        }
+      }
+    },
+    "review_diff": {
+      "description": "Read a proposed change to the product and say whether it is safe to ship, without touching anything.",
+      "harness": {
+        "shape": "decide",
+        "tier": "standard",
+        "strict_output": true
+      },
+      "output_schema": {
+        "type": "object",
+        "properties": {
+          "verdict": {
+            "type": "string",
+            "enum": [
+              "ship",
+              "fix_first",
+              "reject"
+            ]
+          },
+          "findings": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          }
+        },
+        "required": [
+          "verdict"
+        ]
+      }
+    },
+    "nudge_client_request": {
+      "description": "Remind this client about ONE thing we already asked them for and have not received. Escalate in tone with the number of reminders already sent (input: nudges_sent of max_nudges); never invent a new ask, and never ask for anything the input does not name.",
+      "harness": {
+        "shape": "decide",
+        "max_runtime_s": 420,
+        "max_cost_usd": 0.3,
+        "strict_output": true,
+        "needs_connections": true,
+        "temperature": 0.1,
+        "steps": 20
+      },
+      "output_schema": {
+        "type": "object",
+        "properties": {
+          "step": {
+            "type": "string",
+            "enum": [
+              "reminder",
+              "firm_reminder",
+              "final_reminder",
+              "hold"
+            ]
+          },
+          "channel": {
+            "type": "string",
+            "enum": [
+              "email",
+              "none"
+            ]
+          },
+          "message": {
+            "type": "string"
+          },
+          "reasoning": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "step",
+          "channel",
+          "message"
+        ]
+      }
+    },
+    "deliverable_verdict": {
+      "description": "Your client has come back on something we delivered. Read what they said and either write the next version or wrap the work up.",
+      "_comment": "One task type for BOTH verdicts, because the wait that wakes it is armed at release time \u2014 before anyone knows which way the client will go. See DELIVERABLE_VERDICT_TASK_TYPE in deliverables.ts. Read the live answer from GET /v1/internal/deliverables/<id> rather than trusting the resume input; a client can accept and then immediately ask for one more thing.",
+      "input_schema": {
+        "type": "object",
+        "required": [
+          "deliverable_id"
+        ],
+        "properties": {
+          "deliverable_id": {
+            "type": "string"
+          }
+        }
+      },
+      "harness": {
+        "shape": "decide",
+        "max_runtime_s": 600,
+        "max_cost_usd": 0.5,
+        "strict_output": true,
+        "temperature": 0.2,
+        "steps": 30
+      },
+      "output_schema": {
+        "type": "object",
+        "required": [
+          "verdict",
+          "next_step",
+          "note"
+        ],
+        "properties": {
+          "verdict": {
+            "type": "string",
+            "enum": [
+              "accepted",
+              "changes_requested"
+            ],
+            "description": "What the client actually did, read back from the deliverable. Not a guess."
+          },
+          "next_step": {
+            "type": "string",
+            "enum": [
+              "submitted_new_version",
+              "ready_to_invoice",
+              "needs_a_human"
+            ],
+            "description": "`needs_a_human` is a real answer and the right one whenever the change they asked for is a scope change rather than a correction \u2014 that is a conversation about money, not a redraft."
+          },
+          "note": {
+            "type": "string",
+            "description": "One or two sentences for the engagement's timeline: what they asked for and what you did about it."
+          }
+        }
+      }
+    },
+    "check_in_case": {
+      "description": "This engagement has gone quiet. Read where the work actually stands and write the client a short, honest update \u2014 where it is, what happens next, and anything you need from them. Never promise a date the engagement's own facts do not already support, and never introduce a new commitment: this is a status update, not a renegotiation.",
+      "_comment": "Declared because `check_in_case` is a real next-move kind and a grey button on a ranked list is a reading list. The sibling kind `advance_case` is deliberately NOT declared here: advancing this engagement means doing the work in it, which already has its own task types, and a generic verb with a free-text schema would be an agent handed something nobody taught it. See checkin.ts.",
+      "tier": "fast",
+      "input_schema": {
+        "type": "object",
+        "required": [
+          "case_id",
+          "stage",
+          "days_silent",
+          "today"
+        ],
+        "properties": {
+          "case_id": {
+            "type": "string"
+          },
+          "client_id": {
+            "type": "string"
+          },
+          "title": {
+            "type": "string"
+          },
+          "stage": {
+            "type": "string"
+          },
+          "due_at": {
+            "type": "string"
+          },
+          "days_silent": {
+            "type": "number",
+            "description": "Whole days since anything happened on this engagement. The single biggest input to the right tone: five days is a quick update, thirty is an apology."
+          },
+          "last_activity_at": {
+            "type": "string"
+          },
+          "recent_history": {
+            "type": "array",
+            "description": "The last few timeline entries, oldest first. The only account of what has happened \u2014 say nothing this does not support.",
+            "items": {
+              "type": "object",
+              "properties": {
+                "at": {
+                  "type": "string"
+                },
+                "kind": {
+                  "type": "string"
+                },
+                "from": {
+                  "type": "string"
+                },
+                "to": {
+                  "type": "string"
+                },
+                "note": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "today": {
+            "type": "string",
+            "description": "ISO date. Passed in so the same check-in can be replayed."
+          }
+        }
+      },
+      "harness": {
+        "shape": "decide",
+        "max_runtime_s": 420,
+        "max_cost_usd": 0.3,
+        "strict_output": true,
+        "needs_connections": true,
+        "temperature": 0.2,
+        "steps": 20
+      },
+      "output_schema": {
+        "type": "object",
+        "required": [
+          "send",
+          "status_summary",
+          "reasoning"
+        ],
+        "properties": {
+          "send": {
+            "type": "boolean",
+            "description": "False is a real and often correct answer: an engagement that is silent because it is deliberately parked, or one where the last entry is already an update we sent, does not need another message. A check-in that had nothing to say is worse than no check-in."
+          },
+          "subject": {
+            "type": "string"
+          },
+          "message": {
+            "type": "string",
+            "description": "The client-facing words. Required whenever `send` is true."
+          },
+          "status_summary": {
+            "type": "string",
+            "description": "One or two sentences for the engagement's own timeline: where the work stands, in our words, whether or not anything is sent."
+          },
+          "blocked_on": {
+            "type": "string",
+            "enum": [
+              "nobody",
+              "client",
+              "us"
+            ],
+            "description": "Who the next step belongs to, read from the facts. `client` is what makes the check-in an ask rather than a bulletin."
+          },
+          "reasoning": {
+            "type": "string"
+          }
+        }
+      }
+    }
+  },
+  "connections": [],
+  "approvals": [],
+  "_comment_skills": "OMITTED, NOT EMPTY. `loadWedge` does `manifest.skills?.map(...)`, and `[]` is not nullish \u2014 so an empty array is a filter matching nothing and every skill file in skills/ was silently unloaded. Leaving the key out means 'load them all', which is what an author writing `\"skills\": []` next to a populated skills/ directory obviously intends.",
+  "fulfillment": {
+    "client_connections": [
+      {
+        "toolkit": "github",
+        "ask": "Connect the GitHub account that owns the product repo"
+      }
+    ],
+    "intake_asks": [
+      {
+        "kind": "decision",
+        "ask": "Confirm the SoW / first milestone for this build"
+      },
+      {
+        "kind": "document",
+        "ask": "Brand kit or design references, if any"
+      }
+    ],
+    "money_plan": {
+      "currency": "USD",
+      "lines": [
+        {
+          "label": "Discovery",
+          "amount_minor": 150000,
+          "kind": "deposit"
+        },
+        {
+          "label": "Build milestone",
+          "amount_minor": 500000,
+          "kind": "milestone"
+        }
+      ]
+    },
+    "deliverable_shapes": [
+      "link",
+      "document"
+    ]
+  }
+}

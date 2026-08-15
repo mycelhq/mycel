@@ -1,0 +1,349 @@
+{
+  "wedge": "geo-monitor",
+  "domains": ["digital-marketing"],
+  "title": "GEO monitor",
+  "provides": [],
+  "_comment": "Generative-engine share of voice. Children probe; the pack turns raw citations into the billing number. Batch fan-out is how query\u00d7model stays worker-count latency.",
+  "tier": "standard",
+  "packs": [
+    "share_of_voice@1"
+  ],
+  "cases": {
+    "stages": [
+      "scoping",
+      "probing",
+      "reporting",
+      "closed"
+    ],
+    "initial": "scoping"
+  },
+  "task_types": {
+    "probe_mention": {
+      "description": "One query against one answer surface. Record who was cited. Do not invent share-of-voice percentages \u2014 that is the pack's job after the batch joins.",
+      "harness": {
+        "shape": "decide",
+        "max_runtime_s": 300,
+        "max_cost_usd": 0.4,
+        "strict_output": true,
+        "temperature": 0.1,
+        "steps": 20,
+        "skills": [
+          "probe-one-query"
+        ]
+      },
+      "output_schema": {
+        "type": "object",
+        "required": [
+          "query",
+          "surface",
+          "cited"
+        ],
+        "properties": {
+          "query": {
+            "type": "string"
+          },
+          "surface": {
+            "type": "string",
+            "description": "Which model or answer engine was asked."
+          },
+          "cited": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Brand or domain names that appeared in the answer."
+          },
+          "raw_excerpt": {
+            "type": "string"
+          }
+        }
+      }
+    },
+    "weekly_report": {
+      "description": "Fan out probe_mention children for the client's query set, wait for the batch, then call share_of_voice@1 and write the series sample. Never estimate the percentage yourself.",
+      "harness": {
+        "shape": "decide",
+        "max_runtime_s": 600,
+        "max_cost_usd": 0.8,
+        "strict_output": true,
+        "temperature": 0.1,
+        "steps": 40,
+        "skills": [
+          "run-geo-week"
+        ],
+        "instructions": [
+          "knowledge/measurement.md"
+        ]
+      },
+      "output_schema": {
+        "type": "object",
+        "required": [
+          "client",
+          "share_of_voice_pct",
+          "queries",
+          "mentions",
+          "summary"
+        ],
+        "properties": {
+          "client": {
+            "type": "string"
+          },
+          "share_of_voice_pct": {
+            "type": "number"
+          },
+          "queries": {
+            "type": "integer"
+          },
+          "mentions": {
+            "type": "integer"
+          },
+          "top_competitors": {
+            "type": "array"
+          },
+          "summary": {
+            "type": "string"
+          }
+        }
+      }
+    },
+    "nudge_client_request": {
+      "description": "Remind this client about ONE thing we already asked them for and have not received. Escalate in tone with the number of reminders already sent (input: nudges_sent of max_nudges); never invent a new ask, and never ask for anything the input does not name.",
+      "harness": {
+        "shape": "decide",
+        "max_runtime_s": 420,
+        "max_cost_usd": 0.3,
+        "strict_output": true,
+        "needs_connections": true,
+        "temperature": 0.1,
+        "steps": 20
+      },
+      "output_schema": {
+        "type": "object",
+        "properties": {
+          "step": {
+            "type": "string",
+            "enum": [
+              "reminder",
+              "firm_reminder",
+              "final_reminder",
+              "hold"
+            ]
+          },
+          "channel": {
+            "type": "string",
+            "enum": [
+              "email",
+              "none"
+            ]
+          },
+          "message": {
+            "type": "string"
+          },
+          "reasoning": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "step",
+          "channel",
+          "message"
+        ]
+      }
+    },
+    "deliverable_verdict": {
+      "description": "Your client has come back on something we delivered. Read what they said and either write the next version or wrap the work up.",
+      "_comment": "One task type for BOTH verdicts, because the wait that wakes it is armed at release time \u2014 before anyone knows which way the client will go. See DELIVERABLE_VERDICT_TASK_TYPE in deliverables.ts. Read the live answer from GET /v1/internal/deliverables/<id> rather than trusting the resume input; a client can accept and then immediately ask for one more thing.",
+      "input_schema": {
+        "type": "object",
+        "required": [
+          "deliverable_id"
+        ],
+        "properties": {
+          "deliverable_id": {
+            "type": "string"
+          }
+        }
+      },
+      "harness": {
+        "shape": "decide",
+        "max_runtime_s": 600,
+        "max_cost_usd": 0.5,
+        "strict_output": true,
+        "temperature": 0.2,
+        "steps": 30
+      },
+      "output_schema": {
+        "type": "object",
+        "required": [
+          "verdict",
+          "next_step",
+          "note"
+        ],
+        "properties": {
+          "verdict": {
+            "type": "string",
+            "enum": [
+              "accepted",
+              "changes_requested"
+            ],
+            "description": "What the client actually did, read back from the deliverable. Not a guess."
+          },
+          "next_step": {
+            "type": "string",
+            "enum": [
+              "submitted_new_version",
+              "ready_to_invoice",
+              "needs_a_human"
+            ],
+            "description": "`needs_a_human` is a real answer and the right one whenever the change they asked for is a scope change rather than a correction \u2014 that is a conversation about money, not a redraft."
+          },
+          "note": {
+            "type": "string",
+            "description": "One or two sentences for the engagement's timeline: what they asked for and what you did about it."
+          }
+        }
+      }
+    },
+    "check_in_case": {
+      "description": "This engagement has gone quiet. Read where the work actually stands and write the client a short, honest update \u2014 where it is, what happens next, and anything you need from them. Never promise a date the engagement's own facts do not already support, and never introduce a new commitment: this is a status update, not a renegotiation.",
+      "_comment": "Declared because `check_in_case` is a real next-move kind and a grey button on a ranked list is a reading list. The sibling kind `advance_case` is deliberately NOT declared here: advancing this engagement means doing the work in it, which already has its own task types, and a generic verb with a free-text schema would be an agent handed something nobody taught it. See checkin.ts.",
+      "tier": "fast",
+      "input_schema": {
+        "type": "object",
+        "required": [
+          "case_id",
+          "stage",
+          "days_silent",
+          "today"
+        ],
+        "properties": {
+          "case_id": {
+            "type": "string"
+          },
+          "client_id": {
+            "type": "string"
+          },
+          "title": {
+            "type": "string"
+          },
+          "stage": {
+            "type": "string"
+          },
+          "due_at": {
+            "type": "string"
+          },
+          "days_silent": {
+            "type": "number",
+            "description": "Whole days since anything happened on this engagement. The single biggest input to the right tone: five days is a quick update, thirty is an apology."
+          },
+          "last_activity_at": {
+            "type": "string"
+          },
+          "recent_history": {
+            "type": "array",
+            "description": "The last few timeline entries, oldest first. The only account of what has happened \u2014 say nothing this does not support.",
+            "items": {
+              "type": "object",
+              "properties": {
+                "at": {
+                  "type": "string"
+                },
+                "kind": {
+                  "type": "string"
+                },
+                "from": {
+                  "type": "string"
+                },
+                "to": {
+                  "type": "string"
+                },
+                "note": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "today": {
+            "type": "string",
+            "description": "ISO date. Passed in so the same check-in can be replayed."
+          }
+        }
+      },
+      "harness": {
+        "shape": "decide",
+        "max_runtime_s": 420,
+        "max_cost_usd": 0.3,
+        "strict_output": true,
+        "needs_connections": true,
+        "temperature": 0.2,
+        "steps": 20
+      },
+      "output_schema": {
+        "type": "object",
+        "required": [
+          "send",
+          "status_summary",
+          "reasoning"
+        ],
+        "properties": {
+          "send": {
+            "type": "boolean",
+            "description": "False is a real and often correct answer: an engagement that is silent because it is deliberately parked, or one where the last entry is already an update we sent, does not need another message. A check-in that had nothing to say is worse than no check-in."
+          },
+          "subject": {
+            "type": "string"
+          },
+          "message": {
+            "type": "string",
+            "description": "The client-facing words. Required whenever `send` is true."
+          },
+          "status_summary": {
+            "type": "string",
+            "description": "One or two sentences for the engagement's own timeline: where the work stands, in our words, whether or not anything is sent."
+          },
+          "blocked_on": {
+            "type": "string",
+            "enum": [
+              "nobody",
+              "client",
+              "us"
+            ],
+            "description": "Who the next step belongs to, read from the facts. `client` is what makes the check-in an ask rather than a bulletin."
+          },
+          "reasoning": {
+            "type": "string"
+          }
+        }
+      }
+    }
+  },
+  "tools": [],
+  "fulfillment": {
+    "client_connections": [],
+    "intake_asks": [
+      {
+        "kind": "answer",
+        "ask": "Which brand / product names should we probe for?"
+      }
+    ],
+    "money_plan": {
+      "currency": "USD",
+      "lines": [
+        {
+          "label": "Setup",
+          "amount_minor": 75000,
+          "kind": "deposit"
+        },
+        {
+          "label": "Monthly monitor",
+          "amount_minor": 99000,
+          "kind": "retainer",
+          "recurrence": { "every": "month", "interval": 1, "state": "active" }
+        }
+      ]
+    },
+    "deliverable_shapes": [
+      "document"
+    ]
+  }
+}

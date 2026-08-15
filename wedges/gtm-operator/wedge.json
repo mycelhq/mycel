@@ -1,0 +1,252 @@
+{
+  "wedge": "gtm-operator",
+  "domains": ["gtm"],
+  "title": "GTM Operator",
+  "provides": [
+    "outreach"
+  ],
+  "task_types": {
+    "find_prospects": {
+      "description": "Search LinkedIn for people matching a query and write everyone found into the project's people/companies graph. A read: it changes nothing on LinkedIn, needs no approval, and costs no touch budget. Run this before proposing a campaign \u2014 the rows it leaves are what the CRM shows and what enrolment reads from.",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "connection_id": {
+            "type": "string",
+            "description": "the connected LinkedIn account to search from"
+          },
+          "query": {
+            "type": "string",
+            "description": "free text \u2014 the single most effective filter"
+          },
+          "title": {
+            "type": "string"
+          },
+          "company": {
+            "type": "string"
+          },
+          "location": {
+            "type": "string",
+            "description": "city or region; folded into the keywords, not a structured filter"
+          },
+          "limit": {
+            "type": "number",
+            "description": "results wanted, capped at 49"
+          },
+          "start": {
+            "type": "number",
+            "description": "offset, for the next page of the same search"
+          }
+        },
+        "required": [
+          "connection_id"
+        ]
+      },
+      "output_schema": {
+        "type": "object",
+        "properties": {
+          "ok": {
+            "type": "boolean"
+          },
+          "found": {
+            "type": "number"
+          },
+          "people_written": {
+            "type": "number"
+          },
+          "companies_written": {
+            "type": "number"
+          },
+          "next_start": {
+            "type": [
+              "number",
+              "null"
+            ]
+          },
+          "code": {
+            "type": "string",
+            "description": "a named condition, e.g. linkedin_commercial_search_limit"
+          },
+          "detail": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "ok",
+          "found",
+          "detail"
+        ]
+      }
+    },
+    "propose_campaign": {
+      "description": "Draft an outreach campaign \u2014 the sequence, the per-prospect copy \u2014 and put ONE approval in front of the founder. Sends nothing.",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "connection_id": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          },
+          "prospects": {
+            "type": "array"
+          }
+        },
+        "required": [
+          "connection_id",
+          "name",
+          "prospects"
+        ]
+      }
+    },
+    "advance_sequences": {
+      "description": "The five-minute outreach tick. Harness work, not agent work: the copy was approved days ago, so no model is invoked. Spawned by the sequencer's own schedule \u2014 do not create these by hand.",
+      "input_schema": {
+        "type": "object",
+        "properties": {}
+      }
+    },
+    "gtm_autonomous": {
+      "description": "One turn of the autonomous GTM loop: FullEnrich discovery from the project's stored audience, then \u2014 if it found people the project has not seen \u2014 a normal propose_campaign approval. Harness work, not agent work; spawned by the audience's own schedule when the founder enables it. Discovers and proposes only; every send still waits for the founder's approval envelope. Do not create these by hand.",
+      "input_schema": {
+        "type": "object",
+        "properties": {}
+      }
+    },
+    "outreach_touch": {
+      "description": "One dispatched step of one prospect's sequence. The anchor an auto-approval, a timeline entry and an audit row hang off. Created by the sequencer, or by a founder taking the touch off their next-move list before the cadence gets to it.",
+      "_comment": "A ROW, NOT A RUN, which is why there is no `harness` block and no `output_schema` here. The copy was written and approved before the founder said yes, so nothing is drafted at dispatch time and no model is invoked \u2014 this task exists so that every message the campaign produced stays individually inspectable afterwards. What it therefore owes is an INPUT contract, and `required` states it: the next-move engine proposes exactly this shape (see `gtmMove` in moves.ts), and a field missing from it is a touch nobody could reconstruct later. moves.test.ts holds the declaration and the proposal to each other.",
+      "input_schema": {
+        "type": "object",
+        "required": [
+          "campaign_id",
+          "case_id",
+          "step",
+          "stage"
+        ],
+        "properties": {
+          "campaign_id": {
+            "type": "string"
+          },
+          "case_id": {
+            "type": "string"
+          },
+          "step": {
+            "type": "string"
+          },
+          "stage": {
+            "type": "string"
+          }
+        }
+      }
+    },
+    "propose_reply": {
+      "description": "After a prospect replies, draft ONE follow-up DM for human approval. Outside the campaign envelope \u2014 the sequence has already stopped, so each send is a new decision until they are booked, won or lost. Nothing goes out until a human approves the exact words.",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "case_id": {
+            "type": "string"
+          },
+          "body": {
+            "type": "string"
+          },
+          "connection_id": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "case_id",
+          "body"
+        ]
+      }
+    }
+  },
+  "connections": [
+    "linkedin"
+  ],
+  "cases": {
+    "stages": [
+      "queued",
+      "warmed",
+      "invited",
+      "connected",
+      "dm1",
+      "dm2",
+      "replied",
+      "booked",
+      "won",
+      "lost"
+    ],
+    "initial": "queued"
+  },
+  "workflows": [
+    {
+      "name": "next_touch",
+      "description": "Whether to send the next outbound touch, which stage to move to, and how long to wait. ALWAYS call this before drafting a follow-up; it stops on reply, on booking, and on opt-out.",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "stage": {
+            "type": "string"
+          },
+          "has_reply": {
+            "type": "boolean"
+          },
+          "opt_out": {
+            "type": "boolean"
+          },
+          "days_since_last_touch": {
+            "type": [
+              "number",
+              "null"
+            ]
+          },
+          "touch_count": {
+            "type": "number"
+          }
+        },
+        "required": [
+          "stage"
+        ]
+      },
+      "output_schema": {
+        "type": "object",
+        "properties": {
+          "should_send": {
+            "type": "boolean"
+          },
+          "mark_closed": {
+            "type": "boolean"
+          },
+          "next_stage": {
+            "type": "string"
+          },
+          "touch_number": {
+            "type": "number"
+          },
+          "next_touch_after_days": {
+            "type": [
+              "number",
+              "null"
+            ]
+          },
+          "reason": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "should_send",
+          "mark_closed",
+          "next_stage",
+          "reason"
+        ]
+      },
+      "lib": "next-touch"
+    }
+  ],
+  "packs": [
+    "campaign_pace@1"
+  ]
+}

@@ -1,0 +1,380 @@
+[
+  {
+    "name": "neutral",
+    "title": "Neutral",
+    "cssVars": {
+      "light": {
+        "card-foreground": "oklch(0.145 0 0)",
+        "primary-foreground": "oklch(0.985 0 0)",
+        "secondary-foreground": "oklch(0.205 0 0)",
+        "muted-foreground": "oklch(0.556 0 0)",
+        "accent-foreground": "oklch(0.205 0 0)"
+      },
+      "dark": {
+        "card-foreground": "oklch(0.985 0 0)",
+        "primary-foreground": "oklch(0.205 0 0)",
+        "secondary-foreground": "oklch(0.985 0 0)",
+        "muted-foreground": "oklch(0.708 0 0)",
+        "accent-foreground": "oklch(0.985 0 0)"
+      }
+    }
+  },
+  {
+    "name": "stone",
+    "title": "Stone",
+    "cssVars": {
+      "light": {
+        "card-foreground": "oklch(0.147 0.004 49.25)",
+        "primary-foreground": "oklch(0.985 0.001 106.423)",
+        "secondary-foreground": "oklch(0.216 0.006 56.043)",
+        "muted-foreground": "oklch(0.553 0.013 58.071)",
+        "accent-foreground": "oklch(0.216 0.006 56.043)"
+      },
+      "dark": {
+        "card-foreground": "oklch(0.985 0.001 106.423)",
+        "primary-foreground": "oklch(0.216 0.006 56.043)",
+        "secondary-foreground": "oklch(0.985 0.001 106.423)",
+        "muted-foreground": "oklch(0.709 0.01 56.259)",
+        "accent-foreground": "oklch(0.985 0.001 106.423)"
+      }
+    }
+  },
+  {
+    "name": "zinc",
+    "title": "Zinc",
+    "cssVars": {
+      "light": {
+        "card-foreground": "oklch(0.141 0.005 285.823)",
+        "primary-foreground": "oklch(0.985 0 0)",
+        "secondary-foreground": "oklch(0.21 0.006 285.885)",
+        "muted-foreground": "oklch(0.552 0.016 285.938)",
+        "accent-foreground": "oklch(0.21 0.006 285.885)"
+      },
+      "dark": {
+        "card-foreground": "oklch(0.985 0 0)",
+        "primary-foreground": "oklch(0.21 0.006 285.885)",
+        "secondary-foreground": "oklch(0.985 0 0)",
+        "muted-foreground": "oklch(0.705 0.015 286.067)",
+        "accent-foreground": "oklch(0.985 0 0)"
+      }
+    }
+  },
+  {
+    "name": "mauve",
+    "title": "Mauve",
+    "cssVars": {
+      "light": {
+        "card-foreground": "oklch(0.145 0.008 326)",
+        "primary-foreground": "oklch(0.985 0 0)",
+        "secondary-foreground": "oklch(0.212 0.019 322.12)",
+        "muted-foreground": "oklch(0.542 0.034 322.5)",
+        "accent-foreground": "oklch(0.212 0.019 322.12)"
+      },
+      "dark": {
+        "card-foreground": "oklch(0.985 0 0)",
+        "primary-foreground": "oklch(0.212 0.019 322.12)",
+        "secondary-foreground": "oklch(0.985 0 0)",
+        "muted-foreground": "oklch(0.711 0.019 323.02)",
+        "accent-foreground": "oklch(0.985 0 0)"
+      }
+    }
+  },
+  {
+    "name": "olive",
+    "title": "Olive",
+    "cssVars": {
+      "light": {
+        "card-foreground": "oklch(0.153 0.006 107.1)",
+        "primary-foreground": "oklch(0.988 0.003 106.5)",
+        "secondary-foreground": "oklch(0.228 0.013 107.4)",
+        "muted-foreground": "oklch(0.58 0.031 107.3)",
+        "accent-foreground": "oklch(0.228 0.013 107.4)"
+      },
+      "dark": {
+        "card-foreground": "oklch(0.988 0.003 106.5)",
+        "primary-foreground": "oklch(0.228 0.013 107.4)",
+        "secondary-foreground": "oklch(0.988 0.003 106.5)",
+        "muted-foreground": "oklch(0.737 0.021 106.9)",
+        "accent-foreground": "oklch(0.988 0.003 106.5)"
+      }
+    }
+  },
+  {
+    "name": "mist",
+    "title": "Mist",
+    "cssVars": {
+      "light": {
+        "card-foreground": "oklch(0.148 0.004 228.8)",
+        "primary-foreground": "oklch(0.987 0.002 197.1)",
+        "secondary-foreground": "oklch(0.218 0.008 223.9)",
+        "muted-foreground": "oklch(0.56 0.021 213.5)",
+        "accent-foreground": "oklch(0.218 0.008 223.9)"
+      },
+      "dark": {
+        "card-foreground": "oklch(0.987 0.002 197.1)",
+        "primary-foreground": "oklch(0.218 0.008 223.9)",
+        "secondary-foreground": "oklch(0.987 0.002 197.1)",
+        "muted-foreground": "oklch(0.723 0.014 214.4)",
+        "accent-foreground": "oklch(0.987 0.002 197.1)"
+      }
+    }
+  },
+  {
+    "name": "taupe",
+    "title": "Taupe",
+    "cssVars": {
+      "light": {
+        "card-foreground": "oklch(0.147 0.004 49.3)",
+        "primary-foreground": "oklch(0.986 0.002 67.8)",
+        "secondary-foreground": "oklch(0.214 0.009 43.1)",
+        "muted-foreground": "oklch(0.547 0.021 43.1)",
+        "accent-foreground": "oklch(0.214 0.009 43.1)"
+      },
+      "dark": {
+        "card-foreground": "oklch(0.986 0.002 67.8)",
+        "primary-foreground": "oklch(0.214 0.009 43.1)",
+        "secondary-foreground": "oklch(0.986 0.002 67.8)",
+        "muted-foreground": "oklch(0.714 0.014 41.2)",
+        "accent-foreground": "oklch(0.986 0.002 67.8)"
+      }
+    }
+  },
+  {
+    "name": "amber",
+    "title": "Amber",
+    "cssVars": {
+      "light": {
+        "primary-foreground": "oklch(0.987 0.022 95.277)",
+        "secondary-foreground": "oklch(0.21 0.006 285.885)"
+      },
+      "dark": {
+        "primary-foreground": "oklch(0.987 0.022 95.277)",
+        "secondary-foreground": "oklch(0.985 0 0)"
+      }
+    }
+  },
+  {
+    "name": "blue",
+    "title": "Blue",
+    "cssVars": {
+      "light": {
+        "primary-foreground": "oklch(0.97 0.014 254.604)",
+        "secondary-foreground": "oklch(0.21 0.006 285.885)"
+      },
+      "dark": {
+        "primary-foreground": "oklch(0.97 0.014 254.604)",
+        "secondary-foreground": "oklch(0.985 0 0)"
+      }
+    }
+  },
+  {
+    "name": "cyan",
+    "title": "Cyan",
+    "cssVars": {
+      "light": {
+        "primary-foreground": "oklch(0.984 0.019 200.873)",
+        "secondary-foreground": "oklch(0.21 0.006 285.885)"
+      },
+      "dark": {
+        "primary-foreground": "oklch(0.984 0.019 200.873)",
+        "secondary-foreground": "oklch(0.985 0 0)"
+      }
+    }
+  },
+  {
+    "name": "emerald",
+    "title": "Emerald",
+    "cssVars": {
+      "light": {
+        "primary-foreground": "oklch(0.979 0.021 166.113)",
+        "secondary-foreground": "oklch(0.21 0.006 285.885)"
+      },
+      "dark": {
+        "primary-foreground": "oklch(0.979 0.021 166.113)",
+        "secondary-foreground": "oklch(0.985 0 0)"
+      }
+    }
+  },
+  {
+    "name": "fuchsia",
+    "title": "Fuchsia",
+    "cssVars": {
+      "light": {
+        "primary-foreground": "oklch(0.977 0.017 320.058)",
+        "secondary-foreground": "oklch(0.21 0.006 285.885)"
+      },
+      "dark": {
+        "primary-foreground": "oklch(0.977 0.017 320.058)",
+        "secondary-foreground": "oklch(0.985 0 0)"
+      }
+    }
+  },
+  {
+    "name": "green",
+    "title": "Green",
+    "cssVars": {
+      "light": {
+        "primary-foreground": "oklch(0.982 0.018 155.826)",
+        "secondary-foreground": "oklch(0.21 0.006 285.885)"
+      },
+      "dark": {
+        "primary-foreground": "oklch(0.982 0.018 155.826)",
+        "secondary-foreground": "oklch(0.985 0 0)"
+      }
+    }
+  },
+  {
+    "name": "indigo",
+    "title": "Indigo",
+    "cssVars": {
+      "light": {
+        "primary-foreground": "oklch(0.962 0.018 272.314)",
+        "secondary-foreground": "oklch(0.21 0.006 285.885)"
+      },
+      "dark": {
+        "primary-foreground": "oklch(0.962 0.018 272.314)",
+        "secondary-foreground": "oklch(0.985 0 0)"
+      }
+    }
+  },
+  {
+    "name": "lime",
+    "title": "Lime",
+    "cssVars": {
+      "light": {
+        "primary-foreground": "oklch(0.405 0.101 131.063)",
+        "secondary-foreground": "oklch(0.21 0.006 285.885)"
+      },
+      "dark": {
+        "primary-foreground": "oklch(0.405 0.101 131.063)",
+        "secondary-foreground": "oklch(0.985 0 0)"
+      }
+    }
+  },
+  {
+    "name": "orange",
+    "title": "Orange",
+    "cssVars": {
+      "light": {
+        "primary-foreground": "oklch(0.98 0.016 73.684)",
+        "secondary-foreground": "oklch(0.21 0.006 285.885)"
+      },
+      "dark": {
+        "primary-foreground": "oklch(0.98 0.016 73.684)",
+        "secondary-foreground": "oklch(0.985 0 0)"
+      }
+    }
+  },
+  {
+    "name": "pink",
+    "title": "Pink",
+    "cssVars": {
+      "light": {
+        "primary-foreground": "oklch(0.971 0.014 343.198)",
+        "secondary-foreground": "oklch(0.21 0.006 285.885)"
+      },
+      "dark": {
+        "primary-foreground": "oklch(0.971 0.014 343.198)",
+        "secondary-foreground": "oklch(0.985 0 0)"
+      }
+    }
+  },
+  {
+    "name": "purple",
+    "title": "Purple",
+    "cssVars": {
+      "light": {
+        "primary-foreground": "oklch(0.977 0.014 308.299)",
+        "secondary-foreground": "oklch(0.21 0.006 285.885)"
+      },
+      "dark": {
+        "primary-foreground": "oklch(0.977 0.014 308.299)",
+        "secondary-foreground": "oklch(0.985 0 0)"
+      }
+    }
+  },
+  {
+    "name": "red",
+    "title": "Red",
+    "cssVars": {
+      "light": {
+        "primary-foreground": "oklch(0.971 0.013 17.38)",
+        "secondary-foreground": "oklch(0.21 0.006 285.885)"
+      },
+      "dark": {
+        "primary-foreground": "oklch(0.971 0.013 17.38)",
+        "secondary-foreground": "oklch(0.985 0 0)"
+      }
+    }
+  },
+  {
+    "name": "rose",
+    "title": "Rose",
+    "cssVars": {
+      "light": {
+        "primary-foreground": "oklch(0.969 0.015 12.422)",
+        "secondary-foreground": "oklch(0.21 0.006 285.885)"
+      },
+      "dark": {
+        "primary-foreground": "oklch(0.969 0.015 12.422)",
+        "secondary-foreground": "oklch(0.985 0 0)"
+      }
+    }
+  },
+  {
+    "name": "sky",
+    "title": "Sky",
+    "cssVars": {
+      "light": {
+        "primary-foreground": "oklch(0.977 0.013 236.62)",
+        "secondary-foreground": "oklch(0.21 0.006 285.885)"
+      },
+      "dark": {
+        "primary-foreground": "oklch(0.977 0.013 236.62)",
+        "secondary-foreground": "oklch(0.985 0 0)"
+      }
+    }
+  },
+  {
+    "name": "teal",
+    "title": "Teal",
+    "cssVars": {
+      "light": {
+        "primary-foreground": "oklch(0.984 0.014 180.72)",
+        "secondary-foreground": "oklch(0.21 0.006 285.885)"
+      },
+      "dark": {
+        "primary-foreground": "oklch(0.984 0.014 180.72)",
+        "secondary-foreground": "oklch(0.985 0 0)"
+      }
+    }
+  },
+  {
+    "name": "violet",
+    "title": "Violet",
+    "cssVars": {
+      "light": {
+        "primary-foreground": "oklch(0.969 0.016 293.756)",
+        "secondary-foreground": "oklch(0.21 0.006 285.885)"
+      },
+      "dark": {
+        "primary-foreground": "oklch(0.969 0.016 293.756)",
+        "secondary-foreground": "oklch(0.985 0 0)"
+      }
+    }
+  },
+  {
+    "name": "yellow",
+    "title": "Yellow",
+    "cssVars": {
+      "light": {
+        "primary-foreground": "oklch(0.421 0.095 57.708)",
+        "secondary-foreground": "oklch(0.21 0.006 285.885)"
+      },
+      "dark": {
+        "primary-foreground": "oklch(0.421 0.095 57.708)",
+        "secondary-foreground": "oklch(0.985 0 0)"
+      }
+    }
+  }
+]

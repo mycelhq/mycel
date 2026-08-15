@@ -1,0 +1,61 @@
+{
+  "name": "share_of_voice",
+  "version": 1,
+  "digest": "8a939329980cf8e1d17af4cef6276a935f0ab2633960466627d55e283bd1ee88",
+  "description": "Share of voice from raw mention results. Deterministic \u2014 the number on the invoice.",
+  "input_schema": {
+    "type": "object",
+    "required": [
+      "results",
+      "client"
+    ],
+    "properties": {
+      "results": {
+        "type": "array",
+        "items": {
+          "type": "object",
+          "required": [
+            "query",
+            "cited"
+          ],
+          "properties": {
+            "query": {
+              "type": "string"
+            },
+            "cited": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            }
+          }
+        }
+      },
+      "client": {
+        "type": "string"
+      }
+    }
+  },
+  "output_schema": {
+    "type": "object",
+    "required": [
+      "share_of_voice_pct",
+      "queries",
+      "mentions"
+    ],
+    "properties": {
+      "share_of_voice_pct": {
+        "type": "number"
+      },
+      "queries": {
+        "type": "integer"
+      },
+      "mentions": {
+        "type": "integer"
+      },
+      "top_competitors": {
+        "type": "array"
+      }
+    }
+  }
+}

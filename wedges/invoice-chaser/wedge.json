@@ -1,0 +1,201 @@
+{
+  "wedge": "invoice-chaser",
+  "title": "Accounts-Receivable Chaser",
+  "provides": [
+    "dunning"
+  ],
+  "task_types": {
+    "chase_invoice": {
+      "description": "Given an overdue invoice and the client's history, draft the right next dunning step and (on approval) send it.",
+      "_comment_promises": "A run of this type is not finished when it has written a good chase \u2014 it is finished when a human has been asked to send one. Observed in production 2026-08-10: a chase_invoice run completed, reported success, and told the founder the draft would be waiting in Approvals. Zero approvals were created (the approvals table held zero rows account-wide), nothing was sent, and the $4,800 invoice it had already stamped as chased dropped off the ranked list. `promises` is the kernel-side check, made against the run's own event log rather than against its summary \u2014 a summary is a claim, an approval.requested event is evidence. `hold` and `channel: none` are the two ways this ladder legitimately decides to say nothing; every other outcome must show an approval or the run is failed. See promises.ts.",
+      "promises": {
+        "send": {
+          "unless": {
+            "step": [
+              "hold"
+            ],
+            "channel": [
+              "none"
+            ]
+          }
+        }
+      },
+      "harness": {
+        "shape": "decide",
+        "max_runtime_s": 420,
+        "max_cost_usd": 0.5,
+        "strict_output": true,
+        "needs_connections": true,
+        "temperature": 0.1,
+        "steps": 30,
+        "skills": [
+          "chase-politely"
+        ],
+        "instructions": [
+          "knowledge/dunning-policy.md"
+        ]
+      },
+      "output_schema": {
+        "type": "object",
+        "properties": {
+          "step": {
+            "type": "string",
+            "enum": [
+              "reminder",
+              "firm_reminder",
+              "final_notice",
+              "hold"
+            ]
+          },
+          "channel": {
+            "type": "string",
+            "enum": [
+              "email",
+              "none"
+            ]
+          },
+          "message": {
+            "type": "string"
+          },
+          "reasoning": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "step",
+          "channel",
+          "message"
+        ]
+      }
+    }
+  },
+  "tools": [],
+  "_comment_approvals": "`send` used to be declared here at high risk, and it matched every chase this wedge writes \u2014 so a first polite reminder on a 180-dollar invoice was declared exactly as serious as a refund, and the founder's queue was a wall of identical red pills. That is what teaches someone to clear a queue without reading it. The blanket entry is gone. An ordinary reminder is now scored from what is actually in it (see risk.ts) and it is still gated, because `send` is one of the harness's own default gate patterns and always has been \u2014 nothing here changes WHETHER a human sees it, only how loudly it asks. What stays declared is what the heuristics cannot know from a payload: a final notice is a change of TONE, not of amount, and it is the last email before this stops being a relationship.",
+  "approvals": [
+    {
+      "action": "send_final_notice",
+      "risk": "high",
+      "required": true
+    },
+    {
+      "action": "charge",
+      "risk": "high",
+      "required": true
+    },
+    {
+      "action": "refund",
+      "risk": "high",
+      "required": true
+    }
+  ],
+  "capabilities": [
+    "read_payments",
+    "send_email"
+  ],
+  "skills": [
+    "chase-politely",
+    "multi-shot-fulfillment"
+  ],
+  "knowledge": [
+    "dunning-policy.md"
+  ],
+  "packs": [
+    "chase_ladder@1"
+  ],
+  "cases": {
+    "stages": [
+      "outstanding",
+      "reminded",
+      "firm",
+      "final_notice",
+      "paid",
+      "written_off"
+    ],
+    "initial": "outstanding"
+  },
+  "workflows": [
+    {
+      "name": "next_step",
+      "description": "The dunning step the policy dictates, given the facts. ALWAYS use this to choose the step; then write the message yourself.",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "days_overdue": {
+            "type": "number"
+          },
+          "disputed": {
+            "type": "boolean"
+          },
+          "good_standing": {
+            "type": "boolean"
+          },
+          "promised_payment_date": {
+            "type": "string"
+          },
+          "today": {
+            "type": "string"
+          },
+          "last_chased_days_ago": {
+            "type": "number"
+          }
+        },
+        "required": [
+          "days_overdue"
+        ]
+      },
+      "output_schema": {
+        "type": "object",
+        "properties": {
+          "step": {
+            "type": "string",
+            "enum": [
+              "reminder",
+              "firm_reminder",
+              "final_notice",
+              "hold"
+            ]
+          },
+          "reason": {
+            "type": "string"
+          },
+          "escalate": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "step",
+          "reason"
+        ]
+      },
+      "lib": "dunning-ladder"
+    }
+  ],
+  "policy": {
+    "auto_approve": [
+      {
+        "action": "email:send_reminder",
+        "max_per_task": 3,
+        "max_per_day": 50
+      }
+    ]
+  },
+  "fulfillment": {
+    "intake_asks": [
+      {
+        "kind": "answer",
+        "ask": "Which invoices should we chase first?",
+        "detail": "Names or invoice numbers are enough."
+      }
+    ],
+    "money_plan": {
+      "currency": "USD",
+      "lines": [
+        {
+          "label": "Collection setup",
+          "amount_minor": 25000,
+          "kind": "deposit"
+        }
+      ]
+    }
+  }
+}

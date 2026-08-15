@@ -1,0 +1,337 @@
+import { test } from "node:test";
+import assert from "node:assert/strict";
+import { randomUUID } from "node:crypto";
+import { createServer as httpServer } from "node:http";
+import { seal, open_, setSecret, getSecret, initSecretStore, _resetKeyCache } from "../src/secrets";
+import { canonical, entryHash, verifyChain, initAuditStore, auditList, auditVerify, GENESIS, type AuditEntry } from "../src/audit";
+import { InMemoryStore } from "../src/store";
+import { createServer } from "../src/server";
+import { getDomainStore } from "../src/domain";
+import { selectGrantableConnections } from "../src/runtime";
+import { actionPreview, executeAction } from "../src/actions";
+import type { Connection, ConnectionOwner } from "../src/contract";
+import { registerActionGrant } from "../src/actiongrants";
+import { resolveApproval } from "../src/approvals";
+
+// ── vault: encryption at rest ──
+
+test("vault: a secret is encrypted at rest and never stored in the clear", async () => {
+  process.env.MYCEL_SECRET_KEY = Buffer.alloc(32, 7).toString("base64");
+  _resetKeyCache();
+  const sealed = seal("sk-live-SUPERSECRET");
+  assert.ok(!JSON.stringify(sealed).includes("SUPERSECRET"), "the envelope contains no plaintext");
+  assert.equal(sealed.v, 1);
+  assert.ok(sealed.iv && sealed.tag && sealed.ct);
+  assert.equal(open_(sealed), "sk-live-SUPERSECRET", "round-trips");
+});
+
+test("vault: tampering with the ciphertext is DETECTED, not silently accepted", () => {
+  process.env.MYCEL_SECRET_KEY = Buffer.alloc(32, 7).toString("base64");
+  _resetKeyCache();
+  const sealed = seal("transfer-to-me");
+  // flip a byte of ciphertext — GCM's auth tag must catch it
+  const bytes = Buffer.from(sealed.ct, "base64");
+  bytes[0] ^= 0xff;
+  assert.equal(open_({ ...sealed, ct: bytes.toString("base64") }), undefined, "tampered ciphertext yields nothing");
+  // and a swapped auth tag fails too
+  assert.equal(open_({ ...sealed, tag: Buffer.alloc(16, 1).toString("base64") }), undefined);
+});
+
+test("vault: a secret sealed with a different key cannot be read", () => {
+  process.env.MYCEL_SECRET_KEY = Buffer.alloc(32, 1).toString("base64");
+  _resetKeyCache();
+  const sealed = seal("client-oauth-token");
+  process.env.MYCEL_SECRET_KEY = Buffer.alloc(32, 2).toString("base64"); // rotated/stolen dump
+  _resetKeyCache();
+  assert.equal(open_(sealed), undefined, "a database dump is useless without the right key");
+});
+
+test("vault: a malformed key is rejected loudly rather than silently weakening crypto", () => {
+  process.env.MYCEL_SECRET_KEY = "too-short";
+  _resetKeyCache();
+  assert.throws(() => seal("x"), /32 bytes/);
+  process.env.MYCEL_SECRET_KEY = Buffer.alloc(32, 7).toString("base64");
+  _resetKeyCache();
+});
+
+test("vault: store round-trip through the public API", async () => {
+  process.env.MYCEL_SECRET_KEY = Buffer.alloc(32, 9).toString("base64");
+  _resetKeyCache();
+  await initSecretStore();
+  await setSecret("conn-1", "postmark-key");
+  assert.equal(await getSecret("conn-1"), "postmark-key");
+  assert.equal(await getSecret("missing"), undefined);
+});
+
+// ── audit: tamper-evident chain ──
+
+test("audit: the chain verifies, and any edit/delete/reorder is caught", async () => {
+  await initAuditStore();
+  const { audit } = await import("../src/audit");
+  // A project of its own. The audit store is append-only and, on a real Postgres, PERSISTS between
+  // runs — a shared project id meant this asserted `length === 5` against a table that had 20 rows
+  // by the third run. The chain property is what's under test, not how many entries exist.
+  const project = `audit-${randomUUID()}`;
+  for (let i = 0; i < 5; i++) {
+    await audit({ project_id: project, actor: "member", action: "approval.granted", entity: "task", entity_id: `t${i}`, detail: { i } });
+  }
+  const entries = await auditList(project);
+  assert.equal(entries.length, 5);
+  assert.equal(entries[0].prev_hash, GENESIS, "the chain starts at genesis");
+  assert.equal(entries[1].prev_hash, entries[0].hash, "each entry links to the previous");
+  assert.equal((await auditVerify(project)).ok, true, "an untouched chain verifies");
+
+  // EDIT a field — the recomputed hash must not match
+  const edited = entries.map((e) => ({ ...e }));
+  edited[2].detail = { i: "tampered" };
+  const v1 = verifyChain(edited);
+  assert.equal(v1.ok, false);
+  assert.equal(v1.broken_at, 3);
+  assert.match(v1.reason!, /does not match its contents/);
+
+  // DELETE an entry — the sequence gap must be caught
+  const deleted = entries.filter((e) => e.seq !== 3);
+  const v2 = verifyChain(deleted);
+  assert.equal(v2.ok, false);
+  assert.match(v2.reason!, /sequence gap/);
+
+  // REORDER — prev_hash no longer matches
+  const reordered = [entries[0], entries[2], entries[1], entries[3], entries[4]].map((e, i) => ({ ...e, seq: i + 1 }));
+  assert.equal(verifyChain(reordered as AuditEntry[]).ok, false);
+});
+
+test("audit: the hash is independent of object key ORDER (jsonb round-trip)", () => {
+  // Postgres jsonb does not preserve key order, so {a,b} can return as {b,a}. Hashing raw
+  // JSON.stringify made every persisted chain verify as tampered — an alarm that always fires.
+  assert.equal(canonical({ a: 1, b: 2 }), canonical({ b: 2, a: 1 }));
+  assert.equal(canonical({ x: { p: 1, q: 2 }, y: [1, { m: 1, n: 2 }] }), canonical({ y: [1, { n: 2, m: 1 }], x: { q: 2, p: 1 } }));
+  // …but a different VALUE must still change it
+  assert.notEqual(canonical({ a: 1 }), canonical({ a: 2 }));
+  const base = { seq: 1, project_id: "p", at: "2026-01-01T00:00:00.000Z", actor: "a", action: "approval.granted" as const, entity: "task", entity_id: "t", prev_hash: GENESIS };
+  assert.equal(
+    entryHash({ ...base, detail: { connection: "x", kind: "email", n: 1 } }),
+    entryHash({ ...base, detail: { n: 1, kind: "email", connection: "x" } }),
+    "the same detail in any key order hashes identically",
+  );
+});
+
+test("audit: entryHash is deterministic and sensitive to every field", () => {
+  const base = { seq: 1, project_id: "p", at: "2026-01-01T00:00:00.000Z", actor: "a", action: "approval.granted" as const, entity: "task", entity_id: "t", detail: {}, prev_hash: GENESIS };
+  const h = entryHash(base);
+  assert.equal(entryHash(base), h, "deterministic");
+  assert.notEqual(entryHash({ ...base, actor: "b" }), h);
+  assert.notEqual(entryHash({ ...base, entity_id: "t2" }), h);
+  assert.notEqual(entryHash({ ...base, detail: { x: 1 } }), h);
+  assert.notEqual(entryHash({ ...base, prev_hash: "x".repeat(64) }), h);
+});
+
+test("audit: a real approval + executed action land in the chain, with no secret material", async () => {
+  process.env.MYCEL_SECRET_KEY = Buffer.alloc(32, 3).toString("base64");
+  _resetKeyCache();
+  await initSecretStore();
+  await initAuditStore();
+
+  let hits = 0;
+  const srv = httpServer((_q, res) => { hits++; res.end("ok"); });
+  await new Promise<void>((r) => srv.listen(0, r));
+  const port = (srv.address() as { port: number }).port;
+
+  const store = new InMemoryStore();
+  const app = createServer(store);
+  const domain = getDomainStore();
+  const now = new Date().toISOString();
+  await store.createTask({
+    id: "at1", project_id: "audit-proj", wedge: "invoice-chaser", task_type: "chase_invoice",
+    actor: { kind: "system", id: "s" }, input: {},
+    constraints: { max_runtime_s: 300, max_cost_usd: 1, approval_required: false },
+    tools: [], status: "running", cost_usd: 0, created_at: now, updated_at: now,
+  } as never);
+  const conn = await domain.createConnection({
+    project_id: "audit-proj", kind: "webhook", name: "sink", owner: { kind: "founder", id: "founder" },
+    config: { url: `http://127.0.0.1:${port}/` },
+  });
+  await setSecret(conn.id, "SUPERSECRET-TOKEN");
+
+  const nonce = await registerActionGrant({ task_id: "at1", connectionIds: [conn.id] });
+  const H = { authorization: `Bearer ${nonce}`, "content-type": "application/json" };
+  const callP = app.request("/v1/internal/actions/send_thing", {
+    method: "POST", headers: H, body: JSON.stringify({ connection_id: conn.id, to: "x@y.z", body: "hi" }),
+  });
+
+  let approvalId: string | undefined;
+  for (let i = 0; i < 100 && !approvalId; i++) {
+    await new Promise((r) => setTimeout(r, 15));
+    const req = (await store.eventsAfter("at1", 0)).find((e) => e.type === "approval.requested");
+    if (req) approvalId = (req.data as { approval_id: string }).approval_id;
+  }
+  resolveApproval(approvalId!, "approved");
+  const out = await (await callP).json();
+  assert.equal(out.ok, true);
+  assert.equal(hits, 1);
+
+  const chain = await auditList("audit-proj");
+  const actions = chain.map((e) => e.action);
+  assert.ok(actions.includes("approval.granted"), `approval recorded (${actions.join(", ")})`);
+  assert.ok(actions.includes("action.executed"), "the executed action recorded");
+  assert.equal((await auditVerify("audit-proj")).ok, true, "chain still verifies");
+  // the crux: an audit log is worthless if it leaks what it audits
+  assert.ok(!JSON.stringify(chain).includes("SUPERSECRET"), "no secret material anywhere in the chain");
+
+  srv.close();
+});
+
+// ── per-client connection isolation ──
+// The claim under test is one the product makes out loud on its Connections screen: "one client's
+// credential can never be used on another's job." It was false: ownership sat as one arm of an `||`
+// beside "the wedge or task named it", and `task.input.connections` is caller-supplied.
+
+const conn = (owner: ConnectionOwner, name: string): Connection => ({
+  id: `id-${name}`,
+  project_id: "p1",
+  kind: "email",
+  name,
+  owner,
+  config: {},
+  created_at: new Date().toISOString(),
+});
+
+const FOUNDER: ConnectionOwner = { kind: "founder", id: "founder" };
+const shared = conn(FOUNDER, "shared-mailbox");
+const aMail = conn({ kind: "client", id: "client-a" }, "a-mailbox");
+const bMail = conn({ kind: "client", id: "client-b" }, "b-mailbox");
+const ALL = [shared, aMail, bMail];
+
+test("per-client connections: naming another client's connection does not grant it", () => {
+  // A task serving client A that explicitly names client B's connection, by id AND by name — the
+  // exact shape of the bypass, since nothing validates `task.input.connections`.
+  const wanted = new Set([bMail.id, bMail.name, shared.name]);
+  const got = selectGrantableConnections(ALL, wanted, "p1", "client-a").map((c) => c.name);
+
+  assert.ok(got.includes("a-mailbox"), "its own client's connection is granted automatically");
+  assert.ok(got.includes("shared-mailbox"), "a named founder connection is granted");
+  assert.ok(
+    !got.includes("b-mailbox"),
+    "another client's connection is refused even though the task named it explicitly",
+  );
+});
+
+test("per-client connections: a founder-run task gets no client credentials by default", () => {
+  // No client id at all (a scheduled sweep, say). It must not inherit anyone's mailbox.
+  const got = selectGrantableConnections(ALL, new Set([shared.name]), "p1", undefined).map((c) => c.name);
+  assert.deepEqual(got, ["shared-mailbox"]);
+
+  // …and naming them doesn't help.
+  const forced = selectGrantableConnections(ALL, new Set([aMail.id, bMail.id]), "p1", undefined);
+  assert.deepEqual(forced, [], "client-owned connections need a matching client, not a mention");
+});
+
+test("per-client connections: founder connections still need to be named", () => {
+  // The gate must not accidentally widen the founder side into "everything in the project".
+  assert.deepEqual(selectGrantableConnections(ALL, new Set(), "p1", "client-a").map((c) => c.name), [
+    "a-mailbox",
+  ]);
+});
+
+// ── cross-tenant isolation: the PROJECT gate, not just the client gate ──
+// The third leak of this shape. `runOpenCodeTask` filtered with `!task.project_id || c.project_id
+// === task.project_id`, which is fail-OPEN: a task with no project matched every connection in the
+// deployment, and `wedge.manifest.connections` names connections by plain name ("linkedin"), so the
+// name-based path handed a project-less run another tenant's member session. The project is now a
+// required argument of `selectGrantableConnections` and a falsy one grants nothing.
+
+const otherTenant = (name: string): Connection => ({
+  id: `id-${name}`,
+  project_id: "p2",
+  kind: "linkedin",
+  name,
+  owner: FOUNDER,
+  config: {},
+  created_at: new Date().toISOString(),
+});
+const p2Linkedin = otherTenant("linkedin");
+
+test("cross-tenant: a task with no project is granted NOTHING, not everything", () => {
+  // The exact bypass: a wedge manifest naming "linkedin", a task carrying no project id.
+  const wanted = new Set(["linkedin", "shared-mailbox", p2Linkedin.id]);
+  assert.deepEqual(
+    selectGrantableConnections([...ALL, p2Linkedin], wanted, undefined),
+    [],
+    "no project means no tenant to resolve against — it must not resolve against all of them",
+  );
+});
+
+test("cross-tenant: another project's connection is refused even when named", () => {
+  const wanted = new Set(["linkedin", p2Linkedin.id, "shared-mailbox"]);
+  const got = selectGrantableConnections([...ALL, p2Linkedin], wanted, "p1").map((c) => c.name);
+  assert.ok(got.includes("shared-mailbox"), "this project's named founder connection is granted");
+  assert.ok(
+    !got.includes("linkedin"),
+    "another tenant's connection is refused by name AND by id, inside the boundary itself",
+  );
+});
+
+// ── the platform guard is inside the executor, not beside one caller ──
+// `guardSend` had exactly one caller: the agent action proxy. The sequencer and the approved-reply
+// path call `executeAction` directly, so the platform rules — and `cold_initiate_requires_approval`
+// in particular — were skipped on the two paths that produce essentially all of the outbound volume.
+
+test("outreach guard: a platform-impossible send is refused by the executor itself", async () => {
+  const { executeAction } = await import("../src/actions");
+  const instagram: Connection = {
+    id: "id-ig",
+    project_id: "p1",
+    kind: "composio",
+    name: "ig",
+    owner: FOUNDER,
+    config: { toolkit: "instagram" },
+    created_at: new Date().toISOString(),
+  };
+  // Instagram cannot be cold-DMed by anyone. Reached through the door the sequencer uses, with no
+  // proxy anywhere in the call — this must not depend on which caller you came through.
+  const res = await executeAction(instagram, "INSTAGRAM_SEND_DM", { to: "someone", body: "hi" });
+  assert.equal(res.ok, false);
+  assert.equal(res.code, "cannot_initiate");
+});
+
+test("outreach guard: an unattended cold open cannot claim an approval nobody gave", async () => {
+  const { executeAction } = await import("../src/actions");
+  const li: Connection = {
+    id: "id-li",
+    project_id: "p1",
+    kind: "linkedin",
+    name: "li",
+    owner: FOUNDER,
+    config: {},
+    created_at: new Date().toISOString(),
+  };
+  const unattended = await executeAction(li, "send_message", { profile_id: "x", body: "hi" });
+  assert.equal(unattended.ok, false, "no recorded human decision means no cold open");
+  assert.equal(unattended.code, "approval_required");
+});
+
+test("actions: the destination host comes from the connection, never from the agent", async () => {
+  // Reads were always guarded this way (safeReadPath); writes were not — and since the connection's
+  // secret rides along as a bearer token, an agent-chosen host meant credential exfiltration with
+  // one approval click.
+  const webhook: Connection = {
+    id: "wh1",
+    project_id: "p1",
+    kind: "webhook",
+    name: "ops-hook",
+    owner: FOUNDER,
+    config: { url: "https://hooks.internal.test/mycel" },
+    created_at: new Date().toISOString(),
+  };
+
+  for (const evil of ["https://attacker.test/steal", "//attacker.test/steal", "../../etc", "a\r\nb"]) {
+    const r = await executeAction(webhook, "notify", { url: evil, body: { x: 1 } }, "super-secret");
+    assert.equal(r.ok, false, `must refuse ${evil}`);
+    assert.match(String(r.detail), /within the connection's host/);
+  }
+
+  // And the approval card shows where it's really going, so the human is checking the agent rather
+  // than reading the agent's own claim back to itself.
+  const preview = actionPreview(webhook, "notify", { url: "https://attacker.test/steal", body: "hi" });
+  assert.equal(preview.endpoint, "https://hooks.internal.test/mycel");
+  assert.notEqual(preview.to, "https://attacker.test/steal");
+});

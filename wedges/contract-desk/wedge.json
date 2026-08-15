@@ -1,0 +1,977 @@
+{
+  "wedge": "contract-desk",
+  "domains": ["legal-services"],
+  "title": "Contract desk",
+  "_comment_trade": "A recruitment agency placing contractors on ongoing assignments. The week is the unit: timesheets in by Monday, client invoiced Tuesday, contractors paid Friday out of money that may not have landed. This is the admin that stops a desk growing past roughly thirty live contractors, which is the point at which every agency of this size hires a back-office person. Nothing in here is a claim the kernel cannot keep: every task type has an output schema, both numbers a client argues about are computed by a workflow rather than narrated by a model, and the only capabilities declared are ones with real providers behind them.",
+  "_comment_no_role": "Declares no `provides` role on purpose. Every role in roles.ts is cardinality-one and already held; a desk that also chases its own overdue invoices should install the chaser, not have this quietly take the job off it. Everything here is driven by its own schedules.",
+  "tier": "standard",
+  "task_types": {
+    "weekly_run": {
+      "description": "The Monday sweep across the whole desk: whose timesheet is missing, which weeks are ready to bill, which assignments are inside their notice window, and what the client has actually paid.",
+      "tier": "standard",
+      "harness": {
+        "shape": "decide",
+        "max_runtime_s": 600,
+        "max_cost_usd": 0.6,
+        "strict_output": true,
+        "needs_connections": true,
+        "temperature": 0.1,
+        "steps": 40,
+        "instructions": [
+          "knowledge/timesheet-week.md"
+        ]
+      },
+      "output_schema": {
+        "type": "object",
+        "required": [
+          "week_ending",
+          "missing_timesheets",
+          "ready_to_bill",
+          "ending_soon",
+          "summary"
+        ],
+        "properties": {
+          "week_ending": {
+            "type": "string",
+            "description": "ISO date (YYYY-MM-DD) of the Saturday the week being swept ends on."
+          },
+          "summary": {
+            "type": "string",
+            "description": "What a desk head needs to read before their first coffee. Two or three sentences."
+          },
+          "missing_timesheets": {
+            "type": "array",
+            "description": "Assignments with no approved timesheet for the week. Each becomes a chase.",
+            "items": {
+              "type": "object",
+              "required": [
+                "assignment_id",
+                "contractor",
+                "client",
+                "days_late"
+              ],
+              "properties": {
+                "assignment_id": {
+                  "type": "string"
+                },
+                "contractor": {
+                  "type": "string"
+                },
+                "client": {
+                  "type": "string"
+                },
+                "days_late": {
+                  "type": "integer"
+                },
+                "state": {
+                  "type": "string",
+                  "enum": [
+                    "not_submitted",
+                    "submitted_not_approved"
+                  ],
+                  "description": "Who is actually holding it up. A contractor who submitted and is waiting on the client's manager must never be chased as though they had not."
+                }
+              }
+            }
+          },
+          "ready_to_bill": {
+            "type": "array",
+            "description": "Client-weeks where every assignment has an approved timesheet. Each becomes one invoice.",
+            "items": {
+              "type": "object",
+              "required": [
+                "client",
+                "assignment_ids"
+              ],
+              "properties": {
+                "client": {
+                  "type": "string"
+                },
+                "assignment_ids": {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  }
+                }
+              }
+            }
+          },
+          "ending_soon": {
+            "type": "array",
+            "description": "Assignments inside the notice window. An extension nobody asked for is revenue that stops on a date already in the file.",
+            "items": {
+              "type": "object",
+              "required": [
+                "assignment_id",
+                "contractor",
+                "client",
+                "end_date",
+                "days_left"
+              ],
+              "properties": {
+                "assignment_id": {
+                  "type": "string"
+                },
+                "contractor": {
+                  "type": "string"
+                },
+                "client": {
+                  "type": "string"
+                },
+                "end_date": {
+                  "type": "string"
+                },
+                "days_left": {
+                  "type": "integer"
+                }
+              }
+            }
+          },
+          "unpaid_client_weeks": {
+            "type": "array",
+            "description": "Weeks already invoiced with nothing recorded against them. Empty and MEANINGLESS when no payment provider is connected \u2014 say so in `summary` rather than reporting an empty list as good news.",
+            "items": {
+              "type": "object",
+              "required": [
+                "client",
+                "invoice_ref",
+                "days_outstanding"
+              ],
+              "properties": {
+                "client": {
+                  "type": "string"
+                },
+                "invoice_ref": {
+                  "type": "string"
+                },
+                "days_outstanding": {
+                  "type": "integer"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "chase_timesheet": {
+      "description": "One assignment, one missing week. Work out who is actually holding it up and write the nudge to that person.",
+      "tier": "fast",
+      "input_schema": {
+        "type": "object",
+        "required": [
+          "assignment_id",
+          "week_ending"
+        ],
+        "properties": {
+          "assignment_id": {
+            "type": "string"
+          },
+          "week_ending": {
+            "type": "string"
+          },
+          "contractor": {
+            "type": "string"
+          },
+          "client": {
+            "type": "string"
+          },
+          "state": {
+            "type": "string",
+            "enum": [
+              "not_submitted",
+              "submitted_not_approved"
+            ]
+          },
+          "days_late": {
+            "type": "integer"
+          },
+          "chases_sent": {
+            "type": "integer"
+          }
+        }
+      },
+      "harness": {
+        "shape": "decide",
+        "max_runtime_s": 420,
+        "max_cost_usd": 0.25,
+        "strict_output": true,
+        "needs_connections": true,
+        "temperature": 0.2,
+        "steps": 20,
+        "skills": [
+          "chase-a-contractor"
+        ],
+        "instructions": [
+          "knowledge/timesheet-week.md"
+        ]
+      },
+      "output_schema": {
+        "type": "object",
+        "required": [
+          "recipient",
+          "tone",
+          "subject",
+          "message",
+          "reasoning"
+        ],
+        "properties": {
+          "recipient": {
+            "type": "string",
+            "enum": [
+              "contractor",
+              "client_approver",
+              "desk_head"
+            ],
+            "description": "Who is actually holding it up. `desk_head` means stop and hand it back \u2014 the chase has run out of road."
+          },
+          "tone": {
+            "type": "string",
+            "enum": [
+              "nudge",
+              "firm",
+              "escalate"
+            ]
+          },
+          "subject": {
+            "type": "string"
+          },
+          "message": {
+            "type": "string"
+          },
+          "reasoning": {
+            "type": "string",
+            "description": "Why this person and this tone, so the desk head can disagree with the judgement rather than only with the prose."
+          }
+        }
+      }
+    },
+    "prepare_invoice": {
+      "description": "One client, one week of approved timesheets, one invoice. The arithmetic is the bill_lines workflow's; the covering note is yours.",
+      "tier": "standard",
+      "input_schema": {
+        "type": "object",
+        "required": [
+          "client",
+          "week_ending",
+          "assignment_ids"
+        ],
+        "properties": {
+          "client": {
+            "type": "string"
+          },
+          "week_ending": {
+            "type": "string"
+          },
+          "assignment_ids": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Every assignment for this client this week. Required, and required to be complete: `week_status` only reports a client-week as ready when nothing is outstanding, and a subset here would produce a partial invoice the client reads as the whole week."
+          }
+        }
+      },
+      "harness": {
+        "shape": "decide",
+        "max_runtime_s": 600,
+        "max_cost_usd": 0.5,
+        "strict_output": true,
+        "needs_connections": true,
+        "temperature": 0.1,
+        "steps": 30,
+        "skills": [
+          "bill-a-week"
+        ],
+        "instructions": [
+          "knowledge/when-an-invoice-gets-disputed.md"
+        ]
+      },
+      "output_schema": {
+        "type": "object",
+        "required": [
+          "client",
+          "week_ending",
+          "currency",
+          "lines",
+          "total_minor",
+          "covering_note"
+        ],
+        "properties": {
+          "client": {
+            "type": "string"
+          },
+          "week_ending": {
+            "type": "string"
+          },
+          "currency": {
+            "type": "string",
+            "description": "ISO 4217, e.g. GBP."
+          },
+          "purchase_order": {
+            "type": "string",
+            "description": "The client's PO reference. Absent is a real answer and is the single most common reason an otherwise correct invoice is bounced \u2014 say so in `covering_note` rather than inventing one."
+          },
+          "lines": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "required": [
+                "assignment_id",
+                "contractor",
+                "description",
+                "minutes",
+                "charge_minor"
+              ],
+              "properties": {
+                "assignment_id": {
+                  "type": "string"
+                },
+                "contractor": {
+                  "type": "string"
+                },
+                "description": {
+                  "type": "string"
+                },
+                "minutes": {
+                  "type": "integer",
+                  "description": "Worked minutes, integer. Hours are not stored as decimals anywhere in this trade for the same reason money is not: 7.5 and 7.50 disagree about what half an hour is worth."
+                },
+                "charge_minor": {
+                  "type": "integer",
+                  "description": "What the client is billed for this line, in minor units. Comes from bill_lines. Never computed in prose."
+                }
+              }
+            }
+          },
+          "subtotal_minor": {
+            "type": "integer"
+          },
+          "tax_minor": {
+            "type": "integer"
+          },
+          "total_minor": {
+            "type": "integer"
+          },
+          "covering_note": {
+            "type": "string",
+            "description": "What goes in the email body. Names the week, the people and the PO \u2014 the three things a payables clerk needs to match it without asking."
+          }
+        }
+      }
+    },
+    "confirm_extension": {
+      "description": "An assignment is inside its notice window. Draft the conversation with the client's hiring manager that either extends it or gets a straight answer.",
+      "tier": "standard",
+      "input_schema": {
+        "type": "object",
+        "required": [
+          "assignment_id",
+          "end_date",
+          "today"
+        ],
+        "properties": {
+          "assignment_id": {
+            "type": "string"
+          },
+          "end_date": {
+            "type": "string"
+          },
+          "today": {
+            "type": "string",
+            "description": "ISO date. Passed in so the same window can be replayed."
+          },
+          "contractor": {
+            "type": "string"
+          },
+          "client": {
+            "type": "string"
+          },
+          "already_asked": {
+            "type": "boolean"
+          }
+        }
+      },
+      "harness": {
+        "shape": "decide",
+        "max_runtime_s": 420,
+        "max_cost_usd": 0.4,
+        "strict_output": true,
+        "needs_connections": true,
+        "temperature": 0.3,
+        "steps": 20
+      },
+      "output_schema": {
+        "type": "object",
+        "required": [
+          "assignment_id",
+          "ask",
+          "subject",
+          "message",
+          "reasoning"
+        ],
+        "properties": {
+          "assignment_id": {
+            "type": "string"
+          },
+          "ask": {
+            "type": "string",
+            "enum": [
+              "extend",
+              "confirm_end_date",
+              "raise_rate",
+              "hold"
+            ],
+            "description": "`hold` when the notice window has not opened yet or the client has already answered. Asking twice is how a desk talks itself out of an extension."
+          },
+          "proposed_end_date": {
+            "type": "string"
+          },
+          "subject": {
+            "type": "string"
+          },
+          "message": {
+            "type": "string"
+          },
+          "reasoning": {
+            "type": "string"
+          }
+        }
+      }
+    },
+    "deliverable_verdict": {
+      "description": "Your client has come back on something we delivered. Read what they said and either write the next version or wrap the work up.",
+      "_comment": "One task type for BOTH verdicts, because the wait that wakes it is armed at release time \u2014 before anyone knows which way the client will go. See DELIVERABLE_VERDICT_TASK_TYPE in deliverables.ts. Read the live answer from GET /v1/internal/deliverables/<id> rather than trusting the resume input; a client can accept and then immediately ask for one more thing.",
+      "input_schema": {
+        "type": "object",
+        "required": [
+          "deliverable_id"
+        ],
+        "properties": {
+          "deliverable_id": {
+            "type": "string"
+          }
+        }
+      },
+      "harness": {
+        "shape": "decide",
+        "max_runtime_s": 600,
+        "max_cost_usd": 0.5,
+        "strict_output": true,
+        "temperature": 0.2,
+        "steps": 30
+      },
+      "output_schema": {
+        "type": "object",
+        "required": [
+          "verdict",
+          "next_step",
+          "note"
+        ],
+        "properties": {
+          "verdict": {
+            "type": "string",
+            "enum": [
+              "accepted",
+              "changes_requested"
+            ],
+            "description": "What the client actually did, read back from the deliverable. Not a guess."
+          },
+          "next_step": {
+            "type": "string",
+            "enum": [
+              "submitted_new_version",
+              "ready_to_invoice",
+              "needs_a_human"
+            ],
+            "description": "`needs_a_human` is a real answer and the right one whenever the change they asked for is a scope change rather than a correction \u2014 that is a conversation about money, not a redraft."
+          },
+          "note": {
+            "type": "string",
+            "description": "One or two sentences for the engagement's timeline: what they asked for and what you did about it."
+          }
+        }
+      }
+    },
+    "check_in_case": {
+      "description": "This engagement has gone quiet. Read where the work actually stands and write the client a short, honest update \u2014 where it is, what happens next, and anything you need from them. Never promise a date the engagement's own facts do not already support, and never introduce a new commitment: this is a status update, not a renegotiation.",
+      "_comment": "Declared because `check_in_case` is a real next-move kind and a grey button on a ranked list is a reading list. The sibling kind `advance_case` is deliberately NOT declared here: advancing this engagement means doing the work in it, which already has its own task types, and a generic verb with a free-text schema would be an agent handed something nobody taught it. See checkin.ts.",
+      "tier": "fast",
+      "input_schema": {
+        "type": "object",
+        "required": [
+          "case_id",
+          "stage",
+          "days_silent",
+          "today"
+        ],
+        "properties": {
+          "case_id": {
+            "type": "string"
+          },
+          "client_id": {
+            "type": "string"
+          },
+          "title": {
+            "type": "string"
+          },
+          "stage": {
+            "type": "string"
+          },
+          "due_at": {
+            "type": "string"
+          },
+          "days_silent": {
+            "type": "number",
+            "description": "Whole days since anything happened on this engagement. The single biggest input to the right tone: five days is a quick update, thirty is an apology."
+          },
+          "last_activity_at": {
+            "type": "string"
+          },
+          "recent_history": {
+            "type": "array",
+            "description": "The last few timeline entries, oldest first. The only account of what has happened \u2014 say nothing this does not support.",
+            "items": {
+              "type": "object",
+              "properties": {
+                "at": {
+                  "type": "string"
+                },
+                "kind": {
+                  "type": "string"
+                },
+                "from": {
+                  "type": "string"
+                },
+                "to": {
+                  "type": "string"
+                },
+                "note": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "today": {
+            "type": "string",
+            "description": "ISO date. Passed in so the same check-in can be replayed."
+          }
+        }
+      },
+      "harness": {
+        "shape": "decide",
+        "max_runtime_s": 420,
+        "max_cost_usd": 0.3,
+        "strict_output": true,
+        "needs_connections": true,
+        "temperature": 0.2,
+        "steps": 20
+      },
+      "output_schema": {
+        "type": "object",
+        "required": [
+          "send",
+          "status_summary",
+          "reasoning"
+        ],
+        "properties": {
+          "send": {
+            "type": "boolean",
+            "description": "False is a real and often correct answer: an engagement that is silent because it is deliberately parked, or one where the last entry is already an update we sent, does not need another message. A check-in that had nothing to say is worse than no check-in."
+          },
+          "subject": {
+            "type": "string"
+          },
+          "message": {
+            "type": "string",
+            "description": "The client-facing words. Required whenever `send` is true."
+          },
+          "status_summary": {
+            "type": "string",
+            "description": "One or two sentences for the engagement's own timeline: where the work stands, in our words, whether or not anything is sent."
+          },
+          "blocked_on": {
+            "type": "string",
+            "enum": [
+              "nobody",
+              "client",
+              "us"
+            ],
+            "description": "Who the next step belongs to, read from the facts. `client` is what makes the check-in an ask rather than a bulletin."
+          },
+          "reasoning": {
+            "type": "string"
+          }
+        }
+      }
+    },
+    "nudge_client_request": {
+      "description": "Remind this client about ONE thing we already asked them for and have not received. Escalate in tone with the number of reminders already sent (input: nudges_sent of max_nudges); never invent a new ask, and never ask for anything the input does not name.",
+      "harness": {
+        "shape": "decide",
+        "max_runtime_s": 420,
+        "max_cost_usd": 0.3,
+        "strict_output": true,
+        "needs_connections": true,
+        "temperature": 0.1,
+        "steps": 20
+      },
+      "output_schema": {
+        "type": "object",
+        "properties": {
+          "step": {
+            "type": "string",
+            "enum": [
+              "reminder",
+              "firm_reminder",
+              "final_reminder",
+              "hold"
+            ]
+          },
+          "channel": {
+            "type": "string",
+            "enum": [
+              "email",
+              "none"
+            ]
+          },
+          "message": {
+            "type": "string"
+          },
+          "reasoning": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "step",
+          "channel",
+          "message"
+        ]
+      }
+    }
+  },
+  "tools": [],
+  "_comment_approvals": "An invoice is the one thing on this desk that is expensive to get wrong in public. A wrong chase is embarrassing; a wrong invoice is a disputed week, a delayed payment, and a contractor paid on the agency's own cash. So `send_invoice` is its own high-risk gate rather than being folded into `send` \u2014 a desk head who has learned to wave `send` through must not have learned to wave an invoice through with it. The companion `send` entry at medium is gone for the same reason turned around: it matched every email on the desk, which put a permanent medium floor under the whole queue and made the distinction this comment argues for invisible. A timesheet chase is scored from what is in it now; the gate still catches it either way.",
+  "_comment_send_check_in": "`send_check_in` is declared at LOW risk and `required: true`, and both halves are deliberate. Required, because a status update is still this firm speaking to a client in its own name, and the one thing a wrong one costs is the client's confidence that we know where their work is \u2014 so it stops at a human even though the autonomy sweep may be what started it. Low, because risk.ts scores a queue in which everything urgent is a queue nobody reads: a check-in carries no money, no commitment and no change of tone, and declaring it as serious as a final notice is exactly what teaches a founder to clear the queue without reading it. A standing approval may cover this kind; standing.ts can never let one cover a high-risk verdict.",
+  "approvals": [
+    {
+      "action": "send_invoice",
+      "risk": "high",
+      "required": true
+    },
+    {
+      "action": "send_check_in",
+      "risk": "low",
+      "required": true
+    }
+  ],
+  "capabilities": [
+    "read_payments",
+    "read_invoices",
+    "send_email"
+  ],
+  "_comment_policy": "The ONE thing on this desk that is safe to do without a human, and it is also the thing that eats the Monday. A timesheet nudge goes to the agency's OWN contractor about their OWN hours: no money moves, no client sees it, and the worst case is somebody is asked twice for a form they already sent. Capped at two per assignment so a stuck week cannot become a drip, and at sixty a day because a desk of thirty contractors chased twice IS the whole ceiling \u2014 a cap larger than the desk is a rule that never binds, which is the way `policy.ts`'s own header says these go wrong.",
+  "policy": {
+    "auto_approve": [
+      {
+        "action": "email:chase_timesheet",
+        "max_per_task": 2,
+        "max_per_day": 60
+      }
+    ]
+  },
+  "_comment_cases": "The case is the ASSIGNMENT, not the week. A week is a task; an assignment is the thing with a beginning, a notice window and an end, and it is what a desk head means when they say they have thirty live. `lapsed` is deliberately not the same as `ended`: an assignment that ran to its end date with nobody having asked about an extension is a specific, expensive failure of this desk, and collapsing the two would hide the one outcome this pack exists to prevent.",
+  "cases": {
+    "stages": [
+      "pending_start",
+      "running",
+      "notice_window",
+      "extending",
+      "ended",
+      "lapsed"
+    ],
+    "initial": "pending_start"
+  },
+  "workflows": [
+    {
+      "name": "week_status",
+      "description": "Classify every assignment for one week: whose timesheet is missing and by how many days, which client-weeks are complete enough to bill, and which assignments have entered their notice window. ALWAYS call this before deciding what the week looks like \u2014 never work the dates out yourself.",
+      "input_schema": {
+        "type": "object",
+        "required": [
+          "today",
+          "week_ending",
+          "assignments"
+        ],
+        "properties": {
+          "today": {
+            "type": "string",
+            "description": "ISO date. Passed in so this stays pure."
+          },
+          "week_ending": {
+            "type": "string",
+            "description": "ISO date of the Saturday the week ends on."
+          },
+          "notice_days": {
+            "type": "integer",
+            "description": "How far ahead of an end date the extension conversation opens. Default 21."
+          },
+          "assignments": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "required": [
+                "id",
+                "contractor",
+                "client"
+              ],
+              "properties": {
+                "id": {
+                  "type": "string"
+                },
+                "contractor": {
+                  "type": "string"
+                },
+                "client": {
+                  "type": "string"
+                },
+                "timesheet_due": {
+                  "type": "string",
+                  "description": "ISO date the week's timesheet was due."
+                },
+                "submitted": {
+                  "type": "boolean"
+                },
+                "approved": {
+                  "type": "boolean"
+                },
+                "end_date": {
+                  "type": "string"
+                },
+                "chases_sent": {
+                  "type": "integer"
+                }
+              }
+            }
+          }
+        }
+      },
+      "output_schema": {
+        "type": "object",
+        "required": [
+          "week_ending",
+          "missing",
+          "ready_to_bill",
+          "ending_soon",
+          "counts"
+        ],
+        "properties": {
+          "week_ending": {
+            "type": "string"
+          },
+          "missing": {
+            "type": "array",
+            "items": {
+              "type": "object"
+            }
+          },
+          "ready_to_bill": {
+            "type": "array",
+            "items": {
+              "type": "object"
+            }
+          },
+          "ending_soon": {
+            "type": "array",
+            "items": {
+              "type": "object"
+            }
+          },
+          "counts": {
+            "type": "object"
+          }
+        }
+      }
+    },
+    {
+      "name": "bill_lines",
+      "description": "Turn approved minutes and rates into invoice lines, a total, and this week's margin \u2014 in integer minor units. ALWAYS use this for every number that appears on an invoice or in a margin report. Do the arithmetic yourself and you will be wrong by a penny on a week somebody checks.",
+      "input_schema": {
+        "type": "object",
+        "required": [
+          "currency",
+          "lines"
+        ],
+        "properties": {
+          "currency": {
+            "type": "string"
+          },
+          "tax_rate_bp": {
+            "type": "integer",
+            "description": "Sales tax in basis points \u2014 2000 is 20%. Basis points because a percentage with a decimal point in it is how rounding arguments start."
+          },
+          "lines": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "required": [
+                "assignment_id",
+                "minutes",
+                "charge_rate_minor_per_hour"
+              ],
+              "properties": {
+                "assignment_id": {
+                  "type": "string"
+                },
+                "contractor": {
+                  "type": "string"
+                },
+                "description": {
+                  "type": "string"
+                },
+                "minutes": {
+                  "type": "integer"
+                },
+                "charge_rate_minor_per_hour": {
+                  "type": "integer"
+                },
+                "pay_rate_minor_per_hour": {
+                  "type": "integer"
+                }
+              }
+            }
+          }
+        }
+      },
+      "output_schema": {
+        "type": "object",
+        "required": [
+          "currency",
+          "lines",
+          "subtotal_minor",
+          "tax_minor",
+          "total_minor"
+        ],
+        "properties": {
+          "currency": {
+            "type": "string"
+          },
+          "lines": {
+            "type": "array",
+            "items": {
+              "type": "object"
+            }
+          },
+          "subtotal_minor": {
+            "type": "integer"
+          },
+          "tax_minor": {
+            "type": "integer"
+          },
+          "total_minor": {
+            "type": "integer"
+          },
+          "pay_total_minor": {
+            "type": "integer"
+          },
+          "margin_minor": {
+            "type": "integer"
+          },
+          "margin_bp": {
+            "type": "integer"
+          }
+        }
+      }
+    }
+  ],
+  "skills": [
+    "chase-a-contractor",
+    "bill-a-week",
+    "multi-shot-fulfillment"
+  ],
+  "knowledge": [
+    "timesheet-week.md",
+    "when-an-invoice-gets-disputed.md"
+  ],
+  "intake": [
+    {
+      "id": "timesheet-week",
+      "ask": "When is a timesheet due, who signs it off at the client, and what happens if it does not arrive?",
+      "why": "This is the deadline every chase is measured against and the person every chase is aimed at. Get it wrong and the desk nags contractors for something their client manager is sitting on.",
+      "example": "Due midnight Sunday for the week ending Saturday. The client's line manager approves in their own portal \u2014 for Fenwick that's Priya Raman, for Calder it's whoever raised the PO. If it's not in by Monday noon we bill provisional hours and true up the following week.",
+      "kind": "fact",
+      "weight": 10
+    },
+    {
+      "id": "rates-and-overtime",
+      "ask": "How are charge and pay rates set, and what counts as overtime?",
+      "why": "Every line on every invoice is minutes times a rate. Overtime rules are where a week's margin actually goes, and they are never the same twice.",
+      "example": "Day rate for the PM contracts, hourly for the engineers. Anything past 40h in a week is 1.5x on the pay side and 1.5x on the charge side \u2014 we don't absorb it. Bank holidays are 2x charge, 1.5x pay, and I'd rather be asked than have that guessed.",
+      "kind": "fact",
+      "weight": 10
+    },
+    {
+      "id": "invoice-terms",
+      "ask": "What has to be on an invoice for each of your clients to pay it without arguing?",
+      "why": "A rejected invoice is not a late invoice, it is a lost week. Payables teams bounce on missing references far more often than on wrong amounts.",
+      "example": "Fenwick will not pay without a PO number on the line, not in the header. Calder needs the contractor's employee reference. Both want one invoice per contractor, not a consolidated one \u2014 we learned that the hard way. Terms are 30 days from invoice date, except Fenwick who negotiated 45.",
+      "kind": "fact",
+      "weight": 9
+    },
+    {
+      "id": "extension-window",
+      "ask": "How far before an assignment ends do you start the extension conversation, and with whom?",
+      "why": "Extensions are the cheapest revenue on a contract desk and the easiest to lose. This decides when the notice window opens and who gets asked.",
+      "example": "Three weeks out, and always with the hiring manager rather than HR \u2014 HR will tell you to wait for a requisition. If they've gone quiet by two weeks out I want to know about it myself.",
+      "kind": "correction",
+      "weight": 8
+    },
+    {
+      "id": "chase-voice",
+      "ask": "Paste a timesheet chase you actually sent that worked.",
+      "why": "These go out to your own contractors with your name on them, and one real example teaches the voice better than any description of it. A chase that reads like software is a chase people stop opening.",
+      "example": "(paste the message \u2014 the short one you send on a Monday morning, not the polished one)",
+      "kind": "example",
+      "weight": 8
+    },
+    {
+      "id": "paying-contractors",
+      "ask": "When do contractors get paid, and does that depend on the client having paid you?",
+      "why": "This is the only question on the list that can end a desk. It decides whether an unpaid client week is an annoyance or an emergency, and nothing here should guess at it.",
+      "example": "Contractors are paid every Friday for the week before, whether or not the client has settled. So we're funding roughly three weeks of payroll at any moment and I need to see anything over 45 days outstanding before it becomes a cash problem.",
+      "kind": "fact",
+      "weight": 9
+    }
+  ],
+  "fulfillment": {
+    "client_connections": [],
+    "intake_asks": [
+      {
+        "kind": "document",
+        "ask": "Current contractor roster or assignment list",
+        "detail": "Spreadsheet is fine \u2014 names, rates, and who approves timesheets."
+      },
+      {
+        "kind": "decision",
+        "ask": "Confirm billing cadence for this engagement (weekly / biweekly)"
+      }
+    ],
+    "money_plan": {
+      "currency": "USD",
+      "lines": [
+        {
+          "label": "Retainer deposit",
+          "amount_minor": 100000,
+          "kind": "deposit"
+        },
+        {
+          "label": "Engagement",
+          "amount_minor": 250000,
+          "kind": "milestone"
+        }
+      ]
+    },
+    "deliverable_shapes": [
+      "document"
+    ]
+  }
+}

@@ -1,0 +1,38 @@
+{
+  "name": "mycel-harness",
+  "private": true,
+  "version": "0.2.0",
+  "type": "module",
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "dev": "tsx watch --env-file-if-exists=.env harness/src/index.ts",
+    "start": "tsx --env-file-if-exists=.env harness/src/index.ts",
+    "typecheck": "tsc --noEmit",
+    "demo": "MYCEL_RUNTIME=mock MYCEL_API_KEY=mycel_demo_key MYCEL_OWNER_EMAIL=founder@ridgeline.example MYCEL_OWNER_PASSWORD=demo-ridgeline MYCEL_LOG_DIR=.mycel/demo-logs tsx harness/src/index.ts",
+    "demo:seed": "MYCEL_OWNER_EMAIL=founder@ridgeline.example MYCEL_OWNER_PASSWORD=demo-ridgeline tsx harness/scripts/seed-demo.ts",
+    "sim:kernel": "PORT=4100 MYCEL_RUNTIME=mock MYCEL_API_KEY=mycel_sim_key MYCEL_OWNER_EMAIL=founder@kestrel.example MYCEL_OWNER_PASSWORD=demo-kestrel MYCEL_LOG_DIR=.mycel/sim-logs tsx harness/src/index.ts",
+    "sim": "MYCEL_URL=http://localhost:4100 MYCEL_OWNER_EMAIL=founder@kestrel.example MYCEL_OWNER_PASSWORD=demo-kestrel tsx harness/scripts/simulate.ts",
+    "test": "MYCEL_RUNTIME=mock MYCEL_API_KEY=testkey MYCEL_OWNER_EMAIL=owner@test.co MYCEL_OWNER_PASSWORD=secret node --import tsx --test harness/test/*.test.ts"
+  },
+  "dependencies": {
+    "@aws-sdk/client-cloudwatch-logs": "^3.1101.0",
+    "@aws-sdk/client-codebuild": "^3.1101.0",
+    "@aws-sdk/client-ecs": "^3.1101.0",
+    "@aws-sdk/client-s3": "^3.1101.0",
+    "@aws-sdk/client-transcribe": "^3.1101.0",
+    "@daytona/sdk": "^0.203.0",
+    "@hono/node-server": "^1.13.1",
+    "graphile-worker": "^0.17.3",
+    "hono": "^4.6.3",
+    "pg": "^8.13.1",
+    "undici": "^6.28.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.7.4",
+    "@types/pg": "^8.11.10",
+    "tsx": "^4.19.1",
+    "typescript": "^5.6.2"
+  }
+}

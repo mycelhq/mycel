@@ -1,0 +1,62 @@
+{
+  "wedge": "harness-operator",
+  "title": "Company improvement operator",
+  "provides": ["self_improvement"],
+  "_comment_internal": "The kernel working on itself. Infrastructure on a reflection clock, not work a client is billed for. See WedgeManifest.internal in harness/src/wedge.ts for why this is declared rather than inferred.",
+  "internal": true,
+  "connections": [],
+  "skills": ["reflect-company"],
+  "task_types": {
+    "reflect_memory": {
+      "description": "Inspect the company brain and recent evidence, then propose one grounded memory or procedure improvement.",
+      "harness": { "shape": "general", "actions": true, "strict_output": true, "tier": "standard", "steps": 32, "max_runtime_s": 600, "max_cost_usd": 0.8 },
+      "output_schema": {
+        "type": "object",
+        "properties": {
+          "should_change": { "type": "boolean" },
+          "target": { "type": "string", "enum": ["memory", "procedure", "artifact", "capability", "guardrail"] },
+          "title": { "type": "string" },
+          "summary": { "type": "string" },
+          "proposed_change": { "type": "string" },
+          "evidence": { "type": "array", "items": { "type": "string" } },
+          "confidence": { "type": "string", "enum": ["low", "medium", "high"] }
+        },
+        "required": ["should_change", "target", "title", "summary", "proposed_change", "evidence", "confidence"]
+      }
+    },
+    "review_work": {
+      "description": "Review recent operational evidence and propose one improvement to how the business handles work.",
+      "harness": { "shape": "general", "actions": true, "strict_output": true, "tier": "standard", "steps": 32, "max_runtime_s": 600, "max_cost_usd": 0.8 },
+      "output_schema": {
+        "type": "object",
+        "properties": {
+          "should_change": { "type": "boolean" },
+          "target": { "type": "string", "enum": ["memory", "procedure", "artifact", "capability", "guardrail"] },
+          "title": { "type": "string" },
+          "summary": { "type": "string" },
+          "proposed_change": { "type": "string" },
+          "evidence": { "type": "array", "items": { "type": "string" } },
+          "confidence": { "type": "string", "enum": ["low", "medium", "high"] }
+        },
+        "required": ["should_change", "target", "title", "summary", "proposed_change", "evidence", "confidence"]
+      }
+    },
+    "review_artifacts": {
+      "description": "Review the quality of generated deliverables and propose one improvement to artifact quality or its guardrails.",
+      "harness": { "shape": "general", "actions": true, "strict_output": true, "tier": "standard", "steps": 32, "max_runtime_s": 600, "max_cost_usd": 0.8 },
+      "output_schema": {
+        "type": "object",
+        "properties": {
+          "should_change": { "type": "boolean" },
+          "target": { "type": "string", "enum": ["memory", "procedure", "artifact", "capability", "guardrail"] },
+          "title": { "type": "string" },
+          "summary": { "type": "string" },
+          "proposed_change": { "type": "string" },
+          "evidence": { "type": "array", "items": { "type": "string" } },
+          "confidence": { "type": "string", "enum": ["low", "medium", "high"] }
+        },
+        "required": ["should_change", "target", "title", "summary", "proposed_change", "evidence", "confidence"]
+      }
+    }
+  }
+}

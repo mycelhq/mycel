@@ -1,0 +1,89 @@
+{
+  "_readme": [
+    "The invented prospect roster behind the demo business's go-to-market pipeline.",
+    "",
+    "DATA ONLY, ON PURPOSE. Two very different programs read this file — the seed script that writes",
+    "these rows into a loopback kernel, and cloud/scripts/demo-faces.mjs which draws a monogram avatar",
+    "per row — and the one thing that must never drift between them is the roster itself. A slug that",
+    "exists here and not in the avatar output is a broken image on a recording; a slug that exists in",
+    "the avatar output and not here is dead weight in the repo. One file, both readers.",
+    "",
+    "EVERY NAME AND EVERY COMPANY BELOW IS INVENTED. Domains are all `.example`, which RFC 2606",
+    "reserves precisely so a fixture can never name a real host, and no person here exists — the",
+    "avatars are generated monograms, not photographs of anybody. The world is the one Ridgeline Books",
+    "already lives in (small service businesses: bakeries, studios, clinics, workshops), but these are",
+    "PROSPECTS, deliberately disjoint from the client list in seed-demo.ts.",
+    "",
+    "WHAT IS SEEDED HERE IS BUSINESS STATE, NOT AGENT OUTPUT. A stage, a due time and a name are facts",
+    "about a pipeline and the seed is allowed to state them. There is deliberately no `provenance` on a",
+    "person: provenance is the record of enrichment attempts and what each one cost, and writing one",
+    "would put invented dollar figures on the screen whose entire claim is that the figures are real.",
+    "The `paused_reason` strings are copied VERBATIM out of kernel/harness/src/gtm/sequence.ts and",
+    "pacing.ts — the sequencer's own sentences — rather than paraphrased, for the same reason.",
+    "",
+    "`dueInHours` is fractional everywhere so the board's to-the-minute clock prints irregular times",
+    "(14:37, not 14:00). The kernel jitters every real interval by ±40% and the irregularity IS the",
+    "proof it is not a cron; a seed that landed on round hours would quietly undo that."
+  ],
+
+  "campaign": {
+    "name": "Bookkeeping for owner-run shops — Nov",
+    "account": "Founder's LinkedIn (Ridgeline Books)"
+  },
+
+  "companies": [
+    { "domain": "tallow-lane-bakery.example", "name": "Tallow Lane Bakery", "industry": "Bakery", "headcount": 12 },
+    { "domain": "verdant-print-studio.example", "name": "Verdant Print Studio", "industry": "Screen printing", "headcount": 9 },
+    { "domain": "copperwick-dental.example", "name": "Copperwick Dental", "industry": "Dental practice", "headcount": 22 },
+    { "domain": "brackenfell-joinery.example", "name": "Brackenfell Joinery", "industry": "Cabinetmaking", "headcount": 15 },
+    { "domain": "lumen-yoga-collective.example", "name": "Lumen Yoga Collective", "industry": "Fitness studio", "headcount": 7 },
+    { "domain": "drift-and-anchor.example", "name": "Drift & Anchor Coffee", "industry": "Coffee roastery", "headcount": 19 },
+    { "domain": "peregrine-signworks.example", "name": "Peregrine Signworks", "industry": "Signage", "headcount": 11 },
+    { "domain": "inkwell-creative.example", "name": "Inkwell Creative", "industry": "Branding agency", "headcount": 8 },
+    { "domain": "summerhill-physio.example", "name": "Summerhill Physio", "industry": "Physiotherapy", "headcount": 14 },
+    { "domain": "axle-and-oar.example", "name": "Axle & Oar Outfitters", "industry": "Equipment rental", "headcount": 6 },
+    { "domain": "brightbrook-landscaping.example", "name": "Brightbrook Landscaping", "industry": "Landscaping", "headcount": 27 },
+    { "domain": "hollowmere-brewing.example", "name": "Hollowmere Brewing", "industry": "Microbrewery", "headcount": 24 },
+    { "domain": "petal-and-pine.example", "name": "Petal & Pine Florists", "industry": "Florist", "headcount": 9 },
+    { "domain": "stonecut-tile.example", "name": "Stonecut Tile Co", "industry": "Tile contracting", "headcount": 17 },
+    { "domain": "amberline-optics.example", "name": "Amberline Optics", "industry": "Optometry", "headcount": 13 },
+    { "domain": "quiet-harbor-vet.example", "name": "Quiet Harbor Veterinary", "industry": "Veterinary clinic", "headcount": 21 }
+  ],
+
+  "people": [
+    { "slug": "mira-oyelaran", "name": "Mira Oyelaran", "title": "Owner", "company": "tallow-lane-bakery.example", "location": "Portland, OR", "stage": "queued", "dueInHours": 0.62, "pausedReason": null },
+    { "slug": "tobias-renn", "name": "Tobias Renn", "title": "Studio manager", "company": "verdant-print-studio.example", "location": "Tacoma, WA", "stage": "queued", "dueInHours": 1.28, "pausedReason": null },
+    { "slug": "saoirse-quill", "name": "Saoirse Quill", "title": "Practice manager", "company": "copperwick-dental.example", "location": "Boise, ID", "stage": "queued", "dueInHours": 2.35, "pausedReason": null },
+    { "slug": "haruto-benedek", "name": "Haruto Benedek", "title": "Founder", "company": "brackenfell-joinery.example", "location": "Eugene, OR", "stage": "queued", "dueInHours": 3.72, "pausedReason": null },
+    { "slug": "nadia-esposito", "name": "Nadia Esposito", "title": "Owner", "company": "lumen-yoga-collective.example", "location": "Bend, OR", "stage": "queued", "dueInHours": 5.18, "pausedReason": null },
+
+    { "slug": "desmond-achebe", "name": "Desmond Achebe", "title": "Head roaster", "company": "drift-and-anchor.example", "location": "Seattle, WA", "stage": "warmed", "dueInHours": 6.47, "pausedReason": null },
+    { "slug": "ingrid-solvang", "name": "Ingrid Solvang", "title": "Operations lead", "company": "peregrine-signworks.example", "location": "Spokane, WA", "stage": "warmed", "dueInHours": 8.03, "pausedReason": null },
+    { "slug": "rafael-okonjo", "name": "Rafael Okonjo", "title": "Managing partner", "company": "inkwell-creative.example", "location": "Portland, OR", "stage": "warmed", "dueInHours": 9.55, "pausedReason": null },
+
+    { "slug": "priya-vance", "name": "Priya Vance", "title": "Clinic director", "company": "summerhill-physio.example", "location": "Salem, OR", "stage": "invited", "dueInHours": 13.22, "pausedReason": "waiting for them to accept" },
+    { "slug": "jonas-adeyemi", "name": "Jonas Adeyemi", "title": "Co-owner", "company": "axle-and-oar.example", "location": "Hood River, OR", "stage": "invited", "dueInHours": 16.88, "pausedReason": null },
+    { "slug": "leila-marchetti", "name": "Leila Marchetti", "title": "Owner", "company": "brightbrook-landscaping.example", "location": "Vancouver, WA", "stage": "invited", "dueInHours": 20.4, "pausedReason": "waiting for them to accept" },
+    { "slug": "otto-kilbane", "name": "Otto Kilbane", "title": "Head brewer", "company": "hollowmere-brewing.example", "location": "Bellingham, WA", "stage": "invited", "dueInHours": 23.13, "pausedReason": null },
+    { "slug": "amara-lindqvist", "name": "Amara Lindqvist", "title": "Owner", "company": "petal-and-pine.example", "location": "Olympia, WA", "stage": "invited", "dueInHours": 26.77, "pausedReason": null },
+
+    { "slug": "felix-nkemdirim", "name": "Felix Nkemdirim", "title": "Owner", "company": "stonecut-tile.example", "location": "Boise, ID", "stage": "connected", "dueInHours": 4.83, "pausedReason": null },
+    { "slug": "yuki-abernathy", "name": "Yuki Abernathy", "title": "Practice owner", "company": "amberline-optics.example", "location": "Corvallis, OR", "stage": "connected", "dueInHours": 7.28, "pausedReason": null },
+    { "slug": "carlota-mbeki", "name": "Carlota Mbeki", "title": "Practice manager", "company": "quiet-harbor-vet.example", "location": "Astoria, OR", "stage": "connected", "dueInHours": 11.62, "pausedReason": null },
+    { "slug": "sven-taraborrelli", "name": "Sven Taraborrelli", "title": "Workshop lead", "company": "brackenfell-joinery.example", "location": "Eugene, OR", "stage": "connected", "dueInHours": 18.05, "pausedReason": null },
+
+    { "slug": "dilnaz-orbay", "name": "Dilnaz Orbay", "title": "Owner", "company": "tallow-lane-bakery.example", "location": "Portland, OR", "stage": "dm1", "dueInHours": 10.42, "pausedReason": "paused — outside this account's working hours — outreach at 3am is a bot signature" },
+    { "slug": "augustin-reyes", "name": "Augustin Reyes", "title": "Co-founder", "company": "inkwell-creative.example", "location": "Portland, OR", "stage": "dm1", "dueInHours": 31.6, "pausedReason": null },
+    { "slug": "thea-vasquez", "name": "Thea Vasquez", "title": "Studio director", "company": "verdant-print-studio.example", "location": "Tacoma, WA", "stage": "dm1", "dueInHours": 38.27, "pausedReason": null },
+
+    { "slug": "kwame-dettori", "name": "Kwame Dettori", "title": "General manager", "company": "hollowmere-brewing.example", "location": "Bellingham, WA", "stage": "dm2", "dueInHours": 44.9, "pausedReason": null },
+    { "slug": "anneliese-fontaine", "name": "Anneliese Fontaine", "title": "Owner", "company": "petal-and-pine.example", "location": "Olympia, WA", "stage": "dm2", "dueInHours": 52.35, "pausedReason": null },
+
+    { "slug": "malik-sorensen", "name": "Malik Sorensen", "title": "Owner", "company": "drift-and-anchor.example", "location": "Seattle, WA", "stage": "replied", "dueInHours": -2.1, "pausedReason": null },
+    { "slug": "rosalind-ekwueme", "name": "Rosalind Ekwueme", "title": "Clinic director", "company": "summerhill-physio.example", "location": "Salem, OR", "stage": "replied", "dueInHours": -6.4, "pausedReason": null },
+
+    { "slug": "hana-castellanos", "name": "Hana Castellanos", "title": "Founder", "company": "lumen-yoga-collective.example", "location": "Bend, OR", "stage": "booked", "dueInHours": -19.7, "pausedReason": null },
+
+    { "slug": "gerald-onwudiwe", "name": "Gerald Onwudiwe", "title": "Owner", "company": "axle-and-oar.example", "location": "Hood River, OR", "stage": "lost", "dueInHours": -40.3, "pausedReason": "sequence finished with no reply — a clean close, not another message" }
+  ]
+}

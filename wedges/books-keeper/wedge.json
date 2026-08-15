@@ -1,0 +1,529 @@
+{
+  "wedge": "books-keeper",
+  "domains": ["bookkeeping"],
+  "title": "Monthly Close for E-commerce",
+  "provides": [
+    "receipts"
+  ],
+  "task_types": {
+    "send_receipt": {
+      "description": "An invoice has been paid in full. Thank this client for the payment named in the input and confirm what it settled. Use ONLY the amounts, dates and payment method the input gives you: never state a method the input does not name, never restate a figure you were not given, and never imply anything further is owed. The receipt PDF is already attached to this run.",
+      "harness": {
+        "shape": "decide",
+        "max_runtime_s": 420,
+        "max_cost_usd": 0.3,
+        "strict_output": true,
+        "needs_connections": true,
+        "temperature": 0.1,
+        "steps": 20
+      },
+      "output_schema": {
+        "type": "object",
+        "properties": {
+          "channel": {
+            "type": "string",
+            "enum": [
+              "email",
+              "none"
+            ]
+          },
+          "subject": {
+            "type": "string"
+          },
+          "message": {
+            "type": "string"
+          },
+          "reasoning": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "channel",
+          "message"
+        ]
+      }
+    },
+    "daily_sync": {
+      "description": "Pull new transactions from the bank feed, categorize what's unambiguous, flag the rest.",
+      "output_schema": {
+        "type": "object",
+        "properties": {
+          "pulled": {
+            "type": "number"
+          },
+          "categorized": {
+            "type": "number"
+          },
+          "flagged": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          }
+        },
+        "required": [
+          "pulled",
+          "categorized"
+        ]
+      }
+    },
+    "nudge_client_request": {
+      "description": "Remind this client about ONE thing we already asked them for and have not received. Escalate in tone with the number of reminders already sent (input: nudges_sent of max_nudges); never invent a new ask, and never ask for anything the input does not name.",
+      "harness": {
+        "shape": "decide",
+        "max_runtime_s": 420,
+        "max_cost_usd": 0.3,
+        "strict_output": true,
+        "needs_connections": true,
+        "temperature": 0.1,
+        "steps": 20
+      },
+      "output_schema": {
+        "type": "object",
+        "properties": {
+          "step": {
+            "type": "string",
+            "enum": [
+              "reminder",
+              "firm_reminder",
+              "final_reminder",
+              "hold"
+            ]
+          },
+          "channel": {
+            "type": "string",
+            "enum": [
+              "email",
+              "none"
+            ]
+          },
+          "message": {
+            "type": "string"
+          },
+          "reasoning": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "step",
+          "channel",
+          "message"
+        ]
+      }
+    },
+    "chase_receipts": {
+      "description": "Ask the client for the receipts still missing for this period.",
+      "waits_for": {
+        "on": "client_request",
+        "resume": "monthly_close",
+        "reason": "the close is blocked on paperwork only the client has"
+      },
+      "output_schema": {
+        "type": "object",
+        "properties": {
+          "missing": {
+            "type": "number"
+          },
+          "message": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "missing",
+          "message"
+        ]
+      }
+    },
+    "monthly_close": {
+      "description": "Reconcile the period to the cent, produce P&L figures, and flag anomalies.",
+      "output_schema": {
+        "type": "object",
+        "properties": {
+          "reconciled": {
+            "type": "boolean"
+          },
+          "difference_cents": {
+            "type": "number"
+          },
+          "anomalies": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          }
+        },
+        "required": [
+          "reconciled",
+          "difference_cents"
+        ]
+      }
+    },
+    "file_sales_tax": {
+      "description": "Submit the sales tax return for the period. Always human-approved.",
+      "output_schema": {
+        "type": "object",
+        "properties": {
+          "period": {
+            "type": "string"
+          },
+          "sales_tax_due_cents": {
+            "type": "number"
+          }
+        },
+        "required": [
+          "period",
+          "sales_tax_due_cents"
+        ]
+      }
+    },
+    "deliverable_verdict": {
+      "description": "Your client has come back on something we delivered. Read what they said and either write the next version or wrap the work up.",
+      "_comment": "One task type for BOTH verdicts, because the wait that wakes it is armed at release time \u2014 before anyone knows which way the client will go. See DELIVERABLE_VERDICT_TASK_TYPE in deliverables.ts. Read the live answer from GET /v1/internal/deliverables/<id> rather than trusting the resume input; a client can accept and then immediately ask for one more thing.",
+      "input_schema": {
+        "type": "object",
+        "required": [
+          "deliverable_id"
+        ],
+        "properties": {
+          "deliverable_id": {
+            "type": "string"
+          }
+        }
+      },
+      "harness": {
+        "shape": "decide",
+        "max_runtime_s": 600,
+        "max_cost_usd": 0.5,
+        "strict_output": true,
+        "temperature": 0.2,
+        "steps": 30
+      },
+      "output_schema": {
+        "type": "object",
+        "required": [
+          "verdict",
+          "next_step",
+          "note"
+        ],
+        "properties": {
+          "verdict": {
+            "type": "string",
+            "enum": [
+              "accepted",
+              "changes_requested"
+            ],
+            "description": "What the client actually did, read back from the deliverable. Not a guess."
+          },
+          "next_step": {
+            "type": "string",
+            "enum": [
+              "submitted_new_version",
+              "ready_to_invoice",
+              "needs_a_human"
+            ],
+            "description": "`needs_a_human` is a real answer and the right one whenever the change they asked for is a scope change rather than a correction \u2014 that is a conversation about money, not a redraft."
+          },
+          "note": {
+            "type": "string",
+            "description": "One or two sentences for the engagement's timeline: what they asked for and what you did about it."
+          }
+        }
+      }
+    },
+    "check_in_case": {
+      "description": "This engagement has gone quiet. Read where the work actually stands and write the client a short, honest update \u2014 where it is, what happens next, and anything you need from them. Never promise a date the engagement's own facts do not already support, and never introduce a new commitment: this is a status update, not a renegotiation.",
+      "_comment": "Declared because `check_in_case` is a real next-move kind and a grey button on a ranked list is a reading list. The sibling kind `advance_case` is deliberately NOT declared here: advancing this engagement means doing the work in it, which already has its own task types, and a generic verb with a free-text schema would be an agent handed something nobody taught it. See checkin.ts.",
+      "tier": "fast",
+      "input_schema": {
+        "type": "object",
+        "required": [
+          "case_id",
+          "stage",
+          "days_silent",
+          "today"
+        ],
+        "properties": {
+          "case_id": {
+            "type": "string"
+          },
+          "client_id": {
+            "type": "string"
+          },
+          "title": {
+            "type": "string"
+          },
+          "stage": {
+            "type": "string"
+          },
+          "due_at": {
+            "type": "string"
+          },
+          "days_silent": {
+            "type": "number",
+            "description": "Whole days since anything happened on this engagement. The single biggest input to the right tone: five days is a quick update, thirty is an apology."
+          },
+          "last_activity_at": {
+            "type": "string"
+          },
+          "recent_history": {
+            "type": "array",
+            "description": "The last few timeline entries, oldest first. The only account of what has happened \u2014 say nothing this does not support.",
+            "items": {
+              "type": "object",
+              "properties": {
+                "at": {
+                  "type": "string"
+                },
+                "kind": {
+                  "type": "string"
+                },
+                "from": {
+                  "type": "string"
+                },
+                "to": {
+                  "type": "string"
+                },
+                "note": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "today": {
+            "type": "string",
+            "description": "ISO date. Passed in so the same check-in can be replayed."
+          }
+        }
+      },
+      "harness": {
+        "shape": "decide",
+        "max_runtime_s": 420,
+        "max_cost_usd": 0.3,
+        "strict_output": true,
+        "needs_connections": true,
+        "temperature": 0.2,
+        "steps": 20
+      },
+      "output_schema": {
+        "type": "object",
+        "required": [
+          "send",
+          "status_summary",
+          "reasoning"
+        ],
+        "properties": {
+          "send": {
+            "type": "boolean",
+            "description": "False is a real and often correct answer: an engagement that is silent because it is deliberately parked, or one where the last entry is already an update we sent, does not need another message. A check-in that had nothing to say is worse than no check-in."
+          },
+          "subject": {
+            "type": "string"
+          },
+          "message": {
+            "type": "string",
+            "description": "The client-facing words. Required whenever `send` is true."
+          },
+          "status_summary": {
+            "type": "string",
+            "description": "One or two sentences for the engagement's own timeline: where the work stands, in our words, whether or not anything is sent."
+          },
+          "blocked_on": {
+            "type": "string",
+            "enum": [
+              "nobody",
+              "client",
+              "us"
+            ],
+            "description": "Who the next step belongs to, read from the facts. `client` is what makes the check-in an ask rather than a bulletin."
+          },
+          "reasoning": {
+            "type": "string"
+          }
+        }
+      }
+    }
+  },
+  "cases": {
+    "stages": [
+      "open",
+      "collecting",
+      "reconciling",
+      "review",
+      "filed"
+    ],
+    "initial": "open"
+  },
+  "workflows": [
+    {
+      "name": "reconcile",
+      "description": "Reconcile bank transactions against the ledger to the cent and compute sales tax. ALWAYS use this \u2014 never do the arithmetic yourself.",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "bank_transactions": {
+            "type": "array"
+          },
+          "ledger_entries": {
+            "type": "array"
+          },
+          "sales_tax_rate_pct": {
+            "type": "number"
+          }
+        },
+        "required": [
+          "bank_transactions",
+          "ledger_entries"
+        ]
+      },
+      "output_schema": {
+        "type": "object",
+        "properties": {
+          "reconciled": {
+            "type": "boolean"
+          },
+          "difference_cents": {
+            "type": "number"
+          },
+          "sales_tax_due_cents": {
+            "type": "number"
+          }
+        },
+        "required": [
+          "reconciled",
+          "difference_cents",
+          "sales_tax_due_cents"
+        ]
+      },
+      "lib": "reconcile"
+    }
+  ],
+  "policy": {
+    "auto_approve": [
+      {
+        "action": "email:send_receipt_chase",
+        "max_per_task": 1,
+        "max_per_day": 20
+      }
+    ]
+  },
+  "_comment_send_check_in": "`send_check_in` is declared at LOW risk and `required: true`, and both halves are deliberate. Required, because a status update is still this firm speaking to a client in its own name, and the one thing a wrong one costs is the client's confidence that we know where their work is \u2014 so it stops at a human even though the autonomy sweep may be what started it. Low, because risk.ts scores a queue in which everything urgent is a queue nobody reads: a check-in carries no money, no commitment and no change of tone, and declaring it as serious as a final notice is exactly what teaches a founder to clear the queue without reading it. A standing approval may cover this kind; standing.ts can never let one cover a high-risk verdict.",
+  "approvals": [
+    {
+      "action": "file_sales_tax",
+      "risk": "high",
+      "required": true
+    },
+    {
+      "action": "send_statement",
+      "risk": "medium",
+      "required": true
+    },
+    {
+      "action": "send_check_in",
+      "risk": "low",
+      "required": true
+    }
+  ],
+  "_comment_approvals": "This was a blanket `send` at medium, which matched every email the bookkeeper writes and so declared a receipt chase and a client's full statement of account to be the same decision. A blanket floor is a floor under the whole queue: it is why nothing could ever be scored low, however routine it was. Narrowed to the statement, which is the one send here that puts a client's numbers in front of them in a form they will quote back. Everything else is scored from its payload and still gated by the harness's default patterns.",
+  "capabilities": [
+    "read_bank_transactions",
+    "read_invoices",
+    "send_email"
+  ],
+  "skills": [
+    "close-the-month",
+    "multi-shot-fulfillment"
+  ],
+  "knowledge": [
+    "close-policy.md"
+  ],
+  "packs": [
+    "reconcile_cents@1"
+  ],
+  "intake": [
+    {
+      "id": "engagement-scope",
+      "ask": "What exactly do you deliver each month, and by when?",
+      "why": "The agent uses this to decide when a month is actually finished, and what to tell a client who asks.",
+      "example": "Bank reconciled, receipts chased, P&L and balance sheet issued by the 7th working day. Sales tax prepared each period for my approval \u2014 I file it, not you.",
+      "kind": "document",
+      "weight": 10
+    },
+    {
+      "id": "pricing",
+      "ask": "What do you charge, and what's outside the fee?",
+      "why": "So it can answer a pricing question without you, and knows when to stop and ask instead.",
+      "example": "$450/month up to 300 transactions. Above that $0.40 each. Entity formation, payroll and R&D credits are quoted separately.",
+      "kind": "fact",
+      "weight": 9
+    },
+    {
+      "id": "chase-tone",
+      "ask": "How do you chase a client for a missing receipt? Paste one you've actually sent.",
+      "why": "A real example teaches tone far better than adjectives. This becomes the model for every chase it drafts.",
+      "example": "Hi Sam \u2014 closing March and I'm missing receipts for 4 card payments ($212.40 total). Could you forward them when you get a minute? Happy to close without them and treat as non-deductible if easier.",
+      "kind": "example",
+      "weight": 9
+    },
+    {
+      "id": "escalate",
+      "ask": "When must the agent stop and come to you rather than deciding?",
+      "why": "Draws the line for policy-bounded autonomy. Everything outside it stops at the approval gate.",
+      "example": "Anything that goes to a tax authority. Any transaction over $2,000 it can't match. Any client asking whether something is tax deductible. Anything that smells like an owner draw.",
+      "kind": "correction",
+      "weight": 10
+    },
+    {
+      "id": "quirks",
+      "ask": "What do you know about these clients that a competent stranger wouldn't?",
+      "why": "This is the knowledge that actually separates you from a generic bookkeeper.",
+      "example": "Acme's Stripe payouts land net of fees, so gross always has to be rebuilt. Their Amazon settlements are 14 days behind. The director expenses his own phone bill every month and it's always allowable.",
+      "kind": "fact",
+      "weight": 8
+    }
+  ],
+  "fulfillment": {
+    "client_connections": [
+      {
+        "toolkit": "xero",
+        "ask": "Connect your Xero account",
+        "detail": "So we can pull your books without chasing CSV exports every month."
+      }
+    ],
+    "intake_asks": [
+      {
+        "kind": "document",
+        "ask": "Your most recent bank statement",
+        "detail": "PDF from online banking is fine."
+      },
+      {
+        "kind": "decision",
+        "ask": "Confirm we can start the monthly close on this engagement"
+      }
+    ],
+    "money_plan": {
+      "currency": "USD",
+      "lines": [
+        {
+          "label": "Setup",
+          "amount_minor": 50000,
+          "kind": "deposit"
+        },
+        {
+          "label": "Monthly close",
+          "amount_minor": 150000,
+          "kind": "retainer",
+          "recurrence": {
+            "every": "month",
+            "interval": 1,
+            "state": "active"
+          }
+        }
+      ]
+    },
+    "deliverable_shapes": [
+      "document",
+      "file_set"
+    ]
+  }
+}

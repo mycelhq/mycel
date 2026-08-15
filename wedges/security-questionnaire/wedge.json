@@ -1,0 +1,409 @@
+{
+  "wedge": "security-questionnaire",
+  "domains": ["it-managed-services"],
+  "title": "Security questionnaire desk",
+  "provides": [],
+  "_comment": "Answer vendor security questionnaires from house knowledge. Batch fans out questions; never invent controls that are not in knowledge.",
+  "tier": "standard",
+  "cases": {
+    "stages": [
+      "received",
+      "answering",
+      "review",
+      "submitted",
+      "closed"
+    ],
+    "initial": "received"
+  },
+  "task_types": {
+    "answer_question": {
+      "description": "Answer one questionnaire item from mounted knowledge. If knowledge is silent, mark needs_human and do not guess.",
+      "harness": {
+        "shape": "decide",
+        "max_runtime_s": 420,
+        "max_cost_usd": 0.25,
+        "strict_output": true,
+        "temperature": 0.1,
+        "steps": 15,
+        "skills": [
+          "answer-one"
+        ],
+        "instructions": [
+          "knowledge/controls.md"
+        ]
+      },
+      "output_schema": {
+        "type": "object",
+        "required": [
+          "question_id",
+          "status",
+          "answer"
+        ],
+        "properties": {
+          "question_id": {
+            "type": "string"
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "answered",
+              "needs_human",
+              "not_applicable"
+            ]
+          },
+          "answer": {
+            "type": "string"
+          },
+          "citations": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          }
+        }
+      }
+    },
+    "fill_questionnaire": {
+      "description": "Parse the questionnaire into items, fan out answer_question children, then compile a review packet from the batch.",
+      "harness": {
+        "shape": "decide",
+        "max_runtime_s": 600,
+        "max_cost_usd": 0.8,
+        "strict_output": true,
+        "temperature": 0.1,
+        "steps": 40,
+        "skills": [
+          "fill-packet"
+        ]
+      },
+      "output_schema": {
+        "type": "object",
+        "required": [
+          "answered",
+          "needs_human",
+          "summary"
+        ],
+        "properties": {
+          "answered": {
+            "type": "integer"
+          },
+          "needs_human": {
+            "type": "integer"
+          },
+          "not_applicable": {
+            "type": "integer"
+          },
+          "summary": {
+            "type": "string"
+          }
+        }
+      }
+    },
+    "desk_run": {
+      "description": "The morning sweep across open questionnaires: which packet has no draft, which is waiting on a human, which is ready to send after you approve.",
+      "tier": "fast",
+      "harness": {
+        "shape": "decide",
+        "max_runtime_s": 420,
+        "max_cost_usd": 0.3,
+        "strict_output": true,
+        "temperature": 0.1,
+        "steps": 20,
+        "skills": ["fill-packet"],
+        "instructions": ["knowledge/controls.md"]
+      },
+      "output_schema": {
+        "type": "object",
+        "required": ["summary"],
+        "properties": {
+          "summary": {
+            "type": "string",
+            "description": "What a desk lead needs this morning. If there are no packets, say so — do not invent a vendor."
+          },
+          "ready_to_fill": {
+            "type": "array",
+            "items": { "type": "object", "required": ["case_id"], "properties": { "case_id": { "type": "string" }, "title": { "type": "string" } } }
+          },
+          "needs_human": {
+            "type": "array",
+            "items": { "type": "object", "required": ["case_id", "why"], "properties": { "case_id": { "type": "string" }, "why": { "type": "string" } } }
+          }
+        }
+      }
+    },
+    "nudge_client_request": {
+      "description": "Remind this client about ONE thing we already asked them for and have not received. Escalate in tone with the number of reminders already sent (input: nudges_sent of max_nudges); never invent a new ask, and never ask for anything the input does not name.",
+      "harness": {
+        "shape": "decide",
+        "max_runtime_s": 420,
+        "max_cost_usd": 0.3,
+        "strict_output": true,
+        "needs_connections": true,
+        "temperature": 0.1,
+        "steps": 20
+      },
+      "output_schema": {
+        "type": "object",
+        "properties": {
+          "step": {
+            "type": "string",
+            "enum": [
+              "reminder",
+              "firm_reminder",
+              "final_reminder",
+              "hold"
+            ]
+          },
+          "channel": {
+            "type": "string",
+            "enum": [
+              "email",
+              "none"
+            ]
+          },
+          "message": {
+            "type": "string"
+          },
+          "reasoning": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "step",
+          "channel",
+          "message"
+        ]
+      }
+    },
+    "deliverable_verdict": {
+      "description": "Your client has come back on something we delivered. Read what they said and either write the next version or wrap the work up.",
+      "_comment": "One task type for BOTH verdicts, because the wait that wakes it is armed at release time — before anyone knows which way the client will go. See DELIVERABLE_VERDICT_TASK_TYPE in deliverables.ts. Read the live answer from GET /v1/internal/deliverables/<id> rather than trusting the resume input; a client can accept and then immediately ask for one more thing.",
+      "input_schema": {
+        "type": "object",
+        "required": [
+          "deliverable_id"
+        ],
+        "properties": {
+          "deliverable_id": {
+            "type": "string"
+          }
+        }
+      },
+      "harness": {
+        "shape": "decide",
+        "max_runtime_s": 600,
+        "max_cost_usd": 0.5,
+        "strict_output": true,
+        "temperature": 0.2,
+        "steps": 30
+      },
+      "output_schema": {
+        "type": "object",
+        "required": [
+          "verdict",
+          "next_step",
+          "note"
+        ],
+        "properties": {
+          "verdict": {
+            "type": "string",
+            "enum": [
+              "accepted",
+              "changes_requested"
+            ],
+            "description": "What the client actually did, read back from the deliverable. Not a guess."
+          },
+          "next_step": {
+            "type": "string",
+            "enum": [
+              "submitted_new_version",
+              "ready_to_invoice",
+              "needs_a_human"
+            ],
+            "description": "`needs_a_human` is a real answer and the right one whenever the change they asked for is a scope change rather than a correction — that is a conversation about money, not a redraft."
+          },
+          "note": {
+            "type": "string",
+            "description": "One or two sentences for the engagement's timeline: what they asked for and what you did about it."
+          }
+        }
+      }
+    },
+    "check_in_case": {
+      "description": "This engagement has gone quiet. Read where the work actually stands and write the client a short, honest update — where it is, what happens next, and anything you need from them. Never promise a date the engagement's own facts do not already support, and never introduce a new commitment: this is a status update, not a renegotiation.",
+      "_comment": "Declared because `check_in_case` is a real next-move kind and a grey button on a ranked list is a reading list. The sibling kind `advance_case` is deliberately NOT declared here: advancing this engagement means doing the work in it, which already has its own task types, and a generic verb with a free-text schema would be an agent handed something nobody taught it. See checkin.ts.",
+      "tier": "fast",
+      "input_schema": {
+        "type": "object",
+        "required": [
+          "case_id",
+          "stage",
+          "days_silent",
+          "today"
+        ],
+        "properties": {
+          "case_id": {
+            "type": "string"
+          },
+          "client_id": {
+            "type": "string"
+          },
+          "title": {
+            "type": "string"
+          },
+          "stage": {
+            "type": "string"
+          },
+          "due_at": {
+            "type": "string"
+          },
+          "days_silent": {
+            "type": "number",
+            "description": "Whole days since anything happened on this engagement. The single biggest input to the right tone: five days is a quick update, thirty is an apology."
+          },
+          "last_activity_at": {
+            "type": "string"
+          },
+          "recent_history": {
+            "type": "array",
+            "description": "The last few timeline entries, oldest first. The only account of what has happened — say nothing this does not support.",
+            "items": {
+              "type": "object",
+              "properties": {
+                "at": {
+                  "type": "string"
+                },
+                "kind": {
+                  "type": "string"
+                },
+                "from": {
+                  "type": "string"
+                },
+                "to": {
+                  "type": "string"
+                },
+                "note": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "today": {
+            "type": "string",
+            "description": "ISO date. Passed in so the same check-in can be replayed."
+          }
+        }
+      },
+      "harness": {
+        "shape": "decide",
+        "max_runtime_s": 420,
+        "max_cost_usd": 0.3,
+        "strict_output": true,
+        "needs_connections": true,
+        "temperature": 0.2,
+        "steps": 20
+      },
+      "output_schema": {
+        "type": "object",
+        "required": [
+          "send",
+          "status_summary",
+          "reasoning"
+        ],
+        "properties": {
+          "send": {
+            "type": "boolean",
+            "description": "False is a real and often correct answer: an engagement that is silent because it is deliberately parked, or one where the last entry is already an update we sent, does not need another message. A check-in that had nothing to say is worse than no check-in."
+          },
+          "subject": {
+            "type": "string"
+          },
+          "message": {
+            "type": "string",
+            "description": "The client-facing words. Required whenever `send` is true."
+          },
+          "status_summary": {
+            "type": "string",
+            "description": "One or two sentences for the engagement's own timeline: where the work stands, in our words, whether or not anything is sent."
+          },
+          "blocked_on": {
+            "type": "string",
+            "enum": [
+              "nobody",
+              "client",
+              "us"
+            ],
+            "description": "Who the next step belongs to, read from the facts. `client` is what makes the check-in an ask rather than a bulletin."
+          },
+          "reasoning": {
+            "type": "string"
+          }
+        }
+      }
+    }
+  },
+  "tools": [],
+  "capabilities": [
+    "send_email"
+  ],
+  "intake": [
+    {
+      "id": "controls-we-have",
+      "ask": "Which controls do you actually have, in your words — not a vendor's checklist?",
+      "why": "Every answer is drafted from this. Silence here is answered needs-a-human, never invented.",
+      "example": "SSO via Google Workspace, laptops encrypted with FileVault, customer data in RDS in eu-west-2, backups daily to a second region. No SOC 2 yet — we say so.",
+      "kind": "document",
+      "weight": 10
+    },
+    {
+      "id": "evidence",
+      "ask": "Where does the evidence live, and what must a human still attach?",
+      "why": "Stops a draft that cites a policy nobody can produce when the vendor asks.",
+      "example": "Policies in Drive/Security. Pen-test PDF is last year's — flag it. I attach insurance certificates myself.",
+      "kind": "fact",
+      "weight": 9
+    },
+    {
+      "id": "escalate",
+      "ask": "When must it stop and come to you rather than answering?",
+      "why": "Attesting to a control you do not have is the expensive error. Draw the line.",
+      "example": "Anything about breach history I have not written down. Any 'we encrypt at rest' that is not in controls. Anything that goes to a customer as a signed attestation.",
+      "kind": "correction",
+      "weight": 10
+    }
+  ],
+  "fulfillment": {
+    "client_connections": [
+      {
+        "toolkit": "googledrive",
+        "ask": "Connect the Drive folder with your evidence pack",
+        "detail": "Policies, SOC reports, and prior questionnaire answers."
+      }
+    ],
+    "intake_asks": [
+      {
+        "kind": "document",
+        "ask": "The blank questionnaire you need filled"
+      }
+    ],
+    "money_plan": {
+      "currency": "USD",
+      "lines": [
+        {
+          "label": "Kickoff",
+          "amount_minor": 50000,
+          "kind": "deposit"
+        },
+        {
+          "label": "Questionnaire pack",
+          "amount_minor": 200000,
+          "kind": "milestone"
+        }
+      ]
+    },
+    "deliverable_shapes": [
+      "document",
+      "file_set"
+    ]
+  }
+}

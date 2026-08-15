@@ -1,0 +1,38 @@
+{
+  "blueprint": "invoice-chaser",
+  "title": "Accounts-receivable chaser",
+  "summary": "Chase overdue invoices politely and on policy. Reads your payment provider first so a client who has paid is never chased, picks the right dunning step deterministically, drafts the message, and only sends what you approve (or what your policy envelope allows).",
+  "wedge": "invoice-chaser",
+  "sells_as": "AR recovery, 2–5% of recovered value or $300+/mo",
+  "requires_connections": [
+    {
+      "name": "payments",
+      "capability": "read_payments",
+      "why": "Know whether an invoice has actually been paid, so nobody who has paid is ever chased. Reading only — taking a payment always needs your approval."
+    },
+    {
+      "name": "billing-email",
+      "capability": "send_email",
+      "why": "Send the reminders, and read the reply when a client says they have already paid."
+    }
+  ],
+  "schedules": [
+    {
+      "name": "payment sync",
+      "task_type": "reconcile_payments",
+      "cadence": {
+        "kind": "every",
+        "seconds": 900
+      }
+    },
+    {
+      "name": "overdue invoice sweep",
+      "task_type": "chase_overdue_invoices",
+      "cadence": {
+        "kind": "every",
+        "seconds": 3600
+      }
+    }
+  ],
+  "seed_knowledge": []
+}

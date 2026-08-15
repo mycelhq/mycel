@@ -1,0 +1,9 @@
+Staging directory for build scaffolds. Empty in git on purpose.
+
+`product-builder` seeds `business-template` into every build sandbox, and `seedRoot()` looks here
+first (`<cwd>/templates/<name>`). The template itself lives at the repo root — it is a sibling of
+`kernel/`, outside this Docker build context, and is also published as its own image — so CI copies
+it in here immediately before `docker build` (see infra/buildspec.yml). Committing a second copy
+would be two trees to keep in step, and they would not stay in step.
+
+Locally nothing needs to be staged: `seedRoot()` also checks `<cwd>/..`, which is the repo root.

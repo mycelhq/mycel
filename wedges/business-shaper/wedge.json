@@ -1,0 +1,439 @@
+{
+  "wedge": "business-shaper",
+  "title": "Business shaper",
+  "provides": [
+    "business_shaping"
+  ],
+  "_comment_internal": "Onboarding machinery. It reads one line about a business before the founder has seen the product; nobody sells business-shaping, and it must not appear as one of their services. See WedgeManifest.internal in harness/src/wedge.ts for why this is declared rather than inferred.",
+  "internal": true,
+  "_comment_budgets": "The max_runtime_s numbers below are counted in MODEL COMPLETIONS, not in minutes. One completion measures 85-95 seconds in production (LiteLLM spend logs; the ALB idle timeout was raised 60 to 300 for exactly this), so the old 180/120/300 were two completions, one, and three. A week of production runs came back p50 175s with four of them finishing at 180.1, 180.2, 180.6 and 180.8 seconds -- the draft_shape ceiling to the tenth of a second, killed mid-answer and reported to the founder as a failure on the first screen they ever saw. These are the runs a founder sits and watches, so they get four completions of headroom rather than two.",
+  "task_types": {
+    "draft_shape": {
+      "description": "Read one line about the service someone sells and answer two questions: what shape is this business, and can this kernel actually run any of it. Runs the moment they describe themselves, before they have seen a single screen of the product.",
+      "harness": {
+        "shape": "decide",
+        "max_runtime_s": 420,
+        "max_cost_usd": 0.5,
+        "strict_output": true,
+        "needs_connections": false,
+        "temperature": 0.2,
+        "steps": 24,
+        "skills": [
+          "shape-a-business"
+        ],
+        "instructions": [
+          "knowledge/how-to-read-a-business-name.md"
+        ]
+      },
+      "output_schema": {
+        "type": "object",
+        "properties": {
+          "name": {
+            "type": "string"
+          },
+          "sells": {
+            "type": "string"
+          },
+          "sells_to": {
+            "type": "string"
+          },
+          "runs_as": {
+            "type": "object",
+            "description": "The honest answer to 'can you run this?'. `fit: none` is a legitimate outcome and must be returned rather than forced into the nearest entry in the catalogue.",
+            "properties": {
+              "fit": {
+                "type": "string",
+                "enum": [
+                  "direct",
+                  "adjacent",
+                  "none"
+                ]
+              },
+              "wedge": {
+                "type": "string",
+                "description": "REQUIRED when `fit` is `direct` or `adjacent`: one of the `wedge` values in `input.catalogue`, copied character for character. Not the `title`, not a `task_type`, not a description of it however accurate. This field shipped as a bare string with no description, and a production run answered it in prose — a receivables-chasing service rather than `invoice-chaser` — which the console could not resolve, so a bookkeeping practice we can serve was told 'we can't run this yet' on the first screen it ever saw. Omit only when `fit` is `none`."
+              },
+              "covers": {
+                "type": "string",
+                "description": "What we would do, in the founder's own words. Printed on their screen exactly as written, so never use the words wedge, kernel, harness or provision. Required even when `fit` is `none`, where it names the closest honest thing we do at all."
+              },
+              "not_covered": {
+                "type": "string",
+                "description": "The part of their business this does NOT touch, in their words. Printed on their screen exactly as written, so never use the words wedge, kernel, harness or provision."
+              }
+            },
+            "required": [
+              "fit"
+            ]
+          },
+          "first_job": {
+            "type": "object",
+            "properties": {
+              "title": {
+                "type": "string"
+              },
+              "why": {
+                "type": "string"
+              },
+              "cadence": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "title",
+              "why"
+            ]
+          },
+          "connections": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "toolkit": {
+                  "type": "string"
+                },
+                "why": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "toolkit",
+                "why"
+              ]
+            }
+          },
+          "confidence": {
+            "type": "string",
+            "description": "How sure you are of this read. Include it. If you truly cannot judge, say `low` rather than omitting the field — a missing confidence used to hard-fail the whole draft on the first screen a founder ever saw.",
+            "enum": [
+              "high",
+              "medium",
+              "low"
+            ],
+            "default": "low"
+          },
+          "assumptions": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          }
+        },
+        "required": [
+          "sells",
+          "sells_to",
+          "runs_as",
+          "first_job",
+          "confidence"
+        ]
+      }
+    },
+    "draft_service": {
+      "description": "Write the service itself, for a business nothing installed covers. Runs only after draft_shape has honestly answered `fit: none` — the alternative for that founder is the sentence 'we can't run this yet', which is the end of their visit. The output is a DRAFT: nothing runs until the founder reads what it would do and agrees to it.",
+      "harness": {
+        "shape": "decide",
+        "max_runtime_s": 900,
+        "max_cost_usd": 1.0,
+        "strict_output": true,
+        "needs_connections": false,
+        "temperature": 0.2,
+        "steps": 32,
+        "skills": [
+          "service-authoring-contract",
+          "write-a-service"
+        ],
+        "instructions": [
+          "knowledge/how-to-read-a-business-name.md"
+        ],
+        "permission": {
+          "webfetch": "allow"
+        }
+      },
+      "output_schema": {
+        "type": "object",
+        "properties": {
+          "slug": {
+            "type": "string",
+            "description": "A short kebab-case name for the service, from the WORK it does and not from the customer's company name (`proposal-desk`, not `acme-studio`). Normalised before it is stored, so approximate is fine."
+          },
+          "manifest": {
+            "type": "object",
+            "description": "The service definition. Validated in full before it is stored, against exactly the same rules a hand-written definition is held to plus the ones in harness/src/wedgeauthor.ts. Anything refused there is reported to the founder as a refusal — nothing is quietly dropped or repaired — so do not guess at a field: leave it out.",
+            "properties": {
+              "wedge": {
+                "type": "string",
+                "description": "Ignored and overwritten with the stored identifier. Do not spend effort on it."
+              },
+              "title": {
+                "type": "string",
+                "description": "What the founder would call this on their own website. 'Proposal and sign-off', not 'Proposal Desk Service Module'."
+              },
+              "tier": {
+                "type": "string",
+                "enum": [
+                  "fast",
+                  "standard",
+                  "deep"
+                ]
+              },
+              "task_types": {
+                "type": "object",
+                "description": "The jobs this service does, keyed by snake_case name. Between one and eight. EVERY one needs an `output_schema` describing what it produces, with at least one property — a job that does not say what it produces cannot be checked, so it would report success on anything.",
+                "additionalProperties": {
+                  "type": "object",
+                  "properties": {
+                    "description": {
+                      "type": "string",
+                      "description": "One sentence, in the founder's language. This is printed on the review card they read before agreeing, so it must never contain the words wedge, kernel, harness or provision."
+                    },
+                    "tier": {
+                      "type": "string",
+                      "enum": [
+                        "fast",
+                        "standard",
+                        "deep"
+                      ]
+                    },
+                    "input_schema": {
+                      "type": "object"
+                    },
+                    "output_schema": {
+                      "type": "object"
+                    },
+                    "waits_for": {
+                      "type": "object",
+                      "description": "Use when this job ends by asking the client for something. `resume` must name another job in this same service — never this one, which would ask the client the same thing again the moment they answered.",
+                      "properties": {
+                        "on": {
+                          "type": "string",
+                          "enum": [
+                            "client_request"
+                          ]
+                        },
+                        "resume": {
+                          "type": "string"
+                        },
+                        "reason": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "on",
+                        "resume",
+                        "reason"
+                      ]
+                    }
+                  },
+                  "required": [
+                    "description",
+                    "output_schema"
+                  ]
+                }
+              },
+              "capabilities": {
+                "type": "array",
+                "description": "What this service needs to be able to DO, by capability, chosen only from `input.capabilities`. Never a vendor name. At most four — every one is a setup step the founder must finish before anything runs.",
+                "items": {
+                  "type": "string"
+                }
+              },
+              "approvals": {
+                "type": "array",
+                "description": "Everything this service would do that reaches a real person, each of which stops for the founder. `required` must be true on every one: a permission that is not required is not a permission.",
+                "items": {
+                  "type": "object",
+                  "properties": {
+                    "action": {
+                      "type": "string"
+                    },
+                    "risk": {
+                      "type": "string",
+                      "enum": [
+                        "low",
+                        "medium",
+                        "high"
+                      ]
+                    },
+                    "required": {
+                      "type": "boolean",
+                      "enum": [
+                        true
+                      ]
+                    }
+                  },
+                  "required": [
+                    "action",
+                    "risk",
+                    "required"
+                  ]
+                }
+              },
+              "cases": {
+                "type": "object",
+                "description": "Only when the work is a long engagement rather than a one-shot job. `initial` must be one of `stages`.",
+                "properties": {
+                  "stages": {
+                    "type": "array",
+                    "items": {
+                      "type": "string"
+                    }
+                  },
+                  "initial": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "stages"
+                ]
+              },
+              "intake": {
+                "type": "array",
+                "description": "What must be learned from this founder before the service can do the job well. At most eight, and each must change what the agent visibly does.",
+                "items": {
+                  "type": "object",
+                  "properties": {
+                    "id": {
+                      "type": "string",
+                      "description": "kebab-case; names the knowledge file the answer becomes."
+                    },
+                    "ask": {
+                      "type": "string"
+                    },
+                    "why": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "id",
+                    "ask"
+                  ]
+                }
+              }
+            },
+            "required": [
+              "title",
+              "task_types"
+            ]
+          },
+          "skills": {
+            "type": "array",
+            "description": "How to do this job WELL — the procedures a competent person in this trade follows. This is where the value is: the definition says what the jobs are, the skills are the only thing that makes them good. At most six files.",
+            "items": {
+              "type": "object",
+              "properties": {
+                "name": {
+                  "type": "string",
+                  "description": "kebab-case, no extension."
+                },
+                "content": {
+                  "type": "string",
+                  "description": "Markdown. A procedure, not an essay."
+                }
+              },
+              "required": [
+                "name",
+                "content"
+              ]
+            }
+          },
+          "knowledge": {
+            "type": "array",
+            "description": "Background this trade takes for granted — norms, sequences, the words its customers use. Only what is generally true of the trade; never invented facts about THIS business, which is what the setup questions are for.",
+            "items": {
+              "type": "object",
+              "properties": {
+                "name": {
+                  "type": "string"
+                },
+                "content": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "name",
+                "content"
+              ]
+            }
+          }
+        },
+        "required": [
+          "slug",
+          "manifest",
+          "skills"
+        ]
+      }
+    },
+    "draft_questions": {
+      "description": "Decide which few questions are actually worth asking this founder about their business, before asking any of them. Runs once, between the shape being confirmed and the conversation starting.",
+      "harness": {
+        "shape": "decide",
+        "max_runtime_s": 300,
+        "max_cost_usd": 0.4,
+        "strict_output": true,
+        "needs_connections": false,
+        "temperature": 0.3,
+        "steps": 20,
+        "skills": [
+          "ask-the-right-questions"
+        ],
+        "instructions": [
+          "knowledge/how-to-read-a-business-name.md"
+        ]
+      },
+      "output_schema": {
+        "type": "object",
+        "properties": {
+          "questions": {
+            "type": "array",
+            "description": "Candidates, not a script. The harness ranks these against gaps the agent hit on real work and the wedge's own declared questions, then keeps a handful — see buildInterview in intake.ts.",
+            "items": {
+              "type": "object",
+              "properties": {
+                "id": {
+                  "type": "string",
+                  "description": "kebab-case, stable, topic-shaped (`pricing`, `chase-tone`). Names the knowledge file the answer is stored as, so re-answering corrects rather than accumulates."
+                },
+                "ask": {
+                  "type": "string"
+                },
+                "why": {
+                  "type": "string"
+                },
+                "decides": {
+                  "type": "string",
+                  "description": "What the agent will do differently once this is answered. A question that cannot name this is dropped before the founder ever sees it."
+                },
+                "example": {
+                  "type": "string"
+                },
+                "weight": {
+                  "type": "number"
+                }
+              },
+              "required": [
+                "id",
+                "ask",
+                "decides"
+              ]
+            }
+          }
+        },
+        "required": [
+          "questions"
+        ]
+      }
+    }
+  },
+  "tools": [],
+  "connections": [],
+  "approvals": [],
+  "skills": [
+    "shape-a-business",
+    "ask-the-right-questions",
+    "write-a-service",
+    "service-authoring-contract"
+  ],
+  "knowledge": [
+    "how-to-read-a-business-name.md"
+  ]
+}

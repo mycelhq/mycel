@@ -1,0 +1,16 @@
+node_modules/
+.venv/
+__pycache__/
+*.pyc
+.env
+.env.*
+!.env.example
+dist/
+build/
+.DS_Store
+.idea/
+.vscode/
+.mycel/
+
+# Supabase CLI scratch — project refs and temp state, not source.
+supabase/

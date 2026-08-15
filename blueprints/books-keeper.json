@@ -1,0 +1,61 @@
+{
+  "blueprint": "books-keeper",
+  "title": "Bookkeeping agency — e-commerce monthly close",
+  "summary": "Reconcile a client's books to the cent every month. Pulls the bank feed daily, chases missing receipts, closes the month, prepares the sales tax return for your approval.",
+  "wedge": "books-keeper",
+  "sells_as": "Monthly bookkeeping, $500–1,200/mo per client",
+  "requires_connections": [
+    {
+      "name": "bank-feed",
+      "capability": "read_bank_transactions",
+      "why": "Pull the transactions daily so the month can actually be reconciled. Whichever of these you already use is fine."
+    },
+    {
+      "name": "accounting",
+      "capability": "read_invoices",
+      "why": "The client's ledger — where the reconciled month is checked against what was actually invoiced."
+    },
+    {
+      "name": "books-email",
+      "capability": "send_email",
+      "why": "Chase missing receipts and deliver the close report from an address your clients recognise."
+    }
+  ],
+  "schedules": [
+    {
+      "name": "daily transaction sync",
+      "task_type": "daily_sync",
+      "cadence": {
+        "kind": "daily",
+        "hour": 6,
+        "minute": 0
+      }
+    },
+    {
+      "name": "receipt chase",
+      "task_type": "chase_receipts",
+      "cadence": {
+        "kind": "daily",
+        "hour": 10,
+        "minute": 0
+      }
+    },
+    {
+      "name": "month-end close",
+      "task_type": "monthly_close",
+      "cadence": {
+        "kind": "monthly",
+        "day": 1,
+        "hour": 9,
+        "minute": 0
+      }
+    }
+  ],
+  "seed_knowledge": [
+    {
+      "name": "engagement-terms.md",
+      "kind": "fact",
+      "content": "# Engagement terms\n\nEdit this with your actual terms. Example:\n- Monthly close delivered by the 7th working day.\n- Sales tax returns prepared, never filed without founder approval.\n- Receipts chased up to 3 times, then escalated to the founder."
+    }
+  ]
+}
