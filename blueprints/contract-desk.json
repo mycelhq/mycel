@@ -1,0 +1,42 @@
+{
+  "blueprint": "contract-desk",
+  "title": "Contract recruitment desk — the weekly timesheet and billing run",
+  "summary": "The Monday run on a desk of contractors, done before you get in. Works out whose timesheet is missing and whether it is the contractor or the client holding it up, nudges the right one, builds the invoice for every week that is fully approved with the arithmetic done in whole pennies, and tells you which assignments have entered their notice window before the extension is lost. Nothing is invoiced and nothing is sent to a client without you approving it.",
+  "wedge": "contract-desk",
+  "sells_as": "Back-office for a contract desk, £400–900/mo or the cost of the coordinator you did not hire",
+  "requires_connections": [
+    {
+      "name": "desk-email",
+      "capability": "send_email",
+      "why": "Nudge contractors for timesheets and send the invoices you approve, from an address your contractors and your clients already recognise. It is also how a reply lands — \"sent it Sunday\" stops the next chase."
+    },
+    {
+      "name": "invoicing",
+      "capability": "read_invoices",
+      "why": "See the invoices you have already raised for a week, so a week is never billed twice and an invoice raised by hand still counts as done."
+    },
+    {
+      "name": "receipts",
+      "capability": "read_payments",
+      "why": "Know which client weeks have actually settled. On a desk paying contractors every Friday out of its own cash, this is the difference between a late invoice and a cash problem."
+    }
+  ],
+  "schedules": [
+    {
+      "name": "Desk run",
+      "task_type": "weekly_run",
+      "cadence": { "kind": "daily", "hour": 7, "minute": 0 },
+      "input": {
+        "_why_daily": "Weekly is what the trade calls it and daily is what it has to be. A run that fires only on Monday morning sees the week exactly once: the timesheets that land on Monday afternoon, the approvals a client manager does on Tuesday, and the assignment that enters its notice window on Thursday would all wait six days to be noticed.",
+        "_why_only_one_schedule": "This is the ONLY scheduled job in this pack, and the absence of a second one is deliberate rather than unfinished. `chase_timesheet`, `prepare_invoice` and `confirm_extension` each take one specific assignment or client-week and have an `input_schema` that says so; scheduling one of them with an empty input would create a daily run with nothing to act on that still has to produce something, which is this repo's most expensive bug shape wearing a cron entry. They are created from what the desk run found — one task per assignment, with the assignment in the input."
+      }
+    }
+  ],
+  "seed_knowledge": [
+    {
+      "name": "desk-terms.md",
+      "kind": "fact",
+      "content": "# Your desk's terms\n\nThis file is a skeleton, not a claim about your business — everything below is blank on purpose and\nnothing here is used until you fill it in. The interview during setup asks most of it; this is where\nthe answers end up living, and you can edit it any time without a redeploy.\n\n## The week\n\n- Work week ends: (Saturday, usually)\n- Timesheets due:\n- Approved by, at each client:\n- If a timesheet misses the run:\n\n## Rates\n\n- How charge and pay rates are set:\n- Overtime — the threshold, and the multiplier on each side:\n- Bank holidays:\n\n## Invoicing\n\n- What each client insists on seeing (PO placement, employee references, one invoice per contractor\n  or one per week):\n- Payment terms, per client:\n\n## Cash\n\n- When contractors are paid:\n- Whether that depends on the client having paid:\n- The number of days outstanding at which you want to hear about it:\n\n## Extensions\n\n- How far ahead of an end date the conversation opens:\n- Who it goes to:\n"
+    }
+  ]
+}

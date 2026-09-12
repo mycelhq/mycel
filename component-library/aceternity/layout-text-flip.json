@@ -1,0 +1,17 @@
+{
+ "name": "layout-text-flip",
+ "type": "registry:ui",
+ "dependencies": [
+  "motion"
+ ],
+ "files": [
+  {
+   "path": "components/ui/layout-text-flip.tsx",
+   "content": "\"use client\";\nimport React, { useState, useEffect } from \"react\";\nimport { motion, AnimatePresence } from \"motion/react\";\nimport { cn } from \"@/lib/utils\";\n\nexport const LayoutTextFlip = ({\n  text = \"Build Amazing\",\n  words = [\"Landing Pages\", \"Component Blocks\", \"Page Sections\", \"3D Shaders\"],\n  duration = 3000,\n}: {\n  text: string;\n  words: string[];\n  duration?: number;\n}) => {\n  const [currentIndex, setCurrentIndex] = useState(0);\n\n  useEffect(() => {\n    const interval = setInterval(() => {\n      setCurrentIndex((prevIndex) => (prevIndex + 1) % words.length);\n    }, duration);\n\n    return () => clearInterval(interval);\n  }, []);\n\n  return (\n    <>\n      <motion.span\n        layoutId=\"subtext\"\n        className=\"text-2xl font-bold tracking-tight drop-shadow-lg md:text-4xl\"\n      >\n        {text}\n      </motion.span>\n\n      <motion.span\n        layout\n        className=\"relative w-fit overflow-hidden rounded-md border border-transparent bg-white px-4 py-2 font-sans text-2xl font-bold tracking-tight text-black shadow-sm ring shadow-black/10 ring-black/10 drop-shadow-lg md:text-4xl dark:bg-neutral-900 dark:text-white dark:shadow-sm dark:ring-1 dark:shadow-white/10 dark:ring-white/10\"\n      >\n        <AnimatePresence mode=\"popLayout\">\n          <motion.span\n            key={currentIndex}\n            initial={{ y: -40, filter: \"blur(10px)\" }}\n            animate={{\n              y: 0,\n              filter: \"blur(0px)\",\n            }}\n            exit={{ y: 50, filter: \"blur(10px)\", opacity: 0 }}\n            transition={{\n              duration: 0.5,\n            }}\n            className={cn(\"inline-block whitespace-nowrap\")}\n          >\n            {words[currentIndex]}\n          </motion.span>\n        </AnimatePresence>\n      </motion.span>\n    </>\n  );\n};\n",
+   "type": "registry:ui",
+   "target": "components/ui/layout-text-flip.tsx"
+  }
+ ],
+ "author": "Manu Arora <hi@manuarora.in>",
+ "title": "Layout Text Flip"
+}

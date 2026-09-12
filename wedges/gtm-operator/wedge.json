@@ -1,0 +1,1590 @@
+{
+  "wedge": "gtm-operator",
+  "domains": [
+    "gtm"
+  ],
+  "title": "GTM Operator",
+  "provides": [
+    "outreach"
+  ],
+  "task_types": {
+    "find_prospects": {
+      "description": "Search LinkedIn for people matching a query and write everyone found into the project's people/companies graph. A read: it changes nothing on LinkedIn, needs no approval, and costs no touch budget. Run this before proposing a campaign — the rows it leaves are what the CRM shows and what enrolment reads from.",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "connection_id": {
+            "type": "string",
+            "description": "the connected LinkedIn account to search from"
+          },
+          "query": {
+            "type": "string",
+            "description": "free text — the single most effective filter"
+          },
+          "title": {
+            "type": "string"
+          },
+          "company": {
+            "type": "string"
+          },
+          "location": {
+            "type": "string",
+            "description": "city or region; folded into the keywords, not a structured filter"
+          },
+          "limit": {
+            "type": "number",
+            "description": "results wanted, capped at 49"
+          },
+          "start": {
+            "type": "number",
+            "description": "offset, for the next page of the same search"
+          }
+        },
+        "required": [
+          "connection_id"
+        ]
+      },
+      "output_schema": {
+        "type": "object",
+        "properties": {
+          "ok": {
+            "type": "boolean"
+          },
+          "found": {
+            "type": "number"
+          },
+          "people_written": {
+            "type": "number"
+          },
+          "companies_written": {
+            "type": "number"
+          },
+          "next_start": {
+            "type": [
+              "number",
+              "null"
+            ]
+          },
+          "code": {
+            "type": "string",
+            "description": "a named condition, e.g. linkedin_commercial_search_limit"
+          },
+          "detail": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "ok",
+          "found",
+          "detail"
+        ]
+      }
+    },
+    "read_signals": {
+      "harness": {
+        "shape": "decide"
+      },
+      "description": "Read this project's observed signals and say who is worth a message today. Call the `signal_score` workflow — never rank accounts by eye. Return the accounts to work, what each opener must name, and the windows that closed, so the founder can see whether the problem is sourcing or routing.",
+      "input_schema": {
+        "type": "object",
+        "required": [
+          "signals",
+          "now"
+        ],
+        "properties": {
+          "signals": {
+            "type": "array",
+            "description": "Observed events, from whatever feeds this project has."
+          },
+          "now": {
+            "type": "string"
+          },
+          "icp": {
+            "type": "object"
+          }
+        }
+      },
+      "output_schema": {
+        "type": "object",
+        "required": [
+          "client_summary",
+          "act"
+        ],
+        "properties": {
+          "client_summary": {
+            "type": "string",
+            "description": "What is live and what the founder should do first, in plain sentences. If nothing is live, say THAT and say why — a feed reporting twelve signals and no instruction is the dashboard problem this exists to fix."
+          },
+          "act": {
+            "type": "array",
+            "description": "Straight from the workflow. Do not re-order, re-score or re-word the `lead_with` line.",
+            "items": {
+              "type": "object",
+              "required": [
+                "company",
+                "score",
+                "lead_with",
+                "signals"
+              ],
+              "properties": {
+                "company": {
+                  "type": "object",
+                  "required": [
+                    "name"
+                  ],
+                  "properties": {
+                    "name": {
+                      "type": "string",
+                      "description": "The company, as the signal named it."
+                    },
+                    "domain": {
+                      "type": "string"
+                    },
+                    "industry": {
+                      "type": "string"
+                    },
+                    "location": {
+                      "type": "string"
+                    }
+                  }
+                },
+                "score": {
+                  "type": "number",
+                  "description": "The account's total after decay and stacking. Ordered by this; never re-sorted."
+                },
+                "stacked": {
+                  "type": "boolean",
+                  "description": "More than one signal on one account: one prospect at peak readiness, not two rows."
+                },
+                "lead_with": {
+                  "type": "string",
+                  "description": "The fact to open with, naming the event. Quoted verbatim from the workflow."
+                },
+                "qualify_on": {
+                  "type": "string",
+                  "description": "What the signal already told you, so the first reply does not waste it."
+                },
+                "act_by_days": {
+                  "type": "integer",
+                  "description": "Days left before the window closes. A deadline, not a suggestion."
+                },
+                "signals": {
+                  "type": "array",
+                  "description": "Every signal on this account, strongest first.",
+                  "items": {
+                    "type": "object",
+                    "required": [
+                      "type",
+                      "score"
+                    ],
+                    "properties": {
+                      "type": {
+                        "type": "string",
+                        "description": "Which signal fired — one of the catalogue in signal_score. Never invented."
+                      },
+                      "score": {
+                        "type": "number",
+                        "description": "What the workflow scored it after decay. Quoted, never recomputed."
+                      },
+                      "age_days": {
+                        "type": "integer",
+                        "description": "How long ago it fired."
+                      },
+                      "say": {
+                        "type": "string",
+                        "description": "How to use this signal in the opener, from the catalogue."
+                      },
+                      "detail": {
+                        "type": "string",
+                        "description": "What was actually observed, in the words the feed used."
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "stale": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "required": [
+                "company",
+                "why"
+              ],
+              "properties": {
+                "company": {
+                  "type": "object",
+                  "required": [
+                    "name"
+                  ],
+                  "properties": {
+                    "name": {
+                      "type": "string",
+                      "description": "The company, as the signal named it."
+                    },
+                    "domain": {
+                      "type": "string"
+                    },
+                    "industry": {
+                      "type": "string"
+                    },
+                    "location": {
+                      "type": "string"
+                    }
+                  }
+                },
+                "type": {
+                  "type": "string",
+                  "description": "Which signal it was."
+                },
+                "age_days": {
+                  "type": "integer"
+                },
+                "why": {
+                  "type": "string",
+                  "description": "Why the window has closed, in the workflow's words. Do not write to these accounts."
+                }
+              }
+            }
+          },
+          "needs": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          }
+        }
+      },
+      "ship_requires": [
+        "client_summary"
+      ],
+      "ship_checks": [
+        {
+          "kind": "min_words",
+          "field": "client_summary",
+          "n": 20
+        },
+        {
+          "kind": "max_words",
+          "field": "client_summary",
+          "n": 300
+        },
+        {
+          "kind": "forbids",
+          "field": "client_summary",
+          "vocabulary": "placeholder"
+        },
+        {
+          "kind": "no_tells",
+          "field": "client_summary"
+        }
+      ]
+    },
+    "review_pipeline": {
+      "harness": {
+        "shape": "decide"
+      },
+      "description": "Read the whole prospect list and report what needs fixing: duplicates to merge, records nobody can act on, and people who went quiet and are worth waking. Call the `crm_hygiene` workflow. Propose only — never merge or edit a record.",
+      "input_schema": {
+        "type": "object",
+        "required": [
+          "records",
+          "now"
+        ],
+        "properties": {
+          "records": {
+            "type": "array"
+          },
+          "now": {
+            "type": "string"
+          }
+        }
+      },
+      "output_schema": {
+        "type": "object",
+        "required": [
+          "client_summary"
+        ],
+        "properties": {
+          "client_summary": {
+            "type": "string",
+            "description": "What is wrong with the list and what to do first. Lead with the dormant people if there are any: they are the cheapest pipeline in the CRM and nobody works them."
+          },
+          "confident_merges": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "required": [
+                "keep",
+                "merge",
+                "matched_on",
+                "evidence"
+              ],
+              "properties": {
+                "keep": {
+                  "type": "string",
+                  "description": "The record that survives — the one with the most history."
+                },
+                "merge": {
+                  "type": "array",
+                  "description": "The records folded into it.",
+                  "items": {
+                    "type": "string"
+                  }
+                },
+                "matched_on": {
+                  "type": "string",
+                  "description": "What matched: an exact email, a normalised domain, a name plus company."
+                },
+                "evidence": {
+                  "type": "string",
+                  "description": "The matching value itself, so a founder can check the call in one glance."
+                },
+                "confident": {
+                  "type": "boolean",
+                  "description": "An exact match on something only one person has. Safe to apply in bulk."
+                }
+              }
+            }
+          },
+          "review_merges": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "required": [
+                "keep",
+                "merge",
+                "matched_on",
+                "evidence"
+              ],
+              "properties": {
+                "keep": {
+                  "type": "string",
+                  "description": "The record that survives — the one with the most history."
+                },
+                "merge": {
+                  "type": "array",
+                  "description": "The records folded into it.",
+                  "items": {
+                    "type": "string"
+                  }
+                },
+                "matched_on": {
+                  "type": "string",
+                  "description": "What matched: an exact email, a normalised domain, a name plus company."
+                },
+                "evidence": {
+                  "type": "string",
+                  "description": "The matching value itself, so a founder can check the call in one glance."
+                },
+                "confident": {
+                  "type": "boolean",
+                  "description": "An exact match on something only one person has. Safe to apply in bulk."
+                }
+              }
+            }
+          },
+          "fixes": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "required": [
+                "id",
+                "name",
+                "faults"
+              ],
+              "properties": {
+                "id": {
+                  "type": "string"
+                },
+                "name": {
+                  "type": "string"
+                },
+                "faults": {
+                  "type": "array",
+                  "description": "What is wrong with the record, one plain item each.",
+                  "items": {
+                    "type": "string"
+                  }
+                }
+              }
+            }
+          },
+          "dormant": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "required": [
+                "id",
+                "name",
+                "days_quiet",
+                "why"
+              ],
+              "properties": {
+                "id": {
+                  "type": "string"
+                },
+                "name": {
+                  "type": "string"
+                },
+                "company": {
+                  "type": "string"
+                },
+                "stage": {
+                  "type": "string"
+                },
+                "days_quiet": {
+                  "type": "integer",
+                  "description": "Whole days since anything happened."
+                },
+                "why": {
+                  "type": "string",
+                  "description": "Why this one is worth reviving now, from the workflow."
+                }
+              }
+            }
+          },
+          "needs": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          }
+        }
+      },
+      "ship_requires": [
+        "client_summary"
+      ],
+      "ship_checks": [
+        {
+          "kind": "min_words",
+          "field": "client_summary",
+          "n": 20
+        },
+        {
+          "kind": "forbids",
+          "field": "client_summary",
+          "vocabulary": "placeholder"
+        },
+        {
+          "kind": "no_tells",
+          "field": "client_summary"
+        }
+      ]
+    },
+    "propose_campaign": {
+      "description": "Draft an outreach campaign — the sequence, the per-prospect copy — and put ONE approval in front of the founder. Sends nothing.",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "connection_id": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          },
+          "prospects": {
+            "type": "array"
+          }
+        },
+        "required": [
+          "connection_id",
+          "name",
+          "prospects"
+        ]
+      },
+      "output_schema": {
+        "type": "object",
+        "properties": {
+          "ok": {
+            "type": "boolean"
+          },
+          "proposed": {
+            "type": "number"
+          },
+          "audience_size": {
+            "type": "number"
+          },
+          "skipped": {
+            "type": "number"
+          },
+          "reason": {
+            "type": "string",
+            "description": "why nothing was proposed, when nothing was"
+          },
+          "detail": {
+            "type": "string"
+          },
+          "artifacts": {
+            "type": "array",
+            "description": "THE WORK ITSELF, not a description of it.\n\nEvery deliverable task in this system produced a summary and nothing else, and a client scored one 3/10 partly for that reason: they were sent an account of work rather than the work. A service business does not sell reports about bookkeeping, it sells reconciled books; it does not sell a note about a questionnaire, it sells the questionnaire answered.\n\nSo this carries the artifact. A file you wrote to ./output/ and its name, or a URL to something live, or a repository. The `client_summary` is the covering note that goes WITH this — it is not a substitute for it, and a deliverable with an empty `artifacts` array is a deliverable that did not deliver.\n\nSay so plainly in the summary if you genuinely could not produce the artifact, and why. That is a real outcome. Pretending the summary is the work is not.\n\nFor this job: The target list as a file and the sequence copy as a document, so the client can read the actual emails that would go out under their name.",
+            "items": {
+              "type": "object",
+              "required": [
+                "kind",
+                "name"
+              ],
+              "properties": {
+                "kind": {
+                  "type": "string",
+                  "enum": [
+                    "file",
+                    "url",
+                    "repo"
+                  ],
+                  "description": "`file` for something you wrote to ./output/, `url` for something live, `repo` for source."
+                },
+                "name": {
+                  "type": "string",
+                  "description": "What it is, in the client's words. 'September ledger', not 'output.csv'."
+                },
+                "path": {
+                  "type": "string",
+                  "description": "Relative to ./output/ for a file. Required for kind=file."
+                },
+                "url": {
+                  "type": "string",
+                  "description": "Required for kind=url or kind=repo."
+                },
+                "what_it_is": {
+                  "type": "string",
+                  "description": "One line the client reads before opening it."
+                }
+              }
+            }
+          }
+        },
+        "required": [
+          "ok",
+          "proposed",
+          "detail"
+        ]
+      },
+      "harness": {
+        "shape": "deliver",
+        "tier": "fast"
+      },
+      "ship_requires": [
+        "artifacts"
+      ],
+      "ship_checks": [
+        {
+          "kind": "each_has",
+          "items": "artifacts",
+          "field": "name"
+        }
+      ],
+      "deliverable_shape": {
+        "format": "document",
+        "sections": [
+          {
+            "heading": "What this campaign is, and why now",
+            "must": "The offer, the moment, and what a reply would mean. One paragraph the approver can judge before reading anything else.",
+            "depth": "a short paragraph"
+          },
+          {
+            "heading": "Who it goes to",
+            "must": "Every prospect with the reason they are on the list. A name with no reason is a name that should not be contacted.",
+            "depth": "a table"
+          },
+          {
+            "heading": "The sequence",
+            "must": "Each step, what it says in one line, and how long after the last. Nothing sends until this is approved.",
+            "depth": "a table"
+          },
+          {
+            "heading": "The copy",
+            "must": "The actual messages, per step, with the per-prospect lines shown as they will be sent. Not a template with slots — the text.",
+            "depth": "the full text of each"
+          },
+          {
+            "heading": "What you are approving",
+            "must": "The single decision in front of the founder, what happens the moment it is given, and what is NOT covered by it.",
+            "depth": "a few lines"
+          }
+        ]
+      }
+    },
+    "advance_sequences": {
+      "harness_dispatched": true,
+      "internal": true,
+      "description": "The five-minute outreach tick. Harness work, not agent work: the copy was approved days ago, so no model is invoked. Spawned by the sequencer's own schedule — do not create these by hand.",
+      "input_schema": {
+        "type": "object",
+        "properties": {},
+        "_comment": "ADVANCE. Reads live sequences and moves each one that is due; it takes nothing because everything it acts on is already stored.  is the declaration that this is a DECISION rather than a gap — an inputless job and an undeclared one look identical from outside, and only one of them is finished.",
+        "required": [],
+        "additionalProperties": false
+      },
+      "output_schema": {
+        "type": "object",
+        "properties": {
+          "ok": {
+            "type": "boolean"
+          },
+          "advanced": {
+            "type": "number"
+          },
+          "completed": {
+            "type": "number"
+          },
+          "held": {
+            "type": "number"
+          },
+          "detail": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "ok",
+          "advanced",
+          "detail"
+        ]
+      },
+      "harness": {
+        "shape": "decide",
+        "tier": "fast",
+        "max_runtime_s": 300
+      }
+    },
+    "gtm_autonomous": {
+      "harness_dispatched": true,
+      "internal": true,
+      "description": "One turn of the autonomous GTM loop: FullEnrich discovery from the project's stored audience, then — if it found people the project has not seen — a normal propose_campaign approval. Harness work, not agent work; spawned by the audience's own schedule when the founder enables it. Discovers and proposes only; every send still waits for the founder's approval envelope. Do not create these by hand.",
+      "input_schema": {
+        "type": "object",
+        "properties": {},
+        "_comment": "DISCOVERY on the audience cadence. Same shape: what it acts on is the stored audience, not an argument.",
+        "required": [],
+        "additionalProperties": false
+      },
+      "output_schema": {
+        "type": "object",
+        "properties": {
+          "ok": {
+            "type": "boolean"
+          },
+          "discovered": {
+            "type": "number"
+          },
+          "new_people": {
+            "type": "number"
+          },
+          "proposed": {
+            "type": "boolean"
+          },
+          "detail": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "ok",
+          "discovered",
+          "detail"
+        ]
+      },
+      "harness": {
+        "shape": "decide",
+        "tier": "fast",
+        "max_runtime_s": 900
+      }
+    },
+    "outreach_touch": {
+      "harness_dispatched": true,
+      "internal": true,
+      "description": "One dispatched step of one prospect's sequence. The anchor an auto-approval, a timeline entry and an audit row hang off. Created by the sequencer, or by a founder taking the touch off their next-move list before the cadence gets to it.",
+      "_comment": "A ROW, NOT A RUN, which is why there is no `harness` block and no `output_schema` here. The copy was written and approved before the founder said yes, so nothing is drafted at dispatch time and no model is invoked — this task exists so that every message the campaign produced stays individually inspectable afterwards. What it therefore owes is an INPUT contract, and `required` states it: the next-move engine proposes exactly this shape (see `gtmMove` in moves.ts), and a field missing from it is a touch nobody could reconstruct later. moves.test.ts holds the declaration and the proposal to each other.",
+      "input_schema": {
+        "type": "object",
+        "required": [
+          "campaign_id",
+          "case_id",
+          "step",
+          "stage"
+        ],
+        "properties": {
+          "campaign_id": {
+            "type": "string"
+          },
+          "case_id": {
+            "type": "string"
+          },
+          "step": {
+            "type": "string"
+          },
+          "stage": {
+            "type": "string"
+          }
+        }
+      },
+      "output_schema": {
+        "type": "object",
+        "properties": {
+          "ok": {
+            "type": "boolean"
+          },
+          "channel": {
+            "type": "string"
+          },
+          "sent": {
+            "type": "boolean"
+          },
+          "person_key": {
+            "type": "string"
+          },
+          "refused_because": {
+            "type": "string",
+            "description": "a named refusal, e.g. copy_gate, cap, hours"
+          },
+          "detail": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "ok",
+          "sent",
+          "detail"
+        ]
+      },
+      "harness": {
+        "shape": "decide",
+        "tier": "fast",
+        "max_runtime_s": 300
+      }
+    },
+    "propose_reply": {
+      "description": "After a prospect replies, draft ONE follow-up DM for human approval. Outside the campaign envelope — the sequence has already stopped, so each send is a new decision until they are booked, won or lost. Nothing goes out until a human approves the exact words.",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "case_id": {
+            "type": "string"
+          },
+          "body": {
+            "type": "string"
+          },
+          "connection_id": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "case_id",
+          "body"
+        ]
+      },
+      "output_schema": {
+        "type": "object",
+        "properties": {
+          "ok": {
+            "type": "boolean"
+          },
+          "drafted": {
+            "type": "boolean"
+          },
+          "intent": {
+            "type": "string"
+          },
+          "escalate": {
+            "type": "boolean"
+          },
+          "detail": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "ok",
+          "drafted",
+          "detail"
+        ]
+      },
+      "harness": {
+        "shape": "decide",
+        "tier": "deep",
+        "max_runtime_s": 300
+      }
+    },
+    "draft_engagement": {
+      "_comment": "THE JOB BETWEEN A GOOD CALL AND A RUNNING ENGAGEMENT, WHICH DID NOT EXIST.\n\nThe pipeline ran booked → met → won with nothing in between. A prospect said yes on a call, the transcript was filed on the case, and then the founder wrote the proposal by hand, priced it by hand, sent it by hand, chased the signature by hand and opened the case by hand. That is the single highest-leverage half hour in a service business and it was the one part the product did not touch.\n\n── WHY EVERY SCOPE LINE CARRIES A `said` ──\n\nA proposal written from a transcript is one prompt away from a proposal written from the model's idea of what a bakery needs. The difference is invisible to the founder skimming it and obvious to the client reading it, because the client was on the call.\n\nSo each line of scope must name what was said that put it there, and `each_has` refuses the output if any line cannot. It is not a check that the quote is accurate — nothing here can be. It is a check that the model had to go and find one, which is the difference between reading the call and being reminded that a call happened.\n\n`out_of_scope` is required for the same reason from the other side: a proposal that says only what is included is the one that gets argued about in month three.",
+      "description": "After a call where they said yes: write the engagement. One proposal — scope, price, term, start date — and the covering email that carries it. Every line of scope names what was said on the call that put it there. Sends nothing and signs nothing: the founder reads both and decides.",
+      "harness": {
+        "shape": "deliver",
+        "strict_output": true,
+        "skills": [
+          "write-the-engagement"
+        ]
+      },
+      "signs": true,
+      "_comment_signs": "`signs` IS DECLARED THE SAME WAY `deck` AND `chart` ARE. It means: when this output carries a `proposal`, render it and open a signature envelope over the result. The envelope opens as a DRAFT — invisible to the client, unsignable by anyone — because sending a contract is an act the founder takes, and a run that could put one in front of a customer on its own would be the single place in this product where a machine reaches a client unattended.",
+      "output_schema": {
+        "type": "object",
+        "required": [
+          "decision"
+        ],
+        "properties": {
+          "decision": {
+            "type": "string",
+            "enum": [
+              "propose",
+              "not_yet"
+            ],
+            "description": "`not_yet` when the call did not establish what they are buying. A proposal invented to fill a gap is how a client is lost in week two."
+          },
+          "reason": {
+            "type": "string",
+            "description": "Why not yet, and what one thing would change it. Required when the decision is not_yet."
+          },
+          "proposal": {
+            "type": "object",
+            "properties": {
+              "headline": {
+                "type": "string",
+                "description": "What they are buying, in their words. One line."
+              },
+              "scope": {
+                "type": "array",
+                "description": "What we will actually do. Each line is a deliverable a client could tick off, not a capability.",
+                "items": {
+                  "type": "object",
+                  "required": [
+                    "what",
+                    "said"
+                  ],
+                  "properties": {
+                    "what": {
+                      "type": "string",
+                      "description": "The deliverable, and how often."
+                    },
+                    "said": {
+                      "type": "string",
+                      "description": "What was said on the call that put this line here. Their words, not a paraphrase of the need."
+                    }
+                  }
+                }
+              },
+              "out_of_scope": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                },
+                "description": "What this does NOT include. A proposal that only says what is included is the one argued about in month three."
+              },
+              "price_minor": {
+                "type": "integer",
+                "description": "Minor units. Read the MONEY comment in contract.ts — nothing divides."
+              },
+              "currency": {
+                "type": "string"
+              },
+              "cadence": {
+                "type": "string",
+                "enum": [
+                  "one_off",
+                  "monthly",
+                  "quarterly"
+                ]
+              },
+              "term_months": {
+                "type": "integer",
+                "description": "Absent for one-off work."
+              },
+              "starts": {
+                "type": "string",
+                "description": "The date work begins, as agreed on the call."
+              },
+              "assumptions": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                },
+                "description": "What the price depends on being true. The place a scope argument gets settled cheaply."
+              },
+              "from_client": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                },
+                "description": "What we need from them before we can start."
+              }
+            }
+          },
+          "email": {
+            "type": "object",
+            "properties": {
+              "subject": {
+                "type": "string"
+              },
+              "body": {
+                "type": "string",
+                "description": "The covering note, in the founder's voice, referring to the call. The portal link is appended by the harness — do not invent a URL."
+              }
+            }
+          },
+          "artifacts": {
+            "type": "array",
+            "description": "The proposal itself. Rendered from `proposal` by the harness, not written by hand.",
+            "items": {
+              "type": "object",
+              "required": [
+                "kind",
+                "name"
+              ],
+              "properties": {
+                "kind": {
+                  "type": "string",
+                  "enum": [
+                    "file",
+                    "url",
+                    "repo"
+                  ],
+                  "description": "`file` for something you wrote to ./output/, `url` for something live, `repo` for source."
+                },
+                "name": {
+                  "type": "string",
+                  "description": "What it is, in the client's words. 'September ledger', not 'output.csv'."
+                },
+                "path": {
+                  "type": "string",
+                  "description": "Relative to ./output/ for a file. Required for kind=file."
+                },
+                "url": {
+                  "type": "string",
+                  "description": "Required for kind=url or kind=repo."
+                },
+                "what_it_is": {
+                  "type": "string",
+                  "description": "One line the client reads before opening it."
+                }
+              }
+            }
+          }
+        }
+      },
+      "ship_requires": [
+        "proposal",
+        "email"
+      ],
+      "ship_checks": [
+        {
+          "kind": "min_items",
+          "field": "proposal.scope",
+          "n": 1
+        },
+        {
+          "kind": "each_has",
+          "items": "proposal.scope",
+          "field": "said"
+        },
+        {
+          "kind": "each_has",
+          "items": "proposal.scope",
+          "field": "what"
+        },
+        {
+          "kind": "min_items",
+          "field": "proposal.out_of_scope",
+          "n": 1
+        },
+        {
+          "kind": "minor_units",
+          "field": "proposal.price_minor"
+        },
+        {
+          "kind": "no_tells",
+          "field": "email.body"
+        },
+        {
+          "kind": "max_words",
+          "field": "email.body",
+          "n": 180
+        }
+      ],
+      "_comment_refusal": "A `not_yet` DECISION SHIPS NOTHING, and that needs no check of its own. `ship_requires` names `proposal` and `email`; a run that answers `not_yet` produces neither, so the gate holds it and the founder reads the reason on the task. Adding a `not_when` to say the same thing was tried and was simply wrong — that check asks whether a FIGURE was stated beside a flag saying it could not be established, which is a different failure and takes a boolean field it does not have here.",
+      "deliverable_shape": {
+        "format": "document",
+        "sections": [
+          {
+            "heading": "The engagement in one paragraph",
+            "must": "What is being sold, to whom, for how much, starting when. Everything below is detail on this.",
+            "depth": "a short paragraph"
+          },
+          {
+            "heading": "Scope",
+            "must": "Each line of work, and beside it what was said on the call that put it there. A scope line with no call behind it is one this desk invented and must be removed or marked as an addition.",
+            "depth": "a list, one line of provenance each"
+          },
+          {
+            "heading": "Price, term and start date",
+            "must": "The figure, what it buys per period, the term, and the start. Stated once, in one place, so the covering email cannot disagree with it.",
+            "depth": "a few lines"
+          },
+          {
+            "heading": "What is not included",
+            "must": "The boundary. Named exclusions are what stop a retainer becoming unbounded, and this is the moment they cost nothing to state.",
+            "depth": "a short list"
+          },
+          {
+            "heading": "The covering email",
+            "must": "The message that carries the proposal, ready to send as written. Its figures must match the section above exactly.",
+            "depth": "the full text"
+          }
+        ]
+      },
+      "input_schema": {
+        "_comment": "AFTER A CALL WHERE THEY SAID YES. Every line of scope must name what was said on the call that put it there, so the call is required: without it this writes a proposal from imagination and sends it to a real person.",
+        "type": "object",
+        "required": [
+          "call_notes"
+        ],
+        "properties": {
+          "call_notes": {
+            "type": "string",
+            "description": "What was actually said on the call. REQUIRED — every line of scope has to trace back to something here."
+          },
+          "prospect": {
+            "type": "string",
+            "description": "Who it is for, as they would write their own name."
+          },
+          "price_minor": {
+            "type": "integer",
+            "description": "The number discussed, in minor units. Absent means the proposal must ask rather than invent one."
+          }
+        }
+      }
+    },
+    "ops_distribution_tick": {
+      "harness_dispatched": true,
+      "internal": true,
+      "description": "One tick of the distribution loop: read what is due, decide what may spend, execute the touches that clear every cap, and report what happened. Spawned by a schedule, never created by hand. The tick is BOUNDED WORK — it does what is due right now and stops. It does not wait for anything, retry indefinitely, or explore; a tick that finds nothing due is a successful tick.",
+      "input_schema": {
+        "type": "object",
+        "properties": {},
+        "_comment": "THE DISTRIBUTION TICK. Claims and executes what is already queued; an argument here would be a second source of truth about what is due.",
+        "required": [],
+        "additionalProperties": false
+      },
+      "output_schema": {
+        "type": "object",
+        "properties": {
+          "ok": {
+            "type": "boolean"
+          },
+          "claimed": {
+            "type": "number",
+            "description": "enrollments leased this tick"
+          },
+          "executed": {
+            "type": "number",
+            "description": "steps actually attempted"
+          },
+          "sent": {
+            "type": "number"
+          },
+          "deferred": {
+            "type": "number",
+            "description": "held for caps, hours or budget"
+          },
+          "failed": {
+            "type": "number"
+          },
+          "stopped": {
+            "type": "number",
+            "description": "halted for reply or opt-out"
+          },
+          "detail": {
+            "type": "string",
+            "description": "one sentence a founder can read"
+          }
+        },
+        "required": [
+          "ok",
+          "claimed",
+          "executed",
+          "sent",
+          "detail"
+        ]
+      },
+      "harness": {
+        "shape": "decide",
+        "tier": "fast",
+        "max_runtime_s": 600
+      }
+    }
+  },
+  "connections": [
+    "linkedin"
+  ],
+  "cases": {
+    "stages": [
+      "queued",
+      "warmed",
+      "invited",
+      "connected",
+      "dm1",
+      "dm2",
+      "replied",
+      "booked",
+      "won",
+      "lost"
+    ],
+    "initial": "queued"
+  },
+  "workflows": [
+    {
+      "name": "next_touch",
+      "description": "Whether to send the next outbound touch, which stage to move to, and how long to wait. ALWAYS call this before drafting a follow-up; it stops on reply, on booking, and on opt-out.",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "stage": {
+            "type": "string"
+          },
+          "has_reply": {
+            "type": "boolean"
+          },
+          "opt_out": {
+            "type": "boolean"
+          },
+          "days_since_last_touch": {
+            "type": [
+              "number",
+              "null"
+            ]
+          },
+          "touch_count": {
+            "type": "number"
+          }
+        },
+        "required": [
+          "stage"
+        ]
+      },
+      "output_schema": {
+        "type": "object",
+        "properties": {
+          "should_send": {
+            "type": "boolean"
+          },
+          "mark_closed": {
+            "type": "boolean"
+          },
+          "next_stage": {
+            "type": "string"
+          },
+          "touch_number": {
+            "type": "number"
+          },
+          "next_touch_after_days": {
+            "type": [
+              "number",
+              "null"
+            ]
+          },
+          "reason": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "should_send",
+          "mark_closed",
+          "next_stage",
+          "reason"
+        ]
+      },
+      "lib": "next-touch"
+    },
+    {
+      "name": "signal_score",
+      "description": "Which accounts are worth a message TODAY, and which windows have already closed. Call this before writing anything: it decays every signal on its own clock, filters to who this business actually sells to, groups signals by company, and REFUSES the stale ones. Never rank prospects yourself — a ranking a founder cannot reproduce is one they stop trusting, and a signal past its window is worse than silence.",
+      "input_schema": {
+        "type": "object",
+        "required": [
+          "signals",
+          "now"
+        ],
+        "properties": {
+          "signals": {
+            "type": "array",
+            "description": "Observed events. Each needs `type`, `observed_at` and a `company`. The key names are read literally — a row carrying the same fact under a different name is read as absent, and the pass returns an empty section that looks exactly like a measured zero.",
+            "items": {
+              "type": "object",
+              "properties": {
+                "type": {
+                  "type": "string",
+                  "description": "What happened — hiring, job change, funding. Decays on its own clock per type."
+                },
+                "observed_at": {
+                  "type": "string",
+                  "description": "ISO. Required: freshness is the whole point, and a signal with no date is refused rather than assumed recent."
+                },
+                "company": {
+                  "type": "string",
+                  "description": "Signals are grouped on this exactly. A company under another key is a signal belonging to nobody."
+                },
+                "detail": {
+                  "type": "string",
+                  "description": "What the opener may name. Quoted, never re-worded."
+                }
+              }
+            }
+          },
+          "now": {
+            "type": "string",
+            "description": "Today, ISO. Required — freshness is the whole point and cannot be guessed."
+          },
+          "icp": {
+            "type": "object",
+            "description": "Who this business sells to. Absent matches everything, which is the honest reading of 'they never told us'."
+          }
+        }
+      },
+      "output_schema": {
+        "type": "object",
+        "required": [
+          "act",
+          "stale",
+          "headline"
+        ],
+        "properties": {
+          "act": {
+            "type": "array",
+            "description": "Worth a message today, hottest first. Each carries `lead_with` — what the opener must name — and `act_by_days`."
+          },
+          "stale": {
+            "type": "array",
+            "description": "The window closed. Show these to the founder: signals firing and nobody acting is a routing problem."
+          },
+          "unqualified": {
+            "type": "array"
+          },
+          "unknown": {
+            "type": "array"
+          },
+          "headline": {
+            "type": "string"
+          }
+        }
+      },
+      "lib": "signal-score"
+    },
+    {
+      "name": "win_patterns",
+      "description": "What the deals this business actually WON had in common — and whether it is a pattern or noise. Refuses below 30 leads or 8 per segment, reports 'no wins yet' as weak evidence rather than 0%, and ranks on a confidence floor so four-from-four does not beat ninety-from-a-hundred. Never eyeball this yourself: given twelve leads you will find a pattern, and the founder will aim a quarter of their outbound at a coincidence.",
+      "input_schema": {
+        "type": "object",
+        "required": [
+          "leads"
+        ],
+        "properties": {
+          "leads": {
+            "type": "array",
+            "description": "Every lead. As with `crm_hygiene.records`, the key names are read literally — a stage under another name is a lead this cannot classify, and it will be counted as neither won nor lost rather than reported as unreadable.",
+            "items": {
+              "type": "object",
+              "properties": {
+                "stage": {
+                  "type": "string",
+                  "description": "What decides won / lost / open. Required for the lead to count at all."
+                },
+                "attributes": {
+                  "type": "object",
+                  "description": "Whatever you segment on — industry, size, source. Read as-is."
+                }
+              }
+            }
+          }
+        }
+      },
+      "output_schema": {
+        "type": "object",
+        "required": [
+          "ready",
+          "patterns",
+          "base"
+        ],
+        "properties": {
+          "ready": {
+            "type": "boolean",
+            "description": "False means not enough evidence. `why_not` says what would change that — pass it on rather than inventing a finding."
+          },
+          "why_not": {
+            "type": "string"
+          },
+          "patterns": {
+            "type": "array"
+          },
+          "unproven": {
+            "type": "array",
+            "description": "Segments that exist and cannot yet be judged. Open questions, not absences."
+          },
+          "base": {
+            "type": "object"
+          },
+          "headline": {
+            "type": "string"
+          }
+        }
+      },
+      "lib": "win-patterns"
+    },
+    {
+      "name": "crm_hygiene",
+      "description": "Duplicates, broken records, and the people already on file who went quiet. PROPOSES and never writes: confident merges (an exact email, LinkedIn or phone match) are safe to apply in bulk, review merges are good guesses a human reads. Never merge on your own judgement — an unmerged duplicate costs one awkward email and a wrong merge destroys history nobody can reconstruct.",
+      "input_schema": {
+        "type": "object",
+        "required": [
+          "records"
+        ],
+        "properties": {
+          "records": {
+            "type": "array",
+            "description": "THE FIELD NAMES MATTER AND ARE NOT GUESSED. Every pass below reads specific keys; a record carrying the same fact under a different name is read as ABSENT, and the pass returns an empty section that looks exactly like a measured zero. Map your rows onto these before calling.",
+            "items": {
+              "type": "object",
+              "properties": {
+                "id": {
+                  "type": "string",
+                  "description": "Your own identifier, echoed back on every proposal."
+                },
+                "name": {
+                  "type": "string"
+                },
+                "company": {
+                  "type": "string"
+                },
+                "company_domain": {
+                  "type": "string"
+                },
+                "email": {
+                  "type": "string",
+                  "description": "An exact match here is what makes a merge CONFIDENT. Not `contact`, not `email_address`."
+                },
+                "phone": {
+                  "type": "string"
+                },
+                "linkedin_url": {
+                  "type": "string"
+                },
+                "stage": {
+                  "type": "string",
+                  "description": "Used to skip anyone a human is already holding."
+                },
+                "last_touched_at": {
+                  "type": "string",
+                  "description": "ISO. The dormant pass reads THIS or `updated_at` — nothing else counts as a date."
+                },
+                "updated_at": {
+                  "type": "string",
+                  "description": "ISO. Fallback for `last_touched_at`."
+                }
+              }
+            }
+          },
+          "now": {
+            "type": "string",
+            "description": "ISO. Absent skips the dormant pass and says so."
+          },
+          "dormant_after_days": {
+            "type": "integer"
+          }
+        }
+      },
+      "output_schema": {
+        "type": "object",
+        "required": [
+          "counts"
+        ],
+        "properties": {
+          "confident_merges": {
+            "type": "array"
+          },
+          "review_merges": {
+            "type": "array"
+          },
+          "fixes": {
+            "type": "array"
+          },
+          "dormant": {
+            "type": "array",
+            "description": "Worth waking, longest quiet first, each with why. Never anyone a human is already holding."
+          },
+          "counts": {
+            "type": "object"
+          }
+        }
+      },
+      "lib": "crm-hygiene"
+    },
+    {
+      "name": "lookalike",
+      "description": "More companies like the clients this business has ACTUALLY WON — ranked against `win_patterns`, never against what the won accounts have in common. Call `win_patterns` first and pass its `patterns` array; passing `unproven` rows instead would launder exactly the noise it quarantined. Refuses outright when nothing has been proven to convert, and that refusal is the right answer early on: ranking on a guess looks identical to ranking on evidence. Never build an ideal-customer profile by eye — at three won accounts everything they share is a coincidence.",
+      "input_schema": {
+        "type": "object",
+        "required": [
+          "patterns",
+          "candidates"
+        ],
+        "properties": {
+          "patterns": {
+            "type": "array",
+            "description": "`win_patterns.patterns` only. Proven segments, each with its confidence floor. The key names are read literally — a row carrying the same fact under a different name is read as absent, and the pass returns an empty section that looks exactly like a measured zero.",
+            "items": {
+              "type": "object",
+              "properties": {
+                "attribute": {
+                  "type": "string",
+                  "description": "What the segment is on, e.g. `industry`."
+                },
+                "value": {
+                  "type": "string"
+                },
+                "win_rate": {
+                  "type": "number"
+                },
+                "confidence_floor": {
+                  "type": "number",
+                  "description": "From `win_patterns`. Pass its rows through unchanged — recomputing here is how an unproven segment is laundered into a proven one."
+                },
+                "lift": {
+                  "type": "number"
+                },
+                "n": {
+                  "type": "integer"
+                }
+              }
+            }
+          },
+          "candidates": {
+            "type": "array",
+            "description": "Companies to rank. Attributes may sit on the object or under `attributes`; a missing one is never held against them. The key names are read literally — a row carrying the same fact under a different name is read as absent, and the pass returns an empty section that looks exactly like a measured zero.",
+            "items": {
+              "type": "object",
+              "properties": {
+                "name": {
+                  "type": "string"
+                },
+                "domain": {
+                  "type": "string"
+                },
+                "attributes": {
+                  "type": "object",
+                  "description": "Whatever you know about them. May also sit flat on the object; a missing attribute is never held against a candidate."
+                }
+              }
+            }
+          },
+          "exclude": {
+            "type": "array",
+            "description": "Names or domains already in the book, so nobody is opened a second time."
+          },
+          "limit": {
+            "type": "integer",
+            "description": "Default 25. Whatever is cut is reported as `not_shown`, never dropped silently."
+          }
+        }
+      },
+      "output_schema": {
+        "type": "object",
+        "required": [
+          "ready",
+          "ranked"
+        ],
+        "properties": {
+          "ready": {
+            "type": "boolean",
+            "description": "False means nothing has been proven to convert. Pass `why_not` on rather than inventing a list."
+          },
+          "why_not": {
+            "type": "string"
+          },
+          "ranked": {
+            "type": "array",
+            "description": "Strongest match first. Each carries `why` with the numbers that put it there — quote it, never re-word it."
+          },
+          "not_shown": {
+            "type": "integer"
+          },
+          "skipped": {
+            "type": "array"
+          },
+          "matched_on": {
+            "type": "array",
+            "description": "What the ranking was built on, so a founder can disagree with the criteria."
+          },
+          "headline": {
+            "type": "string"
+          }
+        }
+      },
+      "lib": "lookalike"
+    },
+    {
+      "name": "workbook",
+      "description": "Turn a grid you have already decided is correct into a real Excel workbook (.xlsx), attached to this delivery automatically. Use it for anything a client will sort, filter or forward — a longlist, a ranking table, a budget, a control matrix. Do NOT use it to do arithmetic: it formats what you give it and never re-totals a column.",
+      "input_schema": {
+        "type": "object",
+        "required": [
+          "tabs"
+        ],
+        "properties": {
+          "filename": {
+            "type": "string",
+            "description": "e.g. \"april-longlist.xlsx\"."
+          },
+          "currency": {
+            "type": "string",
+            "description": "ISO-4217. Omit it and money renders as a plain number, which is honest."
+          },
+          "tabs": {
+            "type": "array",
+            "description": "One per sheet. A tab per schedule beats one sheet with blank rows between sections.",
+            "items": {
+              "type": "object",
+              "required": [
+                "name",
+                "header",
+                "rows"
+              ],
+              "properties": {
+                "name": {
+                  "type": "string"
+                },
+                "header": {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  }
+                },
+                "note": {
+                  "type": "string",
+                  "description": "A caveat rendered above the header, for something that must be read before the numbers."
+                },
+                "rows": {
+                  "type": "array",
+                  "description": "Each row is an array of cells. A plain string or number is fine; for a formatted number use {kind:\"n\", v:1234, format:\"money\"|\"pct\"|\"int\"} and for a date {kind:\"d\", v:\"2026-04-30\"}."
+                }
+              }
+            }
+          }
+        }
+      },
+      "output_schema": {
+        "type": "object",
+        "properties": {
+          "sheets": {
+            "type": "integer"
+          },
+          "rows": {
+            "type": "integer"
+          }
+        }
+      }
+    }
+  ],
+  "packs": [
+    "campaign_pace@1"
+  ],
+  "skills": [
+    "reading-signals.md"
+  ]
+}

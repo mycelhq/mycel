@@ -1,0 +1,66 @@
+{
+  "blueprint": "books-keeper",
+  "title": "Bookkeeping agency — e-commerce monthly close",
+  "summary": "Reconcile a client's books to the cent every month. Pulls the bank feed daily, chases missing receipts, closes the month, prepares the sales tax return for your approval.",
+  "wedge": "books-keeper",
+  "sells_as": "Monthly bookkeeping, $500–1,200/mo per client",
+  "requires_connections": [
+    {
+      "name": "bank-feed",
+      "capability": "read_bank_transactions",
+      "why": "Pull the transactions daily so the month can actually be reconciled. Whichever of these you already use is fine."
+    },
+    {
+      "name": "accounting",
+      "capability": "read_invoices",
+      "why": "The client's ledger — where the reconciled month is checked against what was actually invoiced."
+    },
+    {
+      "name": "books-email",
+      "capability": "send_email",
+      "why": "Chase missing receipts and deliver the close report from an address your clients recognise."
+    }
+  ],
+  "schedules": [
+    {
+      "name": "daily transaction sync",
+      "task_type": "daily_sync",
+      "cadence": {
+        "kind": "daily",
+        "hour": 6,
+        "minute": 0
+      }
+    },
+    {
+      "name": "receipt chase",
+      "task_type": "chase_receipts",
+      "cadence": {
+        "kind": "daily",
+        "hour": 10,
+        "minute": 0
+      }
+    },
+    {
+      "name": "month-end close",
+      "task_type": "monthly_close",
+      "_why_period": "`monthly_close` declares `period` REQUIRED and says why in its own description: a close with no period is a close of nothing. This schedule carried an EMPTY input, so every scheduled close was exactly that — 3,077 runs across two engagements in a fortnight, one every 31 minutes, each asking for a period and a statement it was never given. The contract was declared and documented and nothing on this path read it. `{{month_ended}}` is filled by the clock at fire time; see schedule-input.ts for why the token lives in the manifest rather than as a branch in the scheduler.",
+      "_why_not_this_month": "A close fires on the 1st and covers the month BEFORE it. `{{this_month}}` would close a month still in progress, produce figures that change the next day, and hand a client a document that contradicts itself a week later.",
+      "input": {
+        "period": "{{month_ended}}"
+      },
+      "cadence": {
+        "kind": "monthly",
+        "day": 1,
+        "hour": 9,
+        "minute": 0
+      }
+    }
+  ],
+  "seed_knowledge": [
+    {
+      "name": "engagement-terms.md",
+      "kind": "fact",
+      "content": "# Engagement terms\n\nEdit this with your actual terms. Example:\n- Monthly close delivered by the 7th working day.\n- Sales tax returns prepared, never filed without founder approval.\n- Receipts chased up to 3 times, then escalated to the founder."
+    }
+  ]
+}

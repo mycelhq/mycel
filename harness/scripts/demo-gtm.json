@@ -1,0 +1,392 @@
+{
+  "_readme": [
+    "The invented prospect roster behind the demo business's go-to-market pipeline.",
+    "",
+    "DATA ONLY, ON PURPOSE. Two very different programs read this file — the seed script that writes",
+    "these rows into a loopback kernel, and cloud/scripts/demo-faces.mjs which draws a monogram avatar",
+    "per row — and the one thing that must never drift between them is the roster itself. A slug that",
+    "exists here and not in the avatar output is a broken image on a recording; a slug that exists in",
+    "the avatar output and not here is dead weight in the repo. One file, both readers.",
+    "",
+    "EVERY NAME AND EVERY COMPANY BELOW IS INVENTED. Domains are all `.example`, which RFC 2606",
+    "reserves precisely so a fixture can never name a real host, and no person here exists — the",
+    "avatars are generated monograms, not photographs of anybody. The world is the one Ridgeline Books",
+    "already lives in (small service businesses: bakeries, studios, clinics, workshops), but these are",
+    "PROSPECTS, deliberately disjoint from the client list in seed-demo.ts.",
+    "",
+    "WHAT IS SEEDED HERE IS BUSINESS STATE, NOT AGENT OUTPUT. A stage, a due time and a name are facts",
+    "about a pipeline and the seed is allowed to state them. There is deliberately no `provenance` on a",
+    "person: provenance is the record of enrichment attempts and what each one cost, and writing one",
+    "would put invented dollar figures on the screen whose entire claim is that the figures are real.",
+    "The `paused_reason` strings are copied VERBATIM out of kernel/harness/src/gtm/sequence.ts and",
+    "pacing.ts — the sequencer's own sentences — rather than paraphrased, for the same reason.",
+    "",
+    "`dueInHours` is fractional everywhere so the board's to-the-minute clock prints irregular times",
+    "(14:37, not 14:00). The kernel jitters every real interval by ±40% and the irregularity IS the",
+    "proof it is not a cron; a seed that landed on round hours would quietly undo that."
+  ],
+  "campaign": {
+    "name": "AI visibility for B2B software — Nov",
+    "account": "Founder's LinkedIn (Ridgeline Books)"
+  },
+  "companies": [
+    {
+      "domain": "halcyonfreight.example",
+      "name": "Halcyon Freight",
+      "industry": "Freight software",
+      "headcount": 12
+    },
+    {
+      "domain": "verdantpayroll.example",
+      "name": "Verdant Payroll",
+      "industry": "Payroll SaaS",
+      "headcount": 9
+    },
+    {
+      "domain": "copperwickhealth.example",
+      "name": "Copperwick Health",
+      "industry": "Care coordination SaaS",
+      "headcount": 22
+    },
+    {
+      "domain": "brackenfellrobotics.example",
+      "name": "Brackenfell Robotics",
+      "industry": "Warehouse automation",
+      "headcount": 15
+    },
+    {
+      "domain": "lumencompliance.example",
+      "name": "Lumen Compliance",
+      "industry": "GRC software",
+      "headcount": 7
+    },
+    {
+      "domain": "driftwave.example",
+      "name": "Driftwave Analytics",
+      "industry": "Product analytics",
+      "headcount": 19
+    },
+    {
+      "domain": "amberlineoptics.example",
+      "name": "Amberline Optics",
+      "industry": "Industrial imaging",
+      "headcount": 11
+    },
+    {
+      "domain": "axleandoar.example",
+      "name": "Axle & Oar Logistics",
+      "industry": "3PL software",
+      "headcount": 8
+    },
+    {
+      "domain": "brightbrooklegal.example",
+      "name": "Brightbrook Legal",
+      "industry": "Legal tech",
+      "headcount": 14
+    },
+    {
+      "domain": "quietharborsec.example",
+      "name": "Quiet Harbor Security",
+      "industry": "Security software",
+      "headcount": 6
+    },
+    {
+      "domain": "summerhilllabs.example",
+      "name": "Summerhill Labs",
+      "industry": "Clinical data",
+      "headcount": 27
+    },
+    {
+      "domain": "ridgelineledger.example",
+      "name": "Ridgeline Ledger",
+      "industry": "Accounting platform",
+      "headcount": 24
+    },
+    {
+      "domain": "kestrelsignal.example",
+      "name": "Kestrel Signal",
+      "industry": "Revenue intelligence",
+      "headcount": 9
+    },
+    {
+      "domain": "foxglovesystems.example",
+      "name": "Foxglove Systems",
+      "industry": "Field service software",
+      "headcount": 17
+    },
+    {
+      "domain": "wrenhollis.example",
+      "name": "Wren & Hollis",
+      "industry": "Procurement SaaS",
+      "headcount": 13
+    },
+    {
+      "domain": "marrowdata.example",
+      "name": "Marrow Data",
+      "industry": "Data infrastructure",
+      "headcount": 21
+    }
+  ],
+  "people": [
+    {
+      "slug": "mira-oyelaran",
+      "name": "Mira Oyelaran",
+      "title": "Head of Marketing",
+      "company": "halcyonfreight.example",
+      "location": "Portland, OR",
+      "stage": "queued",
+      "dueInHours": 0.62,
+      "pausedReason": null
+    },
+    {
+      "slug": "tobias-renn",
+      "name": "Tobias Renn",
+      "title": "VP Marketing",
+      "company": "verdantpayroll.example",
+      "location": "Tacoma, WA",
+      "stage": "queued",
+      "dueInHours": 1.28,
+      "pausedReason": null
+    },
+    {
+      "slug": "saoirse-quill",
+      "name": "Saoirse Quill",
+      "title": "Demand Gen Lead",
+      "company": "copperwickhealth.example",
+      "location": "Boise, ID",
+      "stage": "queued",
+      "dueInHours": 2.35,
+      "pausedReason": null
+    },
+    {
+      "slug": "haruto-benedek",
+      "name": "Haruto Benedek",
+      "title": "Head of Growth",
+      "company": "brackenfellrobotics.example",
+      "location": "Eugene, OR",
+      "stage": "queued",
+      "dueInHours": 3.72,
+      "pausedReason": null
+    },
+    {
+      "slug": "nadia-esposito",
+      "name": "Nadia Esposito",
+      "title": "Director of Marketing",
+      "company": "lumencompliance.example",
+      "location": "Bend, OR",
+      "stage": "queued",
+      "dueInHours": 5.18,
+      "pausedReason": null
+    },
+    {
+      "slug": "desmond-achebe",
+      "name": "Desmond Achebe",
+      "title": "Content Lead",
+      "company": "driftwave.example",
+      "location": "Seattle, WA",
+      "stage": "warmed",
+      "dueInHours": 6.47,
+      "pausedReason": null
+    },
+    {
+      "slug": "ingrid-solvang",
+      "name": "Ingrid Solvang",
+      "title": "Head of Demand Gen",
+      "company": "amberlineoptics.example",
+      "location": "Spokane, WA",
+      "stage": "warmed",
+      "dueInHours": 8.03,
+      "pausedReason": null
+    },
+    {
+      "slug": "rafael-okonjo",
+      "name": "Rafael Okonjo",
+      "title": "CMO",
+      "company": "axleandoar.example",
+      "location": "Portland, OR",
+      "stage": "warmed",
+      "dueInHours": 9.55,
+      "pausedReason": null
+    },
+    {
+      "slug": "priya-vance",
+      "name": "Priya Vance",
+      "title": "Head of Marketing",
+      "company": "brightbrooklegal.example",
+      "location": "Salem, OR",
+      "stage": "invited",
+      "dueInHours": 13.22,
+      "pausedReason": "waiting for them to accept"
+    },
+    {
+      "slug": "jonas-adeyemi",
+      "name": "Jonas Adeyemi",
+      "title": "VP Marketing",
+      "company": "quietharborsec.example",
+      "location": "Hood River, OR",
+      "stage": "invited",
+      "dueInHours": 16.88,
+      "pausedReason": null
+    },
+    {
+      "slug": "leila-marchetti",
+      "name": "Leila Marchetti",
+      "title": "Demand Gen Lead",
+      "company": "summerhilllabs.example",
+      "location": "Vancouver, WA",
+      "stage": "invited",
+      "dueInHours": 20.4,
+      "pausedReason": "waiting for them to accept"
+    },
+    {
+      "slug": "otto-kilbane",
+      "name": "Otto Kilbane",
+      "title": "Head of Growth",
+      "company": "ridgelineledger.example",
+      "location": "Bellingham, WA",
+      "stage": "invited",
+      "dueInHours": 23.13,
+      "pausedReason": null
+    },
+    {
+      "slug": "amara-lindqvist",
+      "name": "Amara Lindqvist",
+      "title": "Director of Marketing",
+      "company": "kestrelsignal.example",
+      "location": "Olympia, WA",
+      "stage": "invited",
+      "dueInHours": 26.77,
+      "pausedReason": null
+    },
+    {
+      "slug": "felix-nkemdirim",
+      "name": "Felix Nkemdirim",
+      "title": "Content Lead",
+      "company": "foxglovesystems.example",
+      "location": "Boise, ID",
+      "stage": "connected",
+      "dueInHours": 4.83,
+      "pausedReason": null
+    },
+    {
+      "slug": "yuki-abernathy",
+      "name": "Yuki Abernathy",
+      "title": "Head of Demand Gen",
+      "company": "wrenhollis.example",
+      "location": "Corvallis, OR",
+      "stage": "connected",
+      "dueInHours": 7.28,
+      "pausedReason": null
+    },
+    {
+      "slug": "carlota-mbeki",
+      "name": "Carlota Mbeki",
+      "title": "CMO",
+      "company": "marrowdata.example",
+      "location": "Astoria, OR",
+      "stage": "connected",
+      "dueInHours": 11.62,
+      "pausedReason": null
+    },
+    {
+      "slug": "sven-taraborrelli",
+      "name": "Sven Taraborrelli",
+      "title": "Head of Marketing",
+      "company": "brackenfellrobotics.example",
+      "location": "Eugene, OR",
+      "stage": "connected",
+      "dueInHours": 18.05,
+      "pausedReason": null
+    },
+    {
+      "slug": "dilnaz-orbay",
+      "name": "Dilnaz Orbay",
+      "title": "VP Marketing",
+      "company": "halcyonfreight.example",
+      "location": "Portland, OR",
+      "stage": "dm1",
+      "dueInHours": 10.42,
+      "pausedReason": "paused — outside this account's working hours — outreach at 3am is a bot signature"
+    },
+    {
+      "slug": "augustin-reyes",
+      "name": "Augustin Reyes",
+      "title": "Demand Gen Lead",
+      "company": "axleandoar.example",
+      "location": "Portland, OR",
+      "stage": "dm1",
+      "dueInHours": 31.6,
+      "pausedReason": null
+    },
+    {
+      "slug": "thea-vasquez",
+      "name": "Thea Vasquez",
+      "title": "Head of Growth",
+      "company": "verdantpayroll.example",
+      "location": "Tacoma, WA",
+      "stage": "dm1",
+      "dueInHours": 38.27,
+      "pausedReason": null
+    },
+    {
+      "slug": "kwame-dettori",
+      "name": "Kwame Dettori",
+      "title": "Director of Marketing",
+      "company": "ridgelineledger.example",
+      "location": "Bellingham, WA",
+      "stage": "dm2",
+      "dueInHours": 44.9,
+      "pausedReason": null
+    },
+    {
+      "slug": "anneliese-fontaine",
+      "name": "Anneliese Fontaine",
+      "title": "Content Lead",
+      "company": "kestrelsignal.example",
+      "location": "Olympia, WA",
+      "stage": "dm2",
+      "dueInHours": 52.35,
+      "pausedReason": null
+    },
+    {
+      "slug": "malik-sorensen",
+      "name": "Malik Sorensen",
+      "title": "Head of Demand Gen",
+      "company": "driftwave.example",
+      "location": "Seattle, WA",
+      "stage": "replied",
+      "dueInHours": -2.1,
+      "pausedReason": null
+    },
+    {
+      "slug": "rosalind-ekwueme",
+      "name": "Rosalind Ekwueme",
+      "title": "CMO",
+      "company": "brightbrooklegal.example",
+      "location": "Salem, OR",
+      "stage": "replied",
+      "dueInHours": -6.4,
+      "pausedReason": null
+    },
+    {
+      "slug": "hana-castellanos",
+      "name": "Hana Castellanos",
+      "title": "Head of Marketing",
+      "company": "lumencompliance.example",
+      "location": "Bend, OR",
+      "stage": "booked",
+      "dueInHours": -19.7,
+      "pausedReason": null
+    },
+    {
+      "slug": "gerald-onwudiwe",
+      "name": "Gerald Onwudiwe",
+      "title": "VP Marketing",
+      "company": "quietharborsec.example",
+      "location": "Hood River, OR",
+      "stage": "lost",
+      "dueInHours": -40.3,
+      "pausedReason": "sequence finished with no reply — a clean close, not another message"
+    }
+  ]
+}

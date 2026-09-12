@@ -1,0 +1,927 @@
+{
+  "wedge": "geo-monitor",
+  "domains": [
+    "digital-marketing"
+  ],
+  "title": "GEO monitor",
+  "provides": [],
+  "_comment_cold_start": "Given a domain and nothing else, this produces a report a client can read: no intake answers, no uploaded documents, nobody to wait on. That is what the flag means and it is the only reason the console may offer this as a founder's first job. It is a statement about DEPENDENCIES, not about speed or demo value — see WedgeManifest.cold_start.",
+  "cold_start": true,
+  "_comment": "Generative-engine share of voice. Children probe; the pack turns raw citations into the billing number. Batch fan-out is how query×model stays worker-count latency.",
+  "tier": "standard",
+  "packs": [
+    "share_of_voice@1"
+  ],
+  "cases": {
+    "stages": [
+      "scoping",
+      "probing",
+      "reporting",
+      "closed"
+    ],
+    "initial": "scoping"
+  },
+  "task_types": {
+    "probe_surface": {
+      "description": "Ask ONE question on ONE real answer engine, in a browser, as a person would, and record what it actually said and cited. This is the measurement the whole service rests on. A search API is not a substitute: it returns a ranked list of pages, and what the client is buying is knowledge of what the ASSISTANT tells their customer, which is a different artifact produced by a different system.",
+      "harness": {
+        "shape": "operate",
+        "max_runtime_s": 900,
+        "max_cost_usd": 1.2,
+        "strict_output": true,
+        "temperature": 0.1,
+        "steps": 40,
+        "skills": [
+          "probe-one-query",
+          "operate-a-surface"
+        ]
+      },
+      "output_schema": {
+        "type": "object",
+        "required": [
+          "query",
+          "surface",
+          "reached",
+          "cited",
+          "absorbed"
+        ],
+        "properties": {
+          "query": {
+            "type": "string"
+          },
+          "surface": {
+            "type": "string",
+            "description": "Which answer engine was actually opened."
+          },
+          "reached": {
+            "type": "boolean",
+            "description": "Did you get a real answer from the real surface? FALSE if you were blocked, rate limited, asked to log in, or shown a consent wall you could not clear. A false here is a useful, honest result. A fabricated answer is the one thing that destroys this service, because the client cannot check it and will act on it."
+          },
+          "blocked_by": {
+            "type": "string",
+            "description": "When `reached` is false, what stopped you, in one line. Absent otherwise."
+          },
+          "answer_text": {
+            "type": "string",
+            "description": "The answer as shown, verbatim, trimmed to what is on screen."
+          },
+          "cited": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "SELECTED: every source the surface offered, exactly as it named them. Transcription, not judgement."
+          },
+          "absorbed": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "ABSORBED: the brands the prose actually leaned on. Ask: if this source were deleted, would the answer change? Not a filter of `cited` — a brand discussed but never linked belongs here and not there."
+          },
+          "screenshot_note": {
+            "type": "string",
+            "description": "Where you saved the screenshot of the answer. Evidence a client can be shown."
+          },
+          "measured_from": {
+            "type": "string",
+            "description": "The country this answer was actually collected from, lowercase ISO 3166-1 alpha-2, as told to you in the input. A measurement with no location cannot be compared to next month's, and two collected from different countries are not the same measurement."
+          }
+        }
+      },
+      "internal": true,
+      "_comment_one_probe": "ONE PROBE, AND IT IS THE ONE THAT CAN REACH A SURFACE. There were two: this, and a `probe_mention` on the `decide` shape. `decide` allows read/grep/glob/skill and nothing else — no browser, no network — and `probe_mention` was the one `run-geo-week` actually fanned out, so every row of the measurement the whole service rests on was a model being asked what ChatGPT would have said. `probe_surface`, the one with the browser, was declared and spawned by nothing. Found by reading the shape table after the GEO pivot; the contract test in wedges.test.ts now refuses an internal task type no skill names.",
+      "input_schema": {
+        "type": "object",
+        "required": [
+          "query",
+          "surface"
+        ],
+        "properties": {
+          "query": {
+            "type": "string",
+            "description": "The one question to ask, exactly as a buyer would type it."
+          },
+          "surface": {
+            "type": "string",
+            "description": "Which answer engine to open — chatgpt, perplexity, google_ai, claude."
+          },
+          "client": {
+            "type": "string",
+            "description": "The brand being measured, as the client writes it."
+          },
+          "country": {
+            "type": "string",
+            "description": "ISO 3166-1 alpha-2, lowercase — the market the CLIENT sells into, not where we are. Answer engines personalise by geography: 'best bookkeeper for creative agencies' returns a different answer in London than in Austin, and a client selling to London agencies is buying the London answer. GIVEN, not chosen — you do not pick this and you cannot change where the browser is. Report it back in `measured_from` so the number can be compared to next month's."
+          }
+        }
+      }
+    },
+    "weekly_report": {
+      "_comment_ship_requires": "A measured week that names no work is a screenshot, not a report — the agency has to tell THEIR client what happens this week, and a percentage alone does not renew. Declared here rather than special-cased in the kernel: the ship bar is this wedge's knowledge of its own trade.",
+      "ship_requires": [
+        "artifacts",
+        "client_summary",
+        "recommendations"
+      ],
+      "_comment_ship_checks": "STANDARD.md §6 on this trade, verbatim: not a share-of-voice report but \"a scorecard plus three sized recommendations — one Small (an edit to an existing page, hours), one Medium (a new page in a citation-earning genre, a day or two), one Large (original data, weeks). Lead with the Small.\" `spread` on `effort` is that sentence made checkable: three recommendations that are all Large is a quarter of work nobody starts on Friday, and it satisfies min_items perfectly. `each_has why` is the schema's own rule — \"the MECHANISM, never 'improves authority'\" — which is why that exact phrase is in `extra`. distinct:2 and not 3 because the schema caps the list at three and some weeks honestly have two sizes of work; a bar that forces three invents one.",
+      "ship_checks": [
+        {
+          "kind": "not_when",
+          "field": "share_of_voice_pct",
+          "unknown_when": "no_surface_reached",
+          "_why": "A period where every probe was blocked has no share of voice. Reporting a number anyway tells a client something about their market that is really a fact about our access."
+        },
+        {
+          "kind": "ratio_of",
+          "numerator": "mentions",
+          "denominator": "queries",
+          "pct": "share_of_voice_pct",
+          "_why": "All three are carried by hand out of share_of_voice@1, which computed them together. Nothing compared them, so 'share of voice 60%' beside 'mentioned in 2 of 8' satisfied the schema and satisfied ship_requires — and is 25%. The client does that division in their head faster than they read the sentence around it."
+        },
+        {
+          "kind": "min_items",
+          "field": "recommendations",
+          "n": 1
+        },
+        {
+          "kind": "each_has",
+          "items": "recommendations",
+          "field": "what"
+        },
+        {
+          "kind": "each_has",
+          "items": "recommendations",
+          "field": "why"
+        },
+        {
+          "kind": "spread",
+          "items": "recommendations",
+          "field": "effort",
+          "distinct": 2
+        },
+        {
+          "kind": "min_words",
+          "field": "client_summary",
+          "n": 25
+        },
+        {
+          "kind": "max_words",
+          "field": "client_summary",
+          "n": 320
+        },
+        {
+          "kind": "forbids",
+          "field": "client_summary",
+          "vocabulary": "brand_poetry",
+          "extra": [
+            "improves authority",
+            "boost your visibility",
+            "increase your presence"
+          ]
+        },
+        {
+          "kind": "forbids",
+          "field": "client_summary",
+          "vocabulary": "placeholder"
+        },
+        {
+          "kind": "each_has",
+          "items": "artifacts",
+          "field": "name"
+        }
+      ],
+      "description": "Fan out probe_surface children for the client's query set, wait for the batch, then call share_of_voice@1 and write the series sample. Never estimate the percentage yourself.",
+      "harness": {
+        "shape": "deliver",
+        "strict_output": true,
+        "skills": [
+          "run-geo-week",
+          "turn-measurement-into-work",
+          "read-surfer"
+        ],
+        "instructions": [
+          "knowledge/measurement.md"
+        ]
+      },
+      "output_schema": {
+        "type": "object",
+        "required": [
+          "status",
+          "client_summary",
+          "client"
+        ],
+        "properties": {
+          "status": {
+            "type": "string",
+            "enum": [
+              "reported",
+              "not_set_up"
+            ],
+            "description": "`reported` only when this run aggregated real probes for a real query list. `not_set_up` is the honest answer when the case carries NO query/brand list (or there is no case): there is nothing to aggregate, so there is no report — never emit an empty or zeroed report to look busy. When `not_set_up`, leave the measurement fields (share_of_voice_pct, queries, mentions) absent rather than zero: zero is a measurement, absence is the truth."
+          },
+          "client_summary": {
+            "type": "string",
+            "description": "The plain-language answer the client reads first, and the only field the client-facing deliverable shows. When `status` is `reported`, lead with where they stand (share of voice, who is winning the citations) in plain language. When `status` is `not_set_up`, say plainly that monitoring is not live yet because no brand/query list is connected, and name the one action that turns it on (add the brand/product names and surfaces to probe). Either way it is required."
+          },
+          "client": {
+            "type": "string"
+          },
+          "share_of_voice_pct": {
+            "type": "number",
+            "description": "Out of the probes that ACTUALLY GOT AN ANSWER, never out of the probes attempted. Straight from share_of_voice@1 — never counted by hand. Leave it absent when no surface could be reached: zero per cent says the assistants answered and named somebody else, which is a finding, and a client shown it would reasonably conclude they had lost every ranking."
+          },
+          "queries": {
+            "type": "integer",
+            "description": "Probes that returned an answer. The denominator, and the sample to quote."
+          },
+          "mentions": {
+            "type": "integer"
+          },
+          "top_competitors": {
+            "type": "array",
+            "description": "Who is taking the citations this period, most first. Straight from the pack.",
+            "items": {
+              "type": "object",
+              "required": [
+                "name",
+                "beat_us_on"
+              ],
+              "properties": {
+                "name": {
+                  "type": "string",
+                  "description": "The competitor, named as the answer engines named them."
+                },
+                "beat_us_on": {
+                  "type": "integer",
+                  "description": "How many of this period's answers cited them. From share_of_voice@1 — never counted by hand."
+                }
+              }
+            }
+          },
+          "summary": {
+            "type": "string"
+          },
+          "recommendations": {
+            "type": "array",
+            "minItems": 1,
+            "maxItems": 3,
+            "description": "What the agency should DO this week, ordered, at most three, leading with the smallest. A share-of-voice number is a diagnosis and nobody renews a retainer for a diagnosis — the agency has to justify this to their own client on Friday. See skills/turn-measurement-into-work.md. Required whenever status is `reported`: a report with no work in it is a screenshot.",
+            "items": {
+              "type": "object",
+              "properties": {
+                "what": {
+                  "type": "string",
+                  "description": "The specific change, naming the page or asset. Not a theme."
+                },
+                "why": {
+                  "type": "string",
+                  "description": "The MECHANISM — what about retrieval this changes. Never 'improves authority'."
+                },
+                "effort": {
+                  "type": "string",
+                  "enum": [
+                    "small",
+                    "medium",
+                    "large"
+                  ],
+                  "description": "small = an edit to an existing page, hours. medium = a new page, a day or two. large = original data or a rebuild, weeks."
+                },
+                "genre": {
+                  "type": "string",
+                  "enum": [
+                    "direct_answer",
+                    "comparison",
+                    "original_data",
+                    "explainer",
+                    "local_answer",
+                    "structural_edit"
+                  ],
+                  "description": "Which citation-earning shape this is. Ordered by how reliably each gets selected."
+                }
+              },
+              "required": [
+                "what",
+                "why",
+                "effort"
+              ]
+            }
+          },
+          "surfer": {
+            "type": "object",
+            "description": "Optional Surfer overlay. ABSENT when no Surfer credential exists or the call failed — never zeroed, never invented. Does not replace share_of_voice_pct.",
+            "properties": {
+              "url": {
+                "type": "string"
+              },
+              "content_score": {
+                "type": "number"
+              },
+              "missing_terms": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                },
+                "maxItems": 10
+              }
+            }
+          },
+          "unexplained_movement": {
+            "type": "boolean",
+            "description": "True when the number moved and nothing we shipped explains it. Assistants re-rank on their own; claiming credit for noise is the claim that destroys trust the first time a client checks it."
+          },
+          "happens_next": {
+            "type": "string",
+            "description": "One sentence the agency can say to their client: what we do with the Small this week. Required whenever status is reported. A report that does not name next week is unfinished."
+          },
+          "needs": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "What this run needs from the CLIENT before it can produce the work, in the client’s own words — one plain item per entry. Name the thing THEY would name: the document, the answer, the decision, the access. Populate this WHENEVER the run cannot finish because something only the client has is missing. Each entry becomes a request in their portal with an upload box; what they send is mounted into the next run’s ./inputs/, so an accurate ask here is what unblocks the work. Never use our nouns — a request naming a case, a schema or a connection id is unanswerable by the person receiving it. At most four, most important first. Leave absent when the work completed — an empty ask sent to a client is worse than silence."
+          },
+          "artifacts": {
+            "type": "array",
+            "description": "THE WORK ITSELF, not a description of it.\n\nEvery deliverable task in this system produced a summary and nothing else, and a client scored one 3/10 partly for that reason: they were sent an account of work rather than the work. A service business does not sell reports about bookkeeping, it sells reconciled books; it does not sell a note about a questionnaire, it sells the questionnaire answered.\n\nSo this carries the artifact. A file you wrote to ./output/ and its name, or a URL to something live, or a repository. The `client_summary` is the covering note that goes WITH this — it is not a substitute for it, and a deliverable with an empty `artifacts` array is a deliverable that did not deliver.\n\nSay so plainly in the summary if you genuinely could not produce the artifact, and why. That is a real outcome. Pretending the summary is the work is not.\n\nFor this job: The report itself as a document the client can forward, and a link to any page shipped for them this period.",
+            "items": {
+              "type": "object",
+              "required": [
+                "kind",
+                "name"
+              ],
+              "properties": {
+                "kind": {
+                  "type": "string",
+                  "enum": [
+                    "file",
+                    "url",
+                    "repo"
+                  ],
+                  "description": "`file` for something you wrote to ./output/, `url` for something live, `repo` for source."
+                },
+                "name": {
+                  "type": "string",
+                  "description": "What it is, in the client's words. 'September ledger', not 'output.csv'."
+                },
+                "path": {
+                  "type": "string",
+                  "description": "Relative to ./output/ for a file. Required for kind=file."
+                },
+                "url": {
+                  "type": "string",
+                  "description": "Required for kind=url or kind=repo."
+                },
+                "what_it_is": {
+                  "type": "string",
+                  "description": "One line the client reads before opening it."
+                }
+              }
+            }
+          },
+          "unreached": {
+            "type": "integer",
+            "description": "Probes that never got an answer — captcha, login wall, consent gate. Report it whenever it is above zero. A client is owed the size of the hole in their own number."
+          },
+          "blocked_by": {
+            "type": "array",
+            "description": "Which surfaces refused and why, from the pack. Name them in the summary when there are any.",
+            "items": {
+              "type": "object",
+              "required": [
+                "reason",
+                "n"
+              ],
+              "properties": {
+                "reason": {
+                  "type": "string"
+                },
+                "n": {
+                  "type": "integer"
+                }
+              }
+            }
+          },
+          "no_surface_reached": {
+            "type": "boolean",
+            "description": "TRUE when every probe this period was blocked. There is no share of voice in that case — say plainly that the surfaces could not be reached and what stopped them, and leave the measurement fields absent. This is an honest report about a bad week for measurement, not a bad week for the client, and the two must never be shown as the same thing."
+          }
+        }
+      },
+      "input_schema": {
+        "_comment_required": "EMPTY, AND THAT IS A CORRECTION RATHER THAN A GAP. `client` was required here and NEITHER path that creates this task supplies it: the blueprint schedules it with an empty input, and fulfillment ignition passes `client_id` and `case_id` as TASK FIELDS while sending `{ because, scheduled_at }` as the input. So a contract nothing satisfied was refusing, at run time, on every scheduled report — the same shape as monthly_close firing without a period, reached from the other direction. This is the case `monthly_close.currency` already settled and argued in full: a field the CALLER often does not know and the RUN does is optional here and required by the work, because AGENTS.md prints what the firm already knows about a client and the run is holding `client_id`. Requiring it of the caller does not make the run better informed, it makes the run impossible.",
+        "type": "object",
+        "required": [],
+        "properties": {
+          "client": {
+            "type": "string",
+            "description": "The brand this report is about, as the client writes it. NOT required of the caller and REQUIRED by the report — two different doors, exactly as `monthly_close` splits `currency`. The task carries `client_id`; look at what the firm already knows about them before asking, and never invent a name for a brand the client will read."
+          },
+          "period": {
+            "type": "string",
+            "description": "The week or month being reported on, as it should appear in the report."
+          },
+          "queries": {
+            "type": "array",
+            "description": "THE MEASUREMENT, ALREADY TAKEN. One row per query x surface from the probes that have already run. When this is present it is the ground truth for the report — do not re-probe what is here.",
+            "items": {
+              "type": "object",
+              "required": [
+                "q",
+                "surface"
+              ],
+              "properties": {
+                "q": {
+                  "type": "string",
+                  "description": "The query as it was asked."
+                },
+                "surface": {
+                  "type": "string",
+                  "description": "Which assistant answered it — chatgpt, perplexity, google_ai, claude."
+                },
+                "present": {
+                  "type": "boolean",
+                  "description": "Did the answer name the brand at all. Meaningless when `reached` is false."
+                },
+                "cited": {
+                  "type": "boolean",
+                  "description": "Did the answer link or attribute a page. Present and cited are different products: being named is reputation, being cited is a page doing work. Meaningless when `reached` is false."
+                },
+                "source": {
+                  "type": "string",
+                  "description": "The page that was cited, when one was."
+                },
+                "note": {
+                  "type": "string",
+                  "description": "Anything the probe observed that the booleans cannot carry — a citation that was there last week and is gone."
+                },
+                "reached": {
+                  "type": "boolean",
+                  "description": "Did the probe get a real answer from the real surface. FALSE for a captcha, login wall or consent gate. When this is false, `present` and `cited` say NOTHING — they are not measurements and must not be reported as absences. Say in the report which surfaces could not be reached and quote every number against the sample that actually answered. Absent means reached."
+                },
+                "blocked_by": {
+                  "type": "string",
+                  "description": "When `reached` is false, what stopped it, in one line. This goes in the report."
+                }
+              }
+            }
+          },
+          "last_week": {
+            "type": "object",
+            "description": "The previous period's headline numbers, so movement can be stated rather than implied.",
+            "properties": {
+              "share_of_voice_pct": {
+                "type": "number"
+              },
+              "cited": {
+                "type": "integer"
+              }
+            }
+          },
+          "notes": {
+            "type": "string",
+            "description": "What changed on the client's site or in their market since the last report."
+          }
+        }
+      },
+      "_comment_deck": "THE CLIENT-FACING ARTIFACT OF A GEO WEEK IS A DECK, NOT A PAGE OF PROSE. This report gets forwarded: the agency sends it to their client, and their client sends it to whoever asked why they are paying for this. Three numbers, a chart of who is beating them to the citations and three sized recommendations is exactly a short deck, and exactly the wrong shape for an A4 page of 10pt text. The model's job is unchanged — it writes the same markdown it already writes; slidesFromBlocks in render/deck.ts turns it into slides, and the chart declared below becomes one of them, built from the output ship_checks has already passed.",
+      "deck": true,
+      "chart": {
+        "series": "top_competitors",
+        "label": "name",
+        "value": "beat_us_on",
+        "title": "Who is winning the citations"
+      },
+      "_comment_figures": "THE NUMBER A GEO CLIENT OPENS THIS FOR. On a real run share of voice, citations and answers tracked were all buried in the prose of the opening slide — on a deck whose entire purpose is that first number, and which the agency forwards to somebody who will read one slide. Declared here and read off the output that already passed ship_checks, never retyped. `not_set_up` runs leave these absent rather than zeroed, and an absent figure is dropped rather than shown as a dash: a card reading '—' tells a client we could not measure them.",
+      "figures": [
+        {
+          "label": "Share of voice",
+          "value": "share_of_voice_pct",
+          "suffix": "%"
+        },
+        {
+          "label": "Answers naming you",
+          "value": "mentions"
+        },
+        {
+          "label": "Questions tracked",
+          "value": "queries"
+        }
+      ],
+      "deliverable_shape": {
+        "format": "report",
+        "sections": [
+          {
+            "heading": "Where you stand this week",
+            "must": "The measured position and what changed since last week. If the measurement did not run, say that here in the first line and do not estimate it — this task type's own description forbids estimating the percentage.",
+            "depth": "a short paragraph"
+          },
+          {
+            "heading": "The scorecard",
+            "must": "Each tracked query with what was found and where. A reader must be able to see which surfaces were checked, not only the total.",
+            "depth": "a table"
+          },
+          {
+            "heading": "Do this first",
+            "must": "The Small recommendation — an edit to a page that already exists, hours of work — with why it is first.",
+            "depth": "a short paragraph"
+          },
+          {
+            "heading": "Then this",
+            "must": "The Medium recommendation — a new page in a citation-earning genre, a day or two — with why it earns citations.",
+            "depth": "a short paragraph"
+          },
+          {
+            "heading": "And plan for this",
+            "must": "The Large recommendation — original data or research, weeks — with what it would take.",
+            "depth": "a short paragraph"
+          },
+          {
+            "heading": "What happens next week",
+            "must": "What this desk runs without being asked, and what the agency has to decide. The agency forwards this to their own client on Friday and has to be able to say what happens next.",
+            "depth": "a short list"
+          }
+        ]
+      }
+    },
+    "ship_page": {
+      "_comment_ship_requires": "A page run that names a title and a slug and produces no HTML has shipped a filename. The client opens a URL, so the body is the deliverable — not the intent to write one.",
+      "ship_requires": [
+        "html",
+        "page_title"
+      ],
+      "description": "Turn ONE recommendation from this week's GEO report into a live commercial page at a public URL the client can open on a phone. Not a diagnosis. Not two paragraphs on an empty sheet. The page they would put on their domain.",
+      "_comment": "The report names the change; this run authors it. Kind is link so wrap hosts the HTML at GET /p/:token and the portal card is that URL. An iframe of a file is not a delivery. Large recommendations (original data, rebuilds) are refused — we do not invent a survey.",
+      "deliverable_kind": "link",
+      "input_schema": {
+        "type": "object",
+        "required": [
+          "recommendation"
+        ],
+        "properties": {
+          "because": {
+            "type": "string"
+          },
+          "client": {
+            "type": "string",
+            "description": "Brand name as it should appear on the page and in citations."
+          },
+          "recommendation": {
+            "type": "object",
+            "required": [
+              "what"
+            ],
+            "properties": {
+              "what": {
+                "type": "string",
+                "description": "The specific change, naming the page or asset."
+              },
+              "why": {
+                "type": "string"
+              },
+              "effort": {
+                "type": "string",
+                "enum": [
+                  "small",
+                  "medium",
+                  "large"
+                ]
+              },
+              "genre": {
+                "type": "string",
+                "enum": [
+                  "direct_answer",
+                  "comparison",
+                  "original_data",
+                  "explainer",
+                  "local_answer",
+                  "structural_edit"
+                ]
+              }
+            }
+          }
+        }
+      },
+      "harness": {
+        "shape": "decide",
+        "max_runtime_s": 900,
+        "max_cost_usd": 1.5,
+        "strict_output": true,
+        "temperature": 0.3,
+        "steps": 50,
+        "skills": [
+          "ship-extractable-page",
+          "turn-measurement-into-work"
+        ],
+        "instructions": [
+          "knowledge/measurement.md"
+        ]
+      },
+      "output_schema": {
+        "type": "object",
+        "required": [
+          "status",
+          "client_summary",
+          "page_title",
+          "slug"
+        ],
+        "properties": {
+          "status": {
+            "type": "string",
+            "enum": [
+              "drafted",
+              "needs_facts"
+            ],
+            "description": "`drafted` only when `html` is a complete, publishable page grounded in facts this business actually has. `needs_facts` when a checkable number, price, hours, or service area is missing — populate `needs` rather than inventing one."
+          },
+          "client_summary": {
+            "type": "string",
+            "description": "The plain-language note the CLIENT reads on this deliverable. Lead with what the page is. We host it at a live URL — do not invent the address. Name where it should eventually live on their domain as the follow-on. Never mention a run, a schema, or a case."
+          },
+          "page_title": {
+            "type": "string",
+            "description": "The document title / H1, phrased as the question a person would ask."
+          },
+          "slug": {
+            "type": "string",
+            "description": "URL slug, lowercase hyphenated, no leading slash."
+          },
+          "html": {
+            "type": "string",
+            "description": "A COMPLETE HTML document (doctype, html, head, body). Required when status is `drafted`. We host this at a public URL. Must be a commercial page: header/nav, footer, extractable table or definition list, FAQ JSON-LD plus Organization/LocalBusiness, answer in the first two sentences. A two-paragraph stub is refused. No script tags except JSON-LD. Checkable numbers only."
+          },
+          "genre": {
+            "type": "string",
+            "enum": [
+              "direct_answer",
+              "comparison",
+              "explainer",
+              "local_answer",
+              "structural_edit"
+            ]
+          },
+          "needs": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "What this run needs from the CLIENT before the page can be finished, in their words. Populate when status is `needs_facts`. At most four."
+          }
+        }
+      }
+    },
+    "publish_page": {
+      "_comment": "THE LAST OPEN LINK IN THE LOOP.\n\n`ship_page` writes the page a client would put on their domain, and then the product stops. The founder logs into the client's CMS and publishes it by hand — the one step between a report and a result, done manually, every time, for every client.\n\nThat is also where the money is. A GEO report is a diagnosis and nobody renews a retainer for a diagnosis. A page that went live and then got cited is the renewal conversation.\n\n── WHY IT IS A SEPARATE TASK ──\n\nIt could have been the tail of `ship_page`. It is not, for the same reason `draft_engagement` writes a proposal and sends nothing: the shape that WRITES the work and the shape that PUTS IT IN FRONT OF SOMEBODY are different acts, and a human belongs between them. `ship_page` runs on `decide` with no network. This runs on `operate`, in a browser, holding a session for the client's live website, and it should be started by a person who has read the page.\n\n── AND IT REFUSES A READ-ONLY CONNECTION ──\n\n`browser_writes` is what makes `browser-work.ts` check the connection's declared access. A founder who connected a portal for reading gets a refusal naming the mismatch, rather than discovering it by changing something in a client's live system.",
+      "description": "Put an already-written, already-approved page live in the client's own CMS, then open the public URL as a visitor and prove it is actually there. Creates a new page and touches nothing else.",
+      "browser_writes": true,
+      "_comment_browser_writes": "Read by `sessionForRun` in runtime.ts. A task that declares this cannot use a browser connection the founder marked read-only — the run proceeds logged out and says why, which is a bad outcome that is visible, rather than a good-looking one that changed a client's site without the access to do so having been granted.",
+      "deliverable_kind": "link",
+      "input_schema": {
+        "type": "object",
+        "required": [
+          "connection_id",
+          "page_title",
+          "html"
+        ],
+        "properties": {
+          "connection_id": {
+            "type": "string",
+            "description": "The `browser` connection for the client's site. GIVEN — you do not choose it, and the browser is locked to that one host for the whole run."
+          },
+          "page_title": {
+            "type": "string",
+            "description": "Exactly as approved. Do not improve it."
+          },
+          "slug": {
+            "type": "string",
+            "description": "The path, exactly as approved. This is what gets cited; changing it makes the work unmeasurable."
+          },
+          "html": {
+            "type": "string",
+            "description": "The approved page body. Paste as HTML, never rebuild by hand."
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "publish",
+              "draft"
+            ],
+            "description": "`publish` unless the founder asked for a draft. Default publish."
+          }
+        }
+      },
+      "harness": {
+        "shape": "operate",
+        "max_runtime_s": 900,
+        "max_cost_usd": 2,
+        "strict_output": true,
+        "temperature": 0.1,
+        "steps": 60,
+        "skills": [
+          "publish-to-a-cms",
+          "work-a-system"
+        ]
+      },
+      "ship_requires": [
+        "published_url"
+      ],
+      "_comment_ship_requires": "A run that reports success and no URL has published nothing anybody can check. The URL is the deliverable — the client opens it.",
+      "ship_checks": [
+        {
+          "kind": "not_when",
+          "field": "published_url",
+          "unknown_when": "not_published",
+          "_why": "A URL stated beside 'I could not publish it' is the worst available output: the founder forwards the link to a client and finds out from them."
+        }
+      ],
+      "output_schema": {
+        "type": "object",
+        "required": [
+          "client_summary",
+          "changed"
+        ],
+        "properties": {
+          "published_url": {
+            "type": "string",
+            "description": "The PUBLIC url, opened in a fresh tab and seen. Not the admin preview — a preview renders from the session you are holding and proves nothing about what a stranger sees. Absent if it did not go live."
+          },
+          "visible_to_public": {
+            "type": "boolean",
+            "description": "Did the page render for somebody not signed in. False for a 'coming soon' wall, a password, a noindex, a 404 pending cache flush — and say which in `blocked_by`."
+          },
+          "not_published": {
+            "type": "boolean",
+            "description": "True when the page did not go live. Then leave `published_url` absent: a ship check refuses an output that states both."
+          },
+          "blocked_by": {
+            "type": "string",
+            "description": "One line: expired session, no HTML entry mode, the public URL 404s, the editor mangled the paste. A stopped run described precisely is fixable in two minutes."
+          },
+          "changed": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Everything you changed, one line each, and NOTHING ELSE should be in it. An empty list is a real answer when nothing was published. This is somebody's live website and the list is what a founder reads before they can tell a client what happened."
+          },
+          "client_summary": {
+            "type": "string",
+            "description": "Plain language: what is now live, where, and whether a visitor can see it."
+          },
+          "evidence": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Where the screenshots are — the before, and the public page as a visitor sees it."
+          }
+        }
+      }
+    }
+  },
+  "tools": [],
+  "fulfillment": {
+    "client_connections": [],
+    "intake_asks": [
+      {
+        "kind": "answer",
+        "ask": "Which brand / product names should we probe for?"
+      }
+    ],
+    "money_plan": {
+      "currency": "USD",
+      "lines": [
+        {
+          "label": "Setup",
+          "amount_minor": 75000,
+          "kind": "deposit"
+        },
+        {
+          "label": "Monthly monitor",
+          "amount_minor": 99000,
+          "kind": "retainer",
+          "recurrence": {
+            "every": "month",
+            "interval": 1,
+            "state": "active"
+          }
+        }
+      ]
+    },
+    "deliverable_shapes": [
+      "document",
+      "link"
+    ],
+    "production_task_type": "weekly_report"
+  },
+  "requires": [
+    "dunning"
+  ],
+  "_comment_intake": "WHAT THIS WEDGE HAS TO BE TOLD BEFORE IT CAN WRITE ANYTHING GOOD. It had none of this: the manifest asked one question in `fulfillment.intake_asks` (which brand names to probe) and nothing about how the firm works, so every report it produced was grounded in the client's site and nothing else. books-keeper has carried five of these since it shipped. Same five subjects, asked for this trade: what you deliver, what you charge, how you write to a client, when you must stop and ask, and what is true of these particular clients.",
+  "intake": [
+    {
+      "id": "engagement-scope",
+      "ask": "What exactly does a client get each month, and by when?",
+      "why": "The agent uses this to decide when a report is actually finished, and what to tell a client who asks what they are paying for.",
+      "example": "Forty questions probed weekly on ChatGPT, Claude, Gemini and Perplexity. Share of voice against a named competitor set, issued by the 5th. We recommend pages; the client writes them unless they bought the build-out.",
+      "kind": "document",
+      "weight": 10
+    },
+    {
+      "id": "pricing",
+      "ask": "What do you charge, and what sits outside the monthly fee?",
+      "why": "So it can answer a pricing question without you, and knows when to stop and ask instead.",
+      "example": "$750 setup, then $990/month for up to 40 tracked questions. Page build-out is $1,800 a page and is never bundled. Displacement reviews are quoted per engagement.",
+      "kind": "fact",
+      "weight": 9
+    },
+    {
+      "id": "chase-tone",
+      "ask": "How do you chase a client for something you need? Paste one you have actually sent.",
+      "why": "A real example teaches tone far better than adjectives. This becomes the model for every chase it drafts.",
+      "example": "Hi Dana — we are two days from the November run and still need your competitor list. Five names is plenty. Happy to run it against the three we inferred from your site if you would rather not spend the time.",
+      "kind": "example",
+      "weight": 9
+    },
+    {
+      "id": "escalate",
+      "ask": "When must the agent stop and come to you rather than deciding?",
+      "why": "Draws the line between work it can finish and work that needs your name on the decision.",
+      "example": "Anything naming a competitor in a claim we would publish. Any recommendation to change or retire a live pricing page. Any share-of-voice figure that moved more than 15 points in a week — that is usually our measurement breaking, not their market moving.",
+      "kind": "fact",
+      "weight": 10
+    },
+    {
+      "id": "quirks",
+      "ask": "What is true about your particular clients that a stranger would get wrong?",
+      "why": "The things you would tell a new hire in their first week, which no amount of reading the client's site would reveal.",
+      "example": "Their buyers ask about integrations before brands, so probe those first. Anything in healthcare — never let a model's clinical claim into a report unquoted.",
+      "kind": "fact",
+      "weight": 8
+    }
+  ],
+  "workflows": [
+    {
+      "name": "workbook",
+      "description": "Turn a grid you have already decided is correct into a real Excel workbook (.xlsx), attached to this delivery automatically. Use it for anything a client will sort, filter or forward — a longlist, a ranking table, a budget, a control matrix. Do NOT use it to do arithmetic: it formats what you give it and never re-totals a column.",
+      "input_schema": {
+        "type": "object",
+        "required": [
+          "tabs"
+        ],
+        "properties": {
+          "filename": {
+            "type": "string",
+            "description": "e.g. \"april-longlist.xlsx\"."
+          },
+          "currency": {
+            "type": "string",
+            "description": "ISO-4217. Omit it and money renders as a plain number, which is honest."
+          },
+          "tabs": {
+            "type": "array",
+            "description": "One per sheet. A tab per schedule beats one sheet with blank rows between sections.",
+            "items": {
+              "type": "object",
+              "required": [
+                "name",
+                "header",
+                "rows"
+              ],
+              "properties": {
+                "name": {
+                  "type": "string"
+                },
+                "header": {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  }
+                },
+                "note": {
+                  "type": "string",
+                  "description": "A caveat rendered above the header, for something that must be read before the numbers."
+                },
+                "rows": {
+                  "type": "array",
+                  "description": "Each row is an array of cells. A plain string or number is fine; for a formatted number use {kind:\"n\", v:1234, format:\"money\"|\"pct\"|\"int\"} and for a date {kind:\"d\", v:\"2026-04-30\"}."
+                }
+              }
+            }
+          }
+        }
+      },
+      "output_schema": {
+        "type": "object",
+        "properties": {
+          "sheets": {
+            "type": "integer"
+          },
+          "rows": {
+            "type": "integer"
+          }
+        }
+      }
+    }
+  ]
+}

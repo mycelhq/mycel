@@ -1,0 +1,14 @@
+{
+ "name": "sticky-banner",
+ "type": "registry:ui",
+ "files": [
+  {
+   "path": "components/ui/sticky-banner.tsx",
+   "content": "\"use client\";\nimport React, { SVGProps, useState } from \"react\";\nimport { motion, useMotionValueEvent, useScroll } from \"motion/react\";\nimport { cn } from \"@/lib/utils\";\n\nexport const StickyBanner = ({\n  className,\n  children,\n  hideOnScroll = false,\n}: {\n  className?: string;\n  children: React.ReactNode;\n  hideOnScroll?: boolean;\n}) => {\n  const [open, setOpen] = useState(true);\n  const { scrollY } = useScroll();\n\n  useMotionValueEvent(scrollY, \"change\", (latest) => {\n    console.log(latest);\n    if (hideOnScroll && latest > 40) {\n      setOpen(false);\n    } else {\n      setOpen(true);\n    }\n  });\n\n  return (\n    <motion.div\n      className={cn(\n        \"sticky inset-x-0 top-0 z-40 flex min-h-14 w-full items-center justify-center bg-transparent px-4 py-1\",\n        className,\n      )}\n      initial={{\n        y: -100,\n        opacity: 0,\n      }}\n      animate={{\n        y: open ? 0 : -100,\n        opacity: open ? 1 : 0,\n      }}\n      transition={{\n        duration: 0.3,\n        ease: \"easeInOut\",\n      }}\n    >\n      {children}\n\n      <motion.button\n        initial={{\n          scale: 0,\n        }}\n        animate={{\n          scale: 1,\n        }}\n        className=\"absolute top-1/2 right-2 -translate-y-1/2 cursor-pointer\"\n        onClick={() => setOpen(!open)}\n      >\n        <CloseIcon className=\"h-5 w-5 text-white\" />\n      </motion.button>\n    </motion.div>\n  );\n};\n\nconst CloseIcon = (props: SVGProps<SVGSVGElement>) => {\n  return (\n    <svg\n      xmlns=\"http://www.w3.org/2000/svg\"\n      width=\"24\"\n      height=\"24\"\n      viewBox=\"0 0 24 24\"\n      fill=\"none\"\n      stroke=\"currentColor\"\n      strokeWidth=\"2\"\n      strokeLinecap=\"round\"\n      strokeLinejoin=\"round\"\n      {...props}\n    >\n      <path stroke=\"none\" d=\"M0 0h24v24H0z\" fill=\"none\" />\n      <path d=\"M18 6l-12 12\" />\n      <path d=\"M6 6l12 12\" />\n    </svg>\n  );\n};\n",
+   "type": "registry:ui",
+   "target": "components/ui/sticky-banner.tsx"
+  }
+ ],
+ "author": "Manu Arora <hi@manuarora.in>",
+ "title": "Sticky Banner"
+}

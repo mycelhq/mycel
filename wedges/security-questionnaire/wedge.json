@@ -1,0 +1,431 @@
+{
+  "wedge": "security-questionnaire",
+  "domains": [
+    "it-managed-services"
+  ],
+  "title": "Security questionnaire desk",
+  "provides": [],
+  "_comment": "Answer vendor security questionnaires from house knowledge. Batch fans out questions; never invent controls that are not in knowledge.",
+  "tier": "standard",
+  "cases": {
+    "stages": [
+      "received",
+      "answering",
+      "review",
+      "submitted",
+      "closed"
+    ],
+    "initial": "received"
+  },
+  "task_types": {
+    "answer_question": {
+      "description": "Answer one questionnaire item from mounted knowledge. If knowledge is silent, mark needs_human and do not guess.",
+      "harness": {
+        "shape": "decide",
+        "max_runtime_s": 420,
+        "max_cost_usd": 0.25,
+        "strict_output": true,
+        "temperature": 0.1,
+        "steps": 15,
+        "skills": [
+          "answer-one"
+        ],
+        "instructions": [
+          "knowledge/controls.md"
+        ]
+      },
+      "output_schema": {
+        "type": "object",
+        "required": [
+          "question_id",
+          "status",
+          "answer"
+        ],
+        "properties": {
+          "question_id": {
+            "type": "string"
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "answered",
+              "needs_human",
+              "not_applicable"
+            ]
+          },
+          "answer": {
+            "type": "string"
+          },
+          "citations": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          }
+        }
+      },
+      "ship_requires": [
+        "answer"
+      ],
+      "input_schema": {
+        "_comment": "ONE item, answered from mounted knowledge. The description is explicit that silence means needs_human and never a guess — which is only possible if there is a question to be silent about.",
+        "type": "object",
+        "required": [
+          "question"
+        ],
+        "properties": {
+          "question": {
+            "type": "string",
+            "description": "The questionnaire item, verbatim as the buyer wrote it. REQUIRED."
+          },
+          "question_id": {
+            "type": "string",
+            "description": "The buyer's own reference for it, so the answer lands in the right row of their form."
+          }
+        }
+      }
+    },
+    "fill_questionnaire": {
+      "description": "Parse the questionnaire into items, fan out answer_question children, then compile a review packet from the batch.",
+      "harness": {
+        "shape": "deliver",
+        "strict_output": true,
+        "skills": [
+          "fill-packet"
+        ]
+      },
+      "output_schema": {
+        "type": "object",
+        "required": [
+          "answered",
+          "needs_human",
+          "summary"
+        ],
+        "properties": {
+          "needs": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "What this run needs from the CLIENT before it can produce the work, in the client’s own words — one plain item per entry. Name the thing THEY would name: the document, the answer, the decision, the access. Populate this WHENEVER the run cannot finish because something only the client has is missing. Each entry becomes a request in their portal with an upload box; what they send is mounted into the next run’s ./inputs/, so an accurate ask here is what unblocks the work. Never use our nouns — a request naming a case, a schema or a connection id is unanswerable by the person receiving it. At most four, most important first. Leave absent when the work completed — an empty ask sent to a client is worse than silence."
+          },
+          "answered": {
+            "type": "integer"
+          },
+          "needs_human": {
+            "type": "integer"
+          },
+          "not_applicable": {
+            "type": "integer"
+          },
+          "summary": {
+            "type": "string"
+          },
+          "artifacts": {
+            "type": "array",
+            "description": "THE WORK ITSELF, not a description of it.\n\nEvery deliverable task in this system produced a summary and nothing else, and a client scored one 3/10 partly for that reason: they were sent an account of work rather than the work. A service business does not sell reports about bookkeeping, it sells reconciled books; it does not sell a note about a questionnaire, it sells the questionnaire answered.\n\nSo this carries the artifact. A file you wrote to ./output/ and its name, or a URL to something live, or a repository. The `client_summary` is the covering note that goes WITH this — it is not a substitute for it, and a deliverable with an empty `artifacts` array is a deliverable that did not deliver.\n\nSay so plainly in the summary if you genuinely could not produce the artifact, and why. That is a real outcome. Pretending the summary is the work is not.\n\nFor this job: THE FILLED QUESTIONNAIRE, in the format it arrived in. This is the whole job: the client sends a spreadsheet of 46 questions and buys it back answered. A summary of having answered it is not the deliverable and cannot be submitted to anybody.",
+            "items": {
+              "type": "object",
+              "required": [
+                "kind",
+                "name"
+              ],
+              "properties": {
+                "kind": {
+                  "type": "string",
+                  "enum": [
+                    "file",
+                    "url",
+                    "repo"
+                  ],
+                  "description": "`file` for something you wrote to ./output/, `url` for something live, `repo` for source."
+                },
+                "name": {
+                  "type": "string",
+                  "description": "What it is, in the client's words. 'September ledger', not 'output.csv'."
+                },
+                "path": {
+                  "type": "string",
+                  "description": "Relative to ./output/ for a file. Required for kind=file."
+                },
+                "url": {
+                  "type": "string",
+                  "description": "Required for kind=url or kind=repo."
+                },
+                "what_it_is": {
+                  "type": "string",
+                  "description": "One line the client reads before opening it."
+                }
+              }
+            }
+          }
+        }
+      },
+      "ship_requires": [
+        "answered",
+        "artifacts",
+        "summary"
+      ],
+      "ship_checks": [
+        {
+          "kind": "each_has",
+          "items": "artifacts",
+          "field": "name"
+        }
+      ],
+      "deliverable_shape": {
+        "format": "report",
+        "sections": [
+          {
+            "heading": "Where this questionnaire stands",
+            "must": "How many items are answered, how many need a person, and whether it can be returned as it is.",
+            "depth": "a short paragraph"
+          },
+          {
+            "heading": "Answers",
+            "must": "Every item with its answer and the control or document it rests on. An answer with no source is the thing this trade must never send.",
+            "depth": "a table"
+          },
+          {
+            "heading": "Needs a human",
+            "must": "Each item nobody could answer from the evidence, and what would be needed to answer it. Never fill these in to make the packet look complete.",
+            "depth": "a short list"
+          },
+          {
+            "heading": "What happens next",
+            "must": "Who has to sign off, what is blocking return, and the date the requester expects it.",
+            "depth": "a short list"
+          }
+        ]
+      },
+      "input_schema": {
+        "_comment": "PER-PACKET. Parses one questionnaire, fans out a child per item, compiles the packet. The blueprint deliberately does NOT schedule this — its own note says scheduling it empty would burn a run with nothing to parse — so requiring the packet here makes that reasoning enforceable rather than a comment.",
+        "type": "object",
+        "required": [
+          "questionnaire"
+        ],
+        "properties": {
+          "questionnaire": {
+            "type": "string",
+            "description": "The packet to answer — its text, or the artifact id it arrived as. REQUIRED."
+          },
+          "buyer": {
+            "type": "string",
+            "description": "Who is asking. Changes what may be said and how much."
+          }
+        }
+      }
+    },
+    "desk_run": {
+      "description": "The morning sweep across open questionnaires: which packet has no draft, which is waiting on a human, which is ready to send after you approve.",
+      "tier": "fast",
+      "harness": {
+        "shape": "decide",
+        "max_runtime_s": 420,
+        "max_cost_usd": 0.3,
+        "strict_output": true,
+        "temperature": 0.1,
+        "steps": 20,
+        "skills": [
+          "fill-packet"
+        ],
+        "instructions": [
+          "knowledge/controls.md"
+        ]
+      },
+      "output_schema": {
+        "type": "object",
+        "required": [
+          "summary"
+        ],
+        "properties": {
+          "needs": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "What this run needs from the CLIENT before it can produce the work, in the client’s own words — one plain item per entry. Name the thing THEY would name: the document, the answer, the decision, the access. Populate this WHENEVER the run cannot finish because something only the client has is missing. Each entry becomes a request in their portal with an upload box; what they send is mounted into the next run’s ./inputs/, so an accurate ask here is what unblocks the work. Never use our nouns — a request naming a case, a schema or a connection id is unanswerable by the person receiving it. At most four, most important first. Leave absent when the work completed — an empty ask sent to a client is worse than silence."
+          },
+          "summary": {
+            "type": "string",
+            "description": "What a desk lead needs this morning. If there are no packets, say so — do not invent a vendor."
+          },
+          "ready_to_fill": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "required": [
+                "case_id"
+              ],
+              "properties": {
+                "case_id": {
+                  "type": "string"
+                },
+                "title": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "needs_human": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "required": [
+                "case_id",
+                "why"
+              ],
+              "properties": {
+                "case_id": {
+                  "type": "string"
+                },
+                "why": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        }
+      },
+      "input_schema": {
+        "_comment": "THE MORNING SWEEP over open questionnaires. Takes nothing: which packet needs what is a fact about stored rows, and `fill_questionnaire` is the per-packet job that DOES require its packet.",
+        "type": "object",
+        "required": [],
+        "properties": {},
+        "additionalProperties": false
+      }
+    }
+  },
+  "tools": [],
+  "capabilities": [
+    "send_email"
+  ],
+  "intake": [
+    {
+      "id": "controls-we-have",
+      "ask": "Which controls do you actually have, in your words — not a vendor's checklist?",
+      "why": "Every answer is drafted from this. Silence here is answered needs-a-human, never invented.",
+      "example": "SSO via Google Workspace, laptops encrypted with FileVault, customer data in RDS in eu-west-2, backups daily to a second region. No SOC 2 yet — we say so.",
+      "kind": "document",
+      "weight": 10
+    },
+    {
+      "id": "evidence",
+      "ask": "Where does the evidence live, and what must a human still attach?",
+      "why": "Stops a draft that cites a policy nobody can produce when the vendor asks.",
+      "example": "Policies in Drive/Security. Pen-test PDF is last year's — flag it. I attach insurance certificates myself.",
+      "kind": "fact",
+      "weight": 9
+    },
+    {
+      "id": "escalate",
+      "ask": "When must it stop and come to you rather than answering?",
+      "why": "Attesting to a control you do not have is the expensive error. Draw the line.",
+      "example": "Anything about breach history I have not written down. Any 'we encrypt at rest' that is not in controls. Anything that goes to a customer as a signed attestation.",
+      "kind": "correction",
+      "weight": 10
+    }
+  ],
+  "fulfillment": {
+    "client_connections": [
+      {
+        "toolkit": "googledrive",
+        "ask": "Connect the Drive folder with your evidence pack",
+        "detail": "Policies, SOC reports, and prior questionnaire answers."
+      }
+    ],
+    "intake_asks": [
+      {
+        "kind": "document",
+        "ask": "The blank questionnaire you need filled"
+      }
+    ],
+    "money_plan": {
+      "currency": "USD",
+      "lines": [
+        {
+          "label": "Kickoff",
+          "amount_minor": 50000,
+          "kind": "deposit"
+        },
+        {
+          "label": "Questionnaire pack",
+          "amount_minor": 200000,
+          "kind": "milestone"
+        }
+      ]
+    },
+    "deliverable_shapes": [
+      "document",
+      "file_set"
+    ],
+    "production_task_type": "fill_questionnaire"
+  },
+  "requires": [
+    "dunning"
+  ],
+  "workflows": [
+    {
+      "name": "workbook",
+      "description": "Turn a grid you have already decided is correct into a real Excel workbook (.xlsx), attached to this delivery automatically. Use it for anything a client will sort, filter or forward — a longlist, a ranking table, a budget, a control matrix. Do NOT use it to do arithmetic: it formats what you give it and never re-totals a column.",
+      "input_schema": {
+        "type": "object",
+        "required": [
+          "tabs"
+        ],
+        "properties": {
+          "filename": {
+            "type": "string",
+            "description": "e.g. \"april-longlist.xlsx\"."
+          },
+          "currency": {
+            "type": "string",
+            "description": "ISO-4217. Omit it and money renders as a plain number, which is honest."
+          },
+          "tabs": {
+            "type": "array",
+            "description": "One per sheet. A tab per schedule beats one sheet with blank rows between sections.",
+            "items": {
+              "type": "object",
+              "required": [
+                "name",
+                "header",
+                "rows"
+              ],
+              "properties": {
+                "name": {
+                  "type": "string"
+                },
+                "header": {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  }
+                },
+                "note": {
+                  "type": "string",
+                  "description": "A caveat rendered above the header, for something that must be read before the numbers."
+                },
+                "rows": {
+                  "type": "array",
+                  "description": "Each row is an array of cells. A plain string or number is fine; for a formatted number use {kind:\"n\", v:1234, format:\"money\"|\"pct\"|\"int\"} and for a date {kind:\"d\", v:\"2026-04-30\"}."
+                }
+              }
+            }
+          }
+        }
+      },
+      "output_schema": {
+        "type": "object",
+        "properties": {
+          "sheets": {
+            "type": "integer"
+          },
+          "rows": {
+            "type": "integer"
+          }
+        }
+      }
+    }
+  ]
+}

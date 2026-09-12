@@ -1,0 +1,19 @@
+{
+  "name": "@mycel/deliverability",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Whether a message may be sent, which mailbox sends it, and what a bounce costs. Shared so the agency product and the founder-side app cannot enforce different rules.",
+  "exports": {
+    ".": "./src/index.ts",
+    "./address": "./src/address.ts",
+    "./ramp": "./src/ramp.ts",
+    "./rotation": "./src/rotation.ts",
+    "./suppression": "./src/suppression.ts",
+    "./verdict": "./src/verdict.ts"
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {}
+}

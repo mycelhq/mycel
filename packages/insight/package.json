@@ -1,0 +1,24 @@
+{
+  "name": "@mycel/insight",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Product analytics for a generated Mycel business product — shaped so the agent that built it can read the result and improve it.",
+  "exports": {
+    ".": "./src/index.ts",
+    "./client": "./src/client.ts",
+    "./funnel": "./src/funnel.ts",
+    "./next": "./src/next.tsx"
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "test": "node --import tsx --test test/*.test.ts"
+  },
+  "dependencies": {},
+  "peerDependencies": {
+    "react": ">=18"
+  },
+  "peerDependenciesMeta": {
+    "react": { "optional": true }
+  }
+}

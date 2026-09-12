@@ -1,0 +1,30 @@
+{
+  "name": "chase_ladder",
+  "version": 1,
+  "digest": "dd9c919bfb4567e73a22292c4233378d90ecc96983868a95099d2e626246bb57",
+  "description": "Dunning ladder step from facts. Deterministic — never invent the rung.",
+  "input_schema": {
+    "type": "object",
+    "required": ["days_overdue"],
+    "properties": {
+      "days_overdue": { "type": "number" },
+      "disputed": { "type": "boolean" },
+      "good_standing": { "type": "boolean" },
+      "promised_payment_date": { "type": "string" },
+      "today": { "type": "string" },
+      "last_chased_days_ago": { "type": "number" }
+    }
+  },
+  "output_schema": {
+    "type": "object",
+    "required": ["step", "reason"],
+    "properties": {
+      "step": {
+        "type": "string",
+        "enum": ["reminder", "firm_reminder", "final_notice", "hold"]
+      },
+      "reason": { "type": "string" },
+      "escalate": { "type": "boolean" }
+    }
+  }
+}

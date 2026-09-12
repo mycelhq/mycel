@@ -1,0 +1,602 @@
+{
+  "wedge": "content-desk",
+  "title": "Content and distribution",
+  "cold_start": true,
+  "_comment_provides": "No role. A role is kernel-initiated work with `cardinality: one` across the whole install, and content is founder-initiated: nothing here should start on a timer before a human has seen what it writes.",
+  "provides": [],
+  "tier": "standard",
+  "cases": {
+    "stages": [
+      "listening",
+      "planning",
+      "drafting",
+      "review",
+      "published"
+    ],
+    "initial": "listening"
+  },
+  "task_types": {
+    "find_angles": {
+      "harness": {
+        "shape": "decide"
+      },
+      "description": "Find where this business's market is ALREADY talking, and what it is asking. Search real threads; return the questions in the words people used, each with the link you found it at. Never invent a forum, a subreddit or a thread \u2014 an angle without a URL is a guess dressed as research, and a founder who posts into an invented community loses an afternoon and their trust in this.",
+      "input_schema": {
+        "type": "object",
+        "required": [
+          "sells",
+          "sells_to"
+        ],
+        "properties": {
+          "sells": {
+            "type": "string",
+            "description": "What this business sells, in the founder's words."
+          },
+          "sells_to": {
+            "type": "string",
+            "description": "Who buys it."
+          },
+          "where_they_gather": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Communities the founder already knows about. A starting point, not a limit."
+          },
+          "avoid": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Places they do not want to appear, and topics they will not touch."
+          }
+        }
+      },
+      "output_schema": {
+        "type": "object",
+        "required": [
+          "client_summary",
+          "angles"
+        ],
+        "properties": {
+          "client_summary": {
+            "type": "string",
+            "description": "What their market is actually asking about, in three or four sentences. If you found little, say that \u2014 a thin market is a finding and pretending otherwise wastes their month."
+          },
+          "angles": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "required": [
+                "question",
+                "evidence_url",
+                "why_it_matters"
+              ],
+              "properties": {
+                "question": {
+                  "type": "string",
+                  "description": "The question people are actually asking, in THEIR words \u2014 copied from the thread, not paraphrased into marketing language. \"why is my sourdough gummy\" is an angle; \"optimising bakery operations\" is not."
+                },
+                "evidence_url": {
+                  "type": "string",
+                  "description": "The thread, post or page where you saw it. REQUIRED, and it is the whole difference between an angle and a guess: an invented subreddit that sounds plausible is worse than no angle, because a founder posts into it and gets nothing."
+                },
+                "where": {
+                  "type": "string",
+                  "description": "Where the conversation is happening \u2014 a subreddit, a forum, a LinkedIn hashtag, a comment section."
+                },
+                "asked_by": {
+                  "type": "string",
+                  "description": "Who is asking: an owner, a customer, a supplier. It decides whether this is a lead or an audience."
+                },
+                "why_it_matters": {
+                  "type": "string",
+                  "description": "What answering it would prove about this business. An angle that does not connect to what they sell is a content idea, not a marketing one."
+                },
+                "heat": {
+                  "type": "string",
+                  "enum": [
+                    "asked once",
+                    "asked often",
+                    "asked constantly"
+                  ],
+                  "description": "How often you saw it. Honest counts only \u2014 'asked constantly' from one thread is the claim that ends trust in this whole tool."
+                }
+              }
+            }
+          },
+          "searched": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Where you looked, including the places that turned up nothing. A founder cannot tell a thorough search from a lucky one without it."
+          },
+          "needs": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          }
+        }
+      },
+      "ship_requires": [
+        "client_summary",
+        "angles"
+      ],
+      "ship_checks": [
+        {
+          "kind": "each_has",
+          "items": "angles",
+          "field": "evidence_url"
+        },
+        {
+          "kind": "each_has",
+          "items": "angles",
+          "field": "question"
+        },
+        {
+          "kind": "min_items",
+          "field": "angles",
+          "n": 3
+        },
+        {
+          "kind": "min_words",
+          "field": "client_summary",
+          "n": 25
+        },
+        {
+          "kind": "forbids",
+          "field": "client_summary",
+          "vocabulary": "placeholder"
+        },
+        {
+          "kind": "no_tells",
+          "field": "client_summary"
+        }
+      ]
+    },
+    "plan_content": {
+      "harness": {
+        "shape": "deliver"
+      },
+      "deliverable_kind": "document",
+      "description": "Turn angles and what this business has actually WON into a short plan: what to publish, where, and in what order. Grounded in their own evidence \u2014 a plan that could have been written for any business in this trade is a plan nobody follows.",
+      "input_schema": {
+        "type": "object",
+        "required": [
+          "sells",
+          "sells_to"
+        ],
+        "properties": {
+          "sells": {
+            "type": "string"
+          },
+          "sells_to": {
+            "type": "string"
+          },
+          "angles": {
+            "type": "array",
+            "description": "From `find_angles`. Each one carries the thread it came from."
+          },
+          "wins": {
+            "type": "object",
+            "description": "From the `win-patterns` workflow: which segments actually convert, with sample sizes. The strongest content is about the thing you demonstrably do well, and this is the only honest source for what that is."
+          },
+          "weeks": {
+            "type": "integer",
+            "description": "How far ahead to plan. Short is better \u2014 a twelve-week calendar written before a single post has landed is fiction."
+          },
+          "start": {
+            "type": "string",
+            "description": "YYYY-MM-DD, the first day to schedule from. Passed in so the plan is replayable \u2014 never read from a clock."
+          },
+          "per_week": {
+            "type": "integer",
+            "description": "How many pieces a week this founder can genuinely keep to. Default 2. A calendar that assumes five is abandoned in week two, and an abandoned calendar is worse than none because it also carries the evidence that they abandoned it."
+          }
+        }
+      },
+      "output_schema": {
+        "type": "object",
+        "required": [
+          "client_summary",
+          "plan"
+        ],
+        "properties": {
+          "client_summary": {
+            "type": "string"
+          },
+          "plan": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "required": [
+                "what",
+                "where",
+                "why"
+              ],
+              "properties": {
+                "what": {
+                  "type": "string",
+                  "description": "The piece, in one line. Specific enough to write from."
+                },
+                "where": {
+                  "type": "string"
+                },
+                "why": {
+                  "type": "string",
+                  "description": "What it is for: which angle it answers, or which win it proves."
+                },
+                "answers_url": {
+                  "type": "string",
+                  "description": "The thread it replies to, when there is one."
+                },
+                "effort": {
+                  "type": "string",
+                  "enum": [
+                    "small",
+                    "medium",
+                    "large"
+                  ]
+                }
+              }
+            }
+          },
+          "questions": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "about": {
+                  "type": "string"
+                },
+                "recommendation": {
+                  "type": "string"
+                },
+                "why_asking": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "needs": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "artifacts": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "required": [
+                "name",
+                "path"
+              ],
+              "properties": {
+                "kind": {
+                  "type": "string"
+                },
+                "name": {
+                  "type": "string"
+                },
+                "path": {
+                  "type": "string"
+                },
+                "what_it_is": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "schedule": {
+            "type": "object",
+            "description": "What `content_calendar` returned, quoted verbatim. Never write dates yourself and never re-sort this \u2014 a founder who reads Monday's list again on Wednesday has to see the same thing."
+          }
+        }
+      },
+      "ship_requires": [
+        "client_summary",
+        "plan",
+        "artifacts"
+      ],
+      "ship_checks": [
+        {
+          "kind": "each_has",
+          "items": "plan",
+          "field": "what"
+        },
+        {
+          "kind": "each_has",
+          "items": "plan",
+          "field": "why"
+        },
+        {
+          "kind": "min_items",
+          "field": "plan",
+          "n": 3
+        },
+        {
+          "kind": "min_words",
+          "field": "client_summary",
+          "n": 25
+        },
+        {
+          "kind": "max_words",
+          "field": "client_summary",
+          "n": 400
+        },
+        {
+          "kind": "forbids",
+          "field": "client_summary",
+          "vocabulary": "placeholder"
+        },
+        {
+          "kind": "each_has",
+          "items": "artifacts",
+          "field": "name"
+        },
+        {
+          "kind": "no_tells",
+          "field": "client_summary"
+        }
+      ],
+      "_comment_calendar": "THE MODEL PICKS WHAT AND WHERE; THE WORKFLOW PICKS WHEN. Asking the same run to assign dates is asking a language model to do calendar arithmetic \u2014 the same plan run twice would produce two different calendars, 'next Tuesday' would be wrong half the time, and nothing could be checked. `content_calendar` takes the ordered plan and a start date and returns it dated: weekdays only, never twice to one channel in a day, spaced to the cadence the founder can actually keep, and big pieces given the room they need. It PUBLISHES NOTHING and has no network access at all \u2014 posting under a founder's own name is public and permanent, and what they need is not a robot with their password, it is to stop opening a blank box on a Sunday night.",
+      "deliverable_shape": {
+        "format": "document",
+        "sections": [
+          {
+            "heading": "What we are publishing, and why now",
+            "must": "The through-line of the plan tied to what this business has actually won. A paragraph that could have been written for any business in this trade is the failure this task type names in its own description.",
+            "depth": "a short paragraph"
+          },
+          {
+            "heading": "The plan",
+            "must": "Each piece with its channel and its order. Sequence is the deliverable \u2014 a list with no order is a brainstorm.",
+            "depth": "a table"
+          },
+          {
+            "heading": "The evidence behind it",
+            "must": "The angles and wins each piece is grounded in, with the link or the record they came from.",
+            "depth": "a few lines per piece"
+          },
+          {
+            "heading": "What we need from you",
+            "must": "Anything the plan cannot start without. If nothing, say so plainly so the client knows they are not blocking it.",
+            "depth": "a short list"
+          }
+        ]
+      }
+    },
+    "write_post": {
+      "harness": {
+        "shape": "deliver"
+      },
+      "deliverable_kind": "document",
+      "description": "Write ONE piece, ready to publish. Grounded in something this business actually did \u2014 never a generic post about the trade. It goes to the founder for approval; nothing is ever published from here.",
+      "input_schema": {
+        "type": "object",
+        "required": [
+          "what",
+          "channel"
+        ],
+        "properties": {
+          "what": {
+            "type": "string",
+            "description": "The piece to write, from the plan."
+          },
+          "channel": {
+            "type": "string",
+            "description": "LinkedIn, Reddit, their own blog. It changes the writing, not just the length."
+          },
+          "answers_url": {
+            "type": "string",
+            "description": "The thread this replies to, when there is one. Read it before writing \u2014 a reply that does not engage with what was actually said is the thing communities ban people for."
+          },
+          "facts": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "True things about this business you may use: a result, a number, a thing they built. The post is built from these, and a post with none of them is a post about the industry rather than about them."
+          },
+          "avoid": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          }
+        }
+      },
+      "output_schema": {
+        "type": "object",
+        "required": [
+          "client_summary",
+          "body",
+          "channel"
+        ],
+        "properties": {
+          "client_summary": {
+            "type": "string",
+            "description": "The covering note the founder reads before deciding to post: what this says, who it is for, and what you expect it to do. Not a summary of the post \u2014 they can read the post."
+          },
+          "channel": {
+            "type": "string",
+            "description": "Where this is meant to go. The same words do not work on LinkedIn and Reddit and it is not a formatting difference \u2014 see what-good-content-looks-like.md."
+          },
+          "body": {
+            "type": "string",
+            "description": "The post itself, ready to publish. No placeholders, no \"[insert stat]\", no invented numbers. If a claim needs a figure this business has not given you, write the sentence without it or leave the claim out."
+          },
+          "angle_url": {
+            "type": "string",
+            "description": "The thread this answers, when it came from one. It is what makes the post a reply to a real conversation rather than a broadcast."
+          },
+          "grounded_in": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Facts from THIS business that the post relies on \u2014 a win, a number, a thing they actually did. Empty means the post is generic, and generic is the failure mode of every content tool ever built."
+          },
+          "questions": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "about": {
+                  "type": "string"
+                },
+                "recommendation": {
+                  "type": "string",
+                  "description": "What you would do, so the founder answers in one word."
+                },
+                "why_asking": {
+                  "type": "string"
+                }
+              }
+            },
+            "description": "What you could not decide alone \u2014 a claim you cannot verify, a customer name you may not have permission to use."
+          },
+          "needs": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "What only the founder has, and without which this post cannot be written honestly."
+          },
+          "artifacts": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "required": [
+                "name",
+                "path"
+              ],
+              "properties": {
+                "kind": {
+                  "type": "string"
+                },
+                "name": {
+                  "type": "string"
+                },
+                "path": {
+                  "type": "string"
+                },
+                "what_it_is": {
+                  "type": "string"
+                }
+              }
+            },
+            "description": "The post as a file in ./output/, plus anything that goes with it."
+          }
+        }
+      },
+      "ship_requires": [
+        "client_summary",
+        "body",
+        "artifacts"
+      ],
+      "ship_checks": [
+        {
+          "kind": "min_words",
+          "field": "body",
+          "n": 60
+        },
+        {
+          "kind": "max_words",
+          "field": "body",
+          "n": 1200
+        },
+        {
+          "kind": "forbids",
+          "field": "body",
+          "vocabulary": "placeholder"
+        },
+        {
+          "kind": "no_tells",
+          "field": "body",
+          "social": true
+        },
+        {
+          "kind": "forbids",
+          "field": "body",
+          "vocabulary": "brand_poetry"
+        },
+        {
+          "kind": "min_words",
+          "field": "client_summary",
+          "n": 20
+        },
+        {
+          "kind": "forbids",
+          "field": "client_summary",
+          "vocabulary": "placeholder"
+        },
+        {
+          "kind": "min_items",
+          "field": "grounded_in",
+          "n": 1
+        },
+        {
+          "kind": "each_has",
+          "items": "artifacts",
+          "field": "name"
+        },
+        {
+          "kind": "no_tells",
+          "field": "client_summary"
+        }
+      ],
+      "deliverable_shape": {
+        "format": "document",
+        "sections": [
+          {
+            "heading": "The post",
+            "must": "The finished text, ready to publish as written. Not an outline, not a draft with placeholders, not notes toward a post.",
+            "depth": "the full body"
+          },
+          {
+            "heading": "Where it goes",
+            "must": "The channel this was written for, and anything about the format there it has been shaped to.",
+            "depth": "one or two lines"
+          },
+          {
+            "heading": "What it is built on",
+            "must": "The claims in the post that come from this business's own evidence, and where each came from. Any claim not traceable here should not be in the post.",
+            "depth": "a short list"
+          }
+        ]
+      }
+    }
+  },
+  "fulfillment": {
+    "client_connections": [],
+    "intake_asks": [
+      {
+        "kind": "answer",
+        "ask": "What have you actually done that you would be happy to talk about publicly?",
+        "detail": "A result, a project, a number. Content grounded in a real thing is the only kind that works, and this is the only place we can get one."
+      },
+      {
+        "kind": "answer",
+        "ask": "Anywhere you do NOT want to appear, or anything you will not say?"
+      }
+    ],
+    "deliverable_shapes": [
+      "document"
+    ],
+    "production_task_type": "write_post"
+  },
+  "skills": [
+    "what-good-content-looks-like.md",
+    "finding-the-angle.md"
+  ],
+  "workflows": [
+    {
+      "name": "content_calendar",
+      "lib": "content-calendar"
+    }
+  ]
+}

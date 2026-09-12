@@ -1,0 +1,17 @@
+{
+ "name": "floating-navbar",
+ "type": "registry:ui",
+ "dependencies": [
+  "motion"
+ ],
+ "files": [
+  {
+   "path": "components/ui/floating-navbar.tsx",
+   "content": "\"use client\";\nimport React, { useState } from \"react\";\nimport {\n  motion,\n  AnimatePresence,\n  useScroll,\n  useMotionValueEvent,\n} from \"motion/react\";\nimport { cn } from \"@/lib/utils\";\n\nexport const FloatingNav = ({\n  navItems,\n  className,\n}: {\n  navItems: {\n    name: string;\n    link: string;\n    icon?: JSX.Element;\n  }[];\n  className?: string;\n}) => {\n  const { scrollYProgress } = useScroll();\n  const [visible, setVisible] = useState(false);\n\n  useMotionValueEvent(scrollYProgress, \"change\", (current) => {\n    if (typeof current === \"number\") {\n      const direction = current - scrollYProgress.getPrevious()!;\n\n      if (scrollYProgress.get() < 0.05) {\n        setVisible(false);\n      } else {\n        if (direction < 0) {\n          setVisible(true);\n        } else {\n          setVisible(false);\n        }\n      }\n    }\n  });\n\n  return (\n    <AnimatePresence mode=\"wait\">\n      <motion.div\n        initial={{\n          opacity: 1,\n          y: -100,\n        }}\n        animate={{\n          y: visible ? 0 : -100,\n          opacity: visible ? 1 : 0,\n        }}\n        transition={{\n          duration: 0.2,\n        }}\n        className={cn(\n          \"flex max-w-fit fixed top-10 inset-x-0 mx-auto z-[5000] items-center justify-center\",\n          className\n        )}\n      >\n        <div className=\"flex items-center justify-center gap-2 rounded-full border border-white/10 bg-white/80 px-2 py-1.5 shadow-lg shadow-black/10 backdrop-blur-md dark:border-white/10 dark:bg-black/50\">\n          {/* Nav items container */}\n          <div className=\"flex items-center gap-1\">\n            {navItems.map((navItem, idx: number) => (\n              <a\n                key={`link-${idx}`}\n                href={navItem.link}\n                className={cn(\n                  \"relative flex items-center gap-1 rounded-full px-4 py-2 text-sm font-medium text-neutral-600 transition-colors hover:bg-neutral-100 hover:text-neutral-900 dark:text-neutral-300 dark:hover:bg-white/10 dark:hover:text-white\"\n                )}\n              >\n                <span className=\"block sm:hidden\">{navItem.icon}</span>\n                <span className=\"hidden sm:block\">{navItem.name}</span>\n              </a>\n            ))}\n          </div>\n\n          {/* Divider */}\n          <div className=\"h-5 w-px bg-neutral-200 dark:bg-white/10\" />\n\n          {/* CTA Button */}\n          <button className=\"relative rounded-full bg-neutral-900 px-4 py-2 text-sm font-medium text-white transition-all hover:bg-neutral-800 hover:shadow-lg hover:shadow-neutral-900/20 dark:bg-white dark:text-black dark:hover:bg-neutral-100 dark:hover:shadow-white/20\">\n            <span>Login</span>\n          </button>\n        </div>\n      </motion.div>\n    </AnimatePresence>\n  );\n};\n",
+   "type": "registry:ui",
+   "target": "components/ui/floating-navbar.tsx"
+  }
+ ],
+ "author": "Manu Arora <hi@manuarora.in>",
+ "title": "Floating Navbar"
+}

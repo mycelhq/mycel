@@ -1,0 +1,28 @@
+{
+  "name": "campaign_pace",
+  "version": 1,
+  "digest": "b90c817e169a3419374263caf4f088ff444b2407f030de66437dafb51c53f0dd",
+  "description": "Outbound cadence from stage facts. Deterministic — never invent the next touch.",
+  "input_schema": {
+    "type": "object",
+    "properties": {
+      "stage": { "type": "string" },
+      "has_reply": { "type": "boolean" },
+      "opt_out": { "type": "boolean" },
+      "days_since_last_touch": { "type": "number" },
+      "touch_count": { "type": "number" }
+    }
+  },
+  "output_schema": {
+    "type": "object",
+    "required": ["should_send", "reason"],
+    "properties": {
+      "should_send": { "type": "boolean" },
+      "mark_closed": { "type": "boolean" },
+      "next_stage": { "type": "string" },
+      "touch_number": { "type": "number" },
+      "next_touch_after_days": { "type": ["number", "null"] },
+      "reason": { "type": "string" }
+    }
+  }
+}

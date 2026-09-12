@@ -1,0 +1,24 @@
+name: Wedge gap
+description: The kernel couldn't express something a real service needed.
+title: "wedge-gap: "
+labels: ["wedge-gap"]
+body:
+  - type: textarea
+    id: service
+    attributes:
+      label: What service were you running?
+      description: The trade, not our nouns. "Monthly close for an e-commerce shop", not a file path.
+    validations:
+      required: true
+  - type: textarea
+    id: missing
+    attributes:
+      label: What couldn't the kernel hold?
+      description: A wait, a file, a third party, a number, a stage, a connection. Be specific.
+    validations:
+      required: true
+  - type: textarea
+    id: workaround
+    attributes:
+      label: What did you do instead?
+      description: Fork, prompt, spreadsheet, hire. If you stopped, say that.

@@ -1,0 +1,19 @@
+{
+  "name": "@mycel/sourcing",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Azure Maps transport, business identity, mailbox rules and website contact parsing. One copy, so the founder-side harvest and the product GTM cannot drift.",
+  "exports": {
+    ".": "./src/index.ts",
+    "./azure-maps": "./src/azure-maps.ts",
+    "./identity": "./src/identity.ts",
+    "./mailbox": "./src/mailbox.ts",
+    "./site-contacts": "./src/site-contacts.ts",
+    "./lead-quality": "./src/lead-quality.ts"
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {}
+}

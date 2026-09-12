@@ -1,0 +1,17 @@
+{
+ "name": "wobble-card",
+ "type": "registry:ui",
+ "dependencies": [
+  "motion"
+ ],
+ "files": [
+  {
+   "path": "components/ui/wobble-card.tsx",
+   "content": "\"use client\";\nimport React, { useState } from \"react\";\nimport { motion } from \"motion/react\";\nimport { cn } from \"@/lib/utils\";\n\nexport const WobbleCard = ({\n  children,\n  containerClassName,\n  className,\n}: {\n  children: React.ReactNode;\n  containerClassName?: string;\n  className?: string;\n}) => {\n  const [mousePosition, setMousePosition] = useState({ x: 0, y: 0 });\n  const [isHovering, setIsHovering] = useState(false);\n\n  const handleMouseMove = (event: React.MouseEvent<HTMLElement>) => {\n    const { clientX, clientY } = event;\n    const rect = event.currentTarget.getBoundingClientRect();\n    const x = (clientX - (rect.left + rect.width / 2)) / 20;\n    const y = (clientY - (rect.top + rect.height / 2)) / 20;\n    setMousePosition({ x, y });\n  };\n  return (\n    <motion.section\n      onMouseMove={handleMouseMove}\n      onMouseEnter={() => setIsHovering(true)}\n      onMouseLeave={() => {\n        setIsHovering(false);\n        setMousePosition({ x: 0, y: 0 });\n      }}\n      style={{\n        transform: isHovering\n          ? `translate3d(${mousePosition.x}px, ${mousePosition.y}px, 0) scale3d(1, 1, 1)`\n          : \"translate3d(0px, 0px, 0) scale3d(1, 1, 1)\",\n        transition: \"transform 0.1s ease-out\",\n      }}\n      className={cn(\n        \"mx-auto w-full bg-indigo-800  relative rounded-2xl overflow-hidden\",\n        containerClassName\n      )}\n    >\n      <div\n        className=\"relative  h-full [background-image:radial-gradient(88%_100%_at_top,rgba(255,255,255,0.5),rgba(255,255,255,0))]  sm:mx-0 sm:rounded-2xl overflow-hidden\"\n        style={{\n          boxShadow:\n            \"0 10px 32px rgba(34, 42, 53, 0.12), 0 1px 1px rgba(0, 0, 0, 0.05), 0 0 0 1px rgba(34, 42, 53, 0.05), 0 4px 6px rgba(34, 42, 53, 0.08), 0 24px 108px rgba(47, 48, 55, 0.10)\",\n        }}\n      >\n        <motion.div\n          style={{\n            transform: isHovering\n              ? `translate3d(${-mousePosition.x}px, ${-mousePosition.y}px, 0) scale3d(1.03, 1.03, 1)`\n              : \"translate3d(0px, 0px, 0) scale3d(1, 1, 1)\",\n            transition: \"transform 0.1s ease-out\",\n          }}\n          className={cn(\"h-full px-4 py-20 sm:px-10\", className)}\n        >\n          <Noise />\n          {children}\n        </motion.div>\n      </div>\n    </motion.section>\n  );\n};\n\nconst Noise = () => {\n  return (\n    <div\n      className=\"absolute inset-0 w-full h-full scale-[1.2] transform opacity-10 [mask-image:radial-gradient(#fff,transparent,75%)]\"\n      style={{\n        backgroundImage: \"url(/noise.webp)\",\n        backgroundSize: \"30%\",\n      }}\n    ></div>\n  );\n};\n",
+   "type": "registry:ui",
+   "target": "components/ui/wobble-card.tsx"
+  }
+ ],
+ "author": "Manu Arora <hi@manuarora.in>",
+ "title": "Wobble Card"
+}

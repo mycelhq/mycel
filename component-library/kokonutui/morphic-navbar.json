@@ -1,0 +1,15 @@
+{
+ "name": "morphic-navbar",
+ "type": "registry:component",
+ "dependencies": [
+  "clsx"
+ ],
+ "files": [
+  {
+   "type": "registry:component",
+   "content": "\"use client\";\n\nimport clsx from \"clsx\";\nimport Link from \"next/link\";\nimport { useState } from \"react\";\n\ninterface NavItem {\n  name: string;\n}\n\ninterface MorphicNavbarProps {\n  items?: Record<string, NavItem>;\n  defaultPath?: string;\n  className?: string;\n}\n\nconst DEFAULT_NAV_ITEMS: Record<string, NavItem> = {\n  \"/\": { name: \"home\" },\n  \"/works\": { name: \"works\" },\n  \"/blog\": { name: \"blog\" },\n  \"/about\": { name: \"about\" },\n};\n\nexport function MorphicNavbar({\n  items = DEFAULT_NAV_ITEMS,\n  defaultPath = \"/\",\n  className,\n}: MorphicNavbarProps) {\n  const [activePath, setActivePath] = useState(defaultPath);\n\n  const isActiveLink = (path: string) => {\n    if (path === \"/\") {\n      return activePath === \"/\";\n    }\n    return activePath.startsWith(path);\n  };\n\n  return (\n    <nav className={clsx(\"mx-auto max-w-4xl px-4 py-2\", className)}>\n      <div className=\"flex items-center justify-center\">\n        <div className=\"glass flex items-center justify-between overflow-hidden rounded-xl\">\n          {Object.entries(items).map(([path, { name }], index, array) => {\n            const isActive = isActiveLink(path);\n            const isFirst = index === 0;\n            const isLast = index === array.length - 1;\n            const prevPath = index > 0 ? array[index - 1][0] : null;\n            const nextPath =\n              index < array.length - 1 ? array[index + 1][0] : null;\n\n            return (\n              <Link\n                className={clsx(\n                  \"flex items-center justify-center bg-black p-1.5 px-4 text-sm text-white transition-all duration-300 dark:bg-white dark:text-black\",\n                  isActive\n                    ? \"mx-2 rounded-xl font-semibold text-sm\"\n                    : clsx(\n                        (isActiveLink(prevPath || \"\") || isFirst) &&\n                          \"rounded-l-xl\",\n                        (isActiveLink(nextPath || \"\") || isLast) &&\n                          \"rounded-r-xl\"\n                      )\n                )}\n                href=\"#\"\n                key={path}\n                onClick={() => setActivePath(path)}\n              >\n                {name}\n              </Link>\n            );\n          })}\n        </div>\n      </div>\n    </nav>\n  );\n}\n\nexport default MorphicNavbar;\n",
+   "path": "/components/kokonutui/morphic-navbar.tsx",
+   "target": "components/kokonutui/morphic-navbar.tsx"
+  }
+ ]
+}

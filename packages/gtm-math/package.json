@@ -1,0 +1,15 @@
+{
+  "name": "@mycel/gtm-math",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "The go-to-market arithmetic both the kernel and the founder-side growth app need, in one place so they cannot drift.",
+  "exports": {
+    ".": "./src/index.ts",
+    "./backtest": "./src/backtest.ts"
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {}
+}

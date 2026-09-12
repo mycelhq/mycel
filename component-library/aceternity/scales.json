@@ -1,0 +1,14 @@
+{
+ "name": "scales",
+ "type": "registry:ui",
+ "files": [
+  {
+   "path": "components/ui/scales.tsx",
+   "content": "import { cn } from \"@/lib/utils\";\nimport React from \"react\";\n\nexport interface ScalesProps {\n  orientation?: \"horizontal\" | \"vertical\" | \"diagonal\";\n  size?: number;\n  className?: string;\n  color?: string;\n}\n\nexport const Scales = ({\n  orientation = \"diagonal\",\n  size = 10,\n  className,\n  color,\n}: ScalesProps) => {\n  const getGradientAngle = () => {\n    switch (orientation) {\n      case \"horizontal\":\n        return \"0deg\";\n      case \"vertical\":\n        return \"90deg\";\n      case \"diagonal\":\n      default:\n        return \"315deg\";\n    }\n  };\n\n  return (\n    <div\n      className={cn(\n        \"absolute inset-0 h-full w-full overflow-hidden\",\n        \"[--pattern-scales:var(--color-neutral-950)]/10\",\n        \"dark:[--pattern-scales:var(--color-white)]/10\",\n        className,\n      )}\n      style={\n        {\n          \"--scales-size\": `${size}px`,\n          \"--scales-angle\": getGradientAngle(),\n          ...(color && { \"--pattern-scales\": color }),\n        } as React.CSSProperties\n      }\n    >\n      <div\n        className=\"h-full w-full bg-[repeating-linear-gradient(var(--scales-angle),var(--pattern-scales)_0,var(--pattern-scales)_1px,transparent_0,transparent_50%)]\"\n        style={{\n          backgroundSize: `var(--scales-size) var(--scales-size)`,\n        }}\n      />\n    </div>\n  );\n};\n\nexport interface ScalesContainerProps extends ScalesProps {\n  children?: React.ReactNode;\n  containerClassName?: string;\n}\n\nexport const ScalesContainer = ({\n  children,\n  orientation = \"diagonal\",\n  size = 10,\n  className,\n  containerClassName,\n  color,\n}: ScalesContainerProps) => {\n  return (\n    <div className={cn(\"relative\", containerClassName)}>\n      <Scales\n        orientation={orientation}\n        size={size}\n        className={className}\n        color={color}\n      />\n      <div className=\"relative z-10\">{children}</div>\n    </div>\n  );\n};\n\nexport default Scales;\n",
+   "type": "registry:ui",
+   "target": "components/ui/scales.tsx"
+  }
+ ],
+ "author": "Manu Arora <hi@manuarora.in>",
+ "title": "Scales"
+}

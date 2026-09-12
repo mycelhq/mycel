@@ -1,0 +1,179 @@
+// Durable portal credentials: minted links and exchanged client sessions.
+//
+// These were in-process Maps, which was wrong in two ways that only show up in production. A deploy
+// signed out every customer, silently — they'd click the link in their email and be told it was no
+// longer valid. And on more than one replica, a link minted by A could not be exchanged on B, so the
+// portal worked or didn't depending on which box the load balancer picked.
+//
+// Only hashes are stored, exactly as before: a stolen database yields no working links.
+import pg from "pg";
+import { getPool } from "./pool";
+import { withSchemaLock } from "./schema-lock";
+
+export interface PortalLinkRow {
+  hash: string;
+  project_id: string;
+  client_id: string;
+  expires_at: number;
+  used: boolean;
+  /** When the first exchange happened. Null while the link is still unopened. */
+  used_at?: number | null;
+  /** The session that first exchange produced — see `EXCHANGE_GRACE_MS` in portal.ts. */
+  session_token?: string | null;
+}
+export interface PortalSessionRow {
+  token: string;
+  project_id: string;
+  client_id: string;
+  expires_at: number;
+}
+
+export class PortalPg {
+  private constructor(private pool: pg.Pool) {}
+
+  static async connect(url: string): Promise<PortalPg> {
+    const pool = getPool(url);
+    const self = new PortalPg(pool);
+      // Serialised across processes: `CREATE TABLE IF NOT EXISTS` is not concurrency-safe, and
+      // four kernel containers boot together on every deploy. See schema-lock.ts.
+    await withSchemaLock(pool, async (client) => {
+      await client.query(`
+        CREATE TABLE IF NOT EXISTS portal_links (
+          hash text PRIMARY KEY,
+          project_id text NOT NULL,
+          client_id text NOT NULL,
+          expires_at bigint NOT NULL,
+          used boolean NOT NULL DEFAULT false,
+          created_at timestamptz NOT NULL DEFAULT now()
+        );
+        CREATE TABLE IF NOT EXISTS portal_sessions (
+          token text PRIMARY KEY,
+          project_id text NOT NULL,
+          client_id text NOT NULL,
+          expires_at bigint NOT NULL,
+          created_at timestamptz NOT NULL DEFAULT now()
+        );
+        CREATE INDEX IF NOT EXISTS portal_sessions_client_idx ON portal_sessions (client_id);
+        CREATE INDEX IF NOT EXISTS portal_links_client_idx ON portal_links (client_id);
+        -- Added after the table shipped, so ALTER rather than a column in the CREATE above: the
+        -- deployed database already has portal_links and CREATE TABLE IF NOT EXISTS would skip it
+        -- silently, leaving the grace-window replay reading columns that are not there.
+        ALTER TABLE portal_links ADD COLUMN IF NOT EXISTS used_at bigint;
+        ALTER TABLE portal_links ADD COLUMN IF NOT EXISTS session_token text;
+      `);
+    });
+    return self;
+  }
+
+  async putLink(l: PortalLinkRow): Promise<void> {
+    await this.pool.query(
+      `INSERT INTO portal_links (hash, project_id, client_id, expires_at, used) VALUES ($1,$2,$3,$4,$5)
+       ON CONFLICT (hash) DO UPDATE SET used = EXCLUDED.used`,
+      [l.hash, l.project_id, l.client_id, l.expires_at, l.used],
+    );
+  }
+
+  /**
+   * Claim a link, atomically.
+   *
+   * The single-use guarantee has to hold across replicas, so the check and the write are one
+   * statement. Read-then-write would let two simultaneous clicks on the same emailed link both
+   * succeed — which is exactly the race a forwarded email produces.
+   */
+  async claimLink(hash: string, now: number): Promise<PortalLinkRow | undefined> {
+    const r = await this.pool.query(
+      `UPDATE portal_links SET used = true
+       WHERE hash = $1 AND used = false AND expires_at > $2
+       RETURNING hash, project_id, client_id, expires_at, used`,
+      [hash, now],
+    );
+    const row = r.rows[0];
+    return row ? { ...row, expires_at: Number(row.expires_at) } : undefined;
+  }
+
+  /** Record which session a claim produced, so a re-exchange inside the grace window can find it. */
+  async noteLinkExchanged(hash: string, usedAt: number, sessionToken: string): Promise<void> {
+    await this.pool.query(
+      `UPDATE portal_links SET used_at = $2, session_token = $3 WHERE hash = $1`,
+      [hash, usedAt, sessionToken],
+    );
+  }
+
+  /**
+   * A link that has already been claimed, and the live session it was claimed into — but only if
+   * the claim is recent enough to still be the same visit.
+   *
+   * One statement with a JOIN, not two reads, because the two halves must agree: a session revoked
+   * between them would otherwise be resurrected by a replay. The join to `portal_sessions` is what
+   * makes `revokeClient` — which deletes sessions — also kill every replay of the link that minted
+   * them, without that function needing to know this mechanism exists.
+   */
+  async replayLink(
+    hash: string,
+    now: number,
+    graceFloor: number,
+  ): Promise<{ link: PortalLinkRow; session: PortalSessionRow & { kind: "client" } } | undefined> {
+    const r = await this.pool.query(
+      `SELECT l.hash, l.project_id, l.client_id, l.expires_at, l.used, l.used_at, l.session_token,
+              s.token AS s_token, s.expires_at AS s_expires_at
+         FROM portal_links l
+         JOIN portal_sessions s ON s.token = l.session_token
+        -- Note what is NOT tested: l.expires_at. The link's own TTL was already satisfied at the
+        -- moment of the claim, and re-testing it here would reintroduce the bug at the boundary —
+        -- a scanner opening a link ten minutes before its week is up would lock the human out
+        -- for the sake of a deadline the session it is replaying already beat.
+        WHERE l.hash = $1 AND l.used_at IS NOT NULL AND l.used_at >= $2 AND s.expires_at > $3`,
+      [hash, graceFloor, now],
+    );
+    const row = r.rows[0];
+    if (!row) return undefined;
+    return {
+      link: {
+        hash: row.hash,
+        project_id: row.project_id,
+        client_id: row.client_id,
+        expires_at: Number(row.expires_at),
+        used: row.used,
+        used_at: Number(row.used_at),
+        session_token: row.session_token,
+      },
+      session: {
+        kind: "client",
+        token: row.s_token,
+        project_id: row.project_id,
+        client_id: row.client_id,
+        expires_at: Number(row.s_expires_at),
+      },
+    };
+  }
+
+  async putSession(s: PortalSessionRow): Promise<void> {
+    await this.pool.query(
+      `INSERT INTO portal_sessions (token, project_id, client_id, expires_at) VALUES ($1,$2,$3,$4)
+       ON CONFLICT (token) DO NOTHING`,
+      [s.token, s.project_id, s.client_id, s.expires_at],
+    );
+  }
+
+  async getSession(token: string, now: number): Promise<PortalSessionRow | undefined> {
+    const r = await this.pool.query(
+      `SELECT token, project_id, client_id, expires_at FROM portal_sessions WHERE token=$1 AND expires_at > $2`,
+      [token, now],
+    );
+    const row = r.rows[0];
+    return row ? { ...row, expires_at: Number(row.expires_at) } : undefined;
+  }
+
+  /** Revoke everything for a client: sessions, and any link still sitting unexchanged in an inbox. */
+  async revokeClient(clientId: string): Promise<number> {
+    const s = await this.pool.query(`DELETE FROM portal_sessions WHERE client_id=$1`, [clientId]);
+    await this.pool.query(`DELETE FROM portal_links WHERE client_id=$1 AND used=false`, [clientId]);
+    return s.rowCount ?? 0;
+  }
+
+  async close(): Promise<void> {
+    // No-op: the pool is shared process-wide. See pool.ts — the first store to end
+    // it would close the connections every other store is still using. Shutdown calls
+    // closeAllPools() once.
+  }
+}

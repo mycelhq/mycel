@@ -1,0 +1,32 @@
+{
+  "blueprint": "security-questionnaire",
+  "title": "Security questionnaire desk",
+  "summary": "Answer vendor security questionnaires from labelled house knowledge. Fans out per question via Batch; anything not in knowledge is marked for a human rather than invented.",
+  "wedge": "security-questionnaire",
+  "sells_as": "Questionnaire desk, $500–1,500/mo",
+  "requires_connections": [
+    {
+      "name": "security-email",
+      "capability": "send_email",
+      "why": "Return the completed packet (after you approve) from an address the vendor already has."
+    }
+  ],
+  "schedules": [
+    {
+      "name": "Questionnaire desk",
+      "task_type": "desk_run",
+      "cadence": { "kind": "daily", "hour": 8, "minute": 0 },
+      "input": {
+        "_why_daily": "A packet that arrives at 4pm is still on the desk in the morning. A weekly tick hides five days of silence.",
+        "_why_only_one_schedule": "fill_questionnaire takes one packet. Scheduling it empty would burn a run with nothing to parse. The morning sweep finds the work."
+      }
+    }
+  ],
+  "seed_knowledge": [
+    {
+      "name": "controls.md",
+      "kind": "fact",
+      "content": "# Controls we actually have\n\nTHIS project's controls, in this business's own words. The desk answers from this file and from\nthe evidence pack; anything not written here is answered `needs_human` rather than invented, so an\nempty section is safe — it is not a claim that the control is absent, only that nobody has written\nit down yet.\n\nOne bullet per control, each ending in where the evidence lives (a document name, not a link that\nrots).\n\n## Identity and access\n\n- \n\n## Data handling, encryption and retention\n\n- \n\n## Subprocessors and vendors\n\n- \n\n## Incident response and breach history\n\n- \n\n## Certifications and audits\n\n- \n"
+    }
+  ]
+}

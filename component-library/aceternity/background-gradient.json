@@ -1,0 +1,17 @@
+{
+ "name": "background-gradient",
+ "type": "registry:ui",
+ "dependencies": [
+  "motion"
+ ],
+ "files": [
+  {
+   "path": "components/ui/background-gradient.tsx",
+   "content": "import { cn } from \"@/lib/utils\";\nimport React from \"react\";\nimport { motion } from \"motion/react\";\n\nexport const BackgroundGradient = ({\n  children,\n  className,\n  containerClassName,\n  animate = true,\n}: {\n  children?: React.ReactNode;\n  className?: string;\n  containerClassName?: string;\n  animate?: boolean;\n}) => {\n  const variants = {\n    initial: {\n      backgroundPosition: \"0 50%\",\n    },\n    animate: {\n      backgroundPosition: [\"0, 50%\", \"100% 50%\", \"0 50%\"],\n    },\n  };\n  return (\n    <div className={cn(\"relative p-[4px] group\", containerClassName)}>\n      <motion.div\n        variants={animate ? variants : undefined}\n        initial={animate ? \"initial\" : undefined}\n        animate={animate ? \"animate\" : undefined}\n        transition={\n          animate\n            ? {\n                duration: 5,\n                repeat: Infinity,\n                repeatType: \"reverse\",\n              }\n            : undefined\n        }\n        style={{\n          backgroundSize: animate ? \"400% 400%\" : undefined,\n        }}\n        className={cn(\n          \"absolute inset-0 rounded-3xl z-[1] opacity-60 group-hover:opacity-100 blur-xl  transition duration-500 will-change-transform\",\n          \" bg-[radial-gradient(circle_farthest-side_at_0_100%,#00ccb1,transparent),radial-gradient(circle_farthest-side_at_100%_0,#7b61ff,transparent),radial-gradient(circle_farthest-side_at_100%_100%,#ffc414,transparent),radial-gradient(circle_farthest-side_at_0_0,#1ca0fb,#141316)]\"\n        )}\n      />\n      <motion.div\n        variants={animate ? variants : undefined}\n        initial={animate ? \"initial\" : undefined}\n        animate={animate ? \"animate\" : undefined}\n        transition={\n          animate\n            ? {\n                duration: 5,\n                repeat: Infinity,\n                repeatType: \"reverse\",\n              }\n            : undefined\n        }\n        style={{\n          backgroundSize: animate ? \"400% 400%\" : undefined,\n        }}\n        className={cn(\n          \"absolute inset-0 rounded-3xl z-[1] will-change-transform\",\n          \"bg-[radial-gradient(circle_farthest-side_at_0_100%,#00ccb1,transparent),radial-gradient(circle_farthest-side_at_100%_0,#7b61ff,transparent),radial-gradient(circle_farthest-side_at_100%_100%,#ffc414,transparent),radial-gradient(circle_farthest-side_at_0_0,#1ca0fb,#141316)]\"\n        )}\n      />\n\n      <div className={cn(\"relative z-10\", className)}>{children}</div>\n    </div>\n  );\n};\n",
+   "type": "registry:ui",
+   "target": "components/ui/background-gradient.tsx"
+  }
+ ],
+ "author": "Manu Arora <hi@manuarora.in>",
+ "title": "Background Gradient"
+}

@@ -1,0 +1,17 @@
+{
+ "name": "text-generate-effect",
+ "type": "registry:ui",
+ "dependencies": [
+  "motion"
+ ],
+ "files": [
+  {
+   "path": "components/ui/text-generate-effect.tsx",
+   "content": "\"use client\";\nimport { useEffect } from \"react\";\nimport { motion, stagger, useAnimate } from \"motion/react\";\nimport { cn } from \"@/lib/utils\";\n\nexport const TextGenerateEffect = ({\n  words,\n  className,\n  filter = true,\n  duration = 0.5,\n}: {\n  words: string;\n  className?: string;\n  filter?: boolean;\n  duration?: number;\n}) => {\n  const [scope, animate] = useAnimate();\n  let wordsArray = words.split(\" \");\n  useEffect(() => {\n    animate(\n      \"span\",\n      {\n        opacity: 1,\n        filter: filter ? \"blur(0px)\" : \"none\",\n      },\n      {\n        duration: duration ? duration : 1,\n        delay: stagger(0.2),\n      }\n    );\n  }, [scope.current]);\n\n  const renderWords = () => {\n    return (\n      <motion.div ref={scope}>\n        {wordsArray.map((word, idx) => {\n          return (\n            <motion.span\n              key={word + idx}\n              className=\"dark:text-white text-black opacity-0\"\n              style={{\n                filter: filter ? \"blur(10px)\" : \"none\",\n              }}\n            >\n              {word}{\" \"}\n            </motion.span>\n          );\n        })}\n      </motion.div>\n    );\n  };\n\n  return (\n    <div className={cn(\"font-bold\", className)}>\n      <div className=\"mt-4\">\n        <div className=\" dark:text-white text-black text-2xl leading-snug tracking-wide\">\n          {renderWords()}\n        </div>\n      </div>\n    </div>\n  );\n};\n",
+   "type": "registry:ui",
+   "target": "components/ui/text-generate-effect.tsx"
+  }
+ ],
+ "author": "Manu Arora <hi@manuarora.in>",
+ "title": "Text Generate Effect"
+}

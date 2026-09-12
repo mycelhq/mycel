@@ -1,0 +1,29 @@
+name: Bug
+description: Something in the kernel is wrong, with a way to see it.
+title: "bug: "
+labels: ["bug"]
+body:
+  - type: textarea
+    id: expected
+    attributes:
+      label: What should have happened?
+    validations:
+      required: true
+  - type: textarea
+    id: actual
+    attributes:
+      label: What happened instead?
+    validations:
+      required: true
+  - type: textarea
+    id: repro
+    attributes:
+      label: How to see it
+      description: Prefer a failing test. `npm test` and a paste of the boot banner are enough to start.
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: Kernel version
+      description: The `mycel-harness v…` line printed on boot, or the git SHA.

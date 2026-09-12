@@ -1,0 +1,425 @@
+{
+  "wedge": "recruiting-desk",
+  "domains": [
+    "recruiting"
+  ],
+  "title": "Recruiting desk",
+  "provides": [],
+  "_comment": "Sourcing and screening for a hiring desk. CRM holds candidates; calendar books screens; email is the chase. Batch is how a longlist is screened without serial sandbox latency.",
+  "tier": "standard",
+  "cases": {
+    "stages": [
+      "intake",
+      "sourcing",
+      "screening",
+      "interviewing",
+      "offer",
+      "closed"
+    ],
+    "initial": "intake"
+  },
+  "task_types": {
+    "source_candidates": {
+      "description": "Given a role brief, find or import candidates into the CRM. Prefer reads; never invent people who do not exist in a connected source.",
+      "harness": {
+        "shape": "decide",
+        "max_runtime_s": 600,
+        "max_cost_usd": 0.7,
+        "strict_output": true,
+        "needs_connections": true,
+        "temperature": 0.2,
+        "steps": 40,
+        "skills": [
+          "source-a-role"
+        ]
+      },
+      "output_schema": {
+        "type": "object",
+        "required": [
+          "role",
+          "candidates",
+          "summary"
+        ],
+        "properties": {
+          "needs": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "What this run needs from the CLIENT before it can produce the work, in the client’s own words — one plain item per entry. Name the thing THEY would name: the document, the answer, the decision, the access. Populate this WHENEVER the run cannot finish because something only the client has is missing. Each entry becomes a request in their portal with an upload box; what they send is mounted into the next run’s ./inputs/, so an accurate ask here is what unblocks the work. Never use our nouns — a request naming a case, a schema or a connection id is unanswerable by the person receiving it. At most four, most important first. Leave absent when the work completed — an empty ask sent to a client is worse than silence."
+          },
+          "role": {
+            "type": "string"
+          },
+          "candidates": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "required": [
+                "name",
+                "why"
+              ],
+              "properties": {
+                "name": {
+                  "type": "string"
+                },
+                "email": {
+                  "type": "string"
+                },
+                "why": {
+                  "type": "string"
+                },
+                "crm_id": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "summary": {
+            "type": "string"
+          }
+        }
+      },
+      "ship_requires": [
+        "candidates",
+        "summary"
+      ],
+      "input_schema": {
+        "_comment": "A SWEEP over open roles, scheduled daily with an empty input — the blueprint's note says to look at open cases and, if there is no brief, say the desk is empty and never invent people. So nothing is required.",
+        "type": "object",
+        "required": [],
+        "properties": {
+          "role": {
+            "type": "string",
+            "description": "Narrow to one role. Absent means every open role on the desk."
+          },
+          "brief": {
+            "type": "string",
+            "description": "The role brief, when the caller already has it. Absent means read it from the case."
+          }
+        }
+      }
+    },
+    "screen_candidate": {
+      "description": "Score one candidate against the role brief. Child of a batch when screening a longlist.",
+      "harness": {
+        "shape": "decide",
+        "max_runtime_s": 300,
+        "max_cost_usd": 0.3,
+        "strict_output": true,
+        "temperature": 0.1,
+        "steps": 20,
+        "skills": [
+          "screen-one"
+        ]
+      },
+      "output_schema": {
+        "type": "object",
+        "required": [
+          "candidate",
+          "fit",
+          "score",
+          "notes"
+        ],
+        "properties": {
+          "candidate": {
+            "type": "string"
+          },
+          "fit": {
+            "type": "string",
+            "enum": [
+              "strong",
+              "maybe",
+              "pass"
+            ]
+          },
+          "score": {
+            "type": "number"
+          },
+          "notes": {
+            "type": "string"
+          }
+        }
+      },
+      "ship_requires": [
+        "notes"
+      ],
+      "input_schema": {
+        "_comment": "ONE candidate against ONE brief, usually a child of a longlist batch. Both are required: a score with no candidate is meaningless and a score with no brief is a guess wearing a number.",
+        "type": "object",
+        "required": [
+          "candidate",
+          "brief"
+        ],
+        "properties": {
+          "candidate": {
+            "type": "object",
+            "description": "The person being screened. REQUIRED."
+          },
+          "brief": {
+            "type": "string",
+            "description": "What the role actually needs. REQUIRED — the bar has to come from somewhere the founder set."
+          }
+        }
+      }
+    },
+    "screen_longlist": {
+      "description": "Fan out screen_candidate for each person on the longlist, then rank from the batch aggregate.",
+      "harness": {
+        "shape": "deliver",
+        "strict_output": true,
+        "skills": [
+          "screen-longlist"
+        ]
+      },
+      "output_schema": {
+        "type": "object",
+        "required": [
+          "ranked",
+          "summary"
+        ],
+        "properties": {
+          "needs": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "What this run needs from the CLIENT before it can produce the work, in the client’s own words — one plain item per entry. Name the thing THEY would name: the document, the answer, the decision, the access. Populate this WHENEVER the run cannot finish because something only the client has is missing. Each entry becomes a request in their portal with an upload box; what they send is mounted into the next run’s ./inputs/, so an accurate ask here is what unblocks the work. Never use our nouns — a request naming a case, a schema or a connection id is unanswerable by the person receiving it. At most four, most important first. Leave absent when the work completed — an empty ask sent to a client is worse than silence."
+          },
+          "ranked": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "required": [
+                "candidate",
+                "fit",
+                "score"
+              ],
+              "properties": {
+                "candidate": {
+                  "type": "string"
+                },
+                "fit": {
+                  "type": "string"
+                },
+                "score": {
+                  "type": "number"
+                }
+              }
+            }
+          },
+          "summary": {
+            "type": "string"
+          },
+          "artifacts": {
+            "type": "array",
+            "description": "THE WORK ITSELF, not a description of it.\n\nEvery deliverable task in this system produced a summary and nothing else, and a client scored one 3/10 partly for that reason: they were sent an account of work rather than the work. A service business does not sell reports about bookkeeping, it sells reconciled books; it does not sell a note about a questionnaire, it sells the questionnaire answered.\n\nSo this carries the artifact. A file you wrote to ./output/ and its name, or a URL to something live, or a repository. The `client_summary` is the covering note that goes WITH this — it is not a substitute for it, and a deliverable with an empty `artifacts` array is a deliverable that did not deliver.\n\nSay so plainly in the summary if you genuinely could not produce the artifact, and why. That is a real outcome. Pretending the summary is the work is not.\n\nFor this job: The longlist as a document, with each candidate's name, evidence and contact route — the thing the client reads and acts on, not a description of it.",
+            "items": {
+              "type": "object",
+              "required": [
+                "kind",
+                "name"
+              ],
+              "properties": {
+                "kind": {
+                  "type": "string",
+                  "enum": [
+                    "file",
+                    "url",
+                    "repo"
+                  ],
+                  "description": "`file` for something you wrote to ./output/, `url` for something live, `repo` for source."
+                },
+                "name": {
+                  "type": "string",
+                  "description": "What it is, in the client's words. 'September ledger', not 'output.csv'."
+                },
+                "path": {
+                  "type": "string",
+                  "description": "Relative to ./output/ for a file. Required for kind=file."
+                },
+                "url": {
+                  "type": "string",
+                  "description": "Required for kind=url or kind=repo."
+                },
+                "what_it_is": {
+                  "type": "string",
+                  "description": "One line the client reads before opening it."
+                }
+              }
+            }
+          }
+        }
+      },
+      "ship_requires": [
+        "artifacts",
+        "ranked",
+        "summary"
+      ],
+      "ship_checks": [
+        {
+          "kind": "each_has",
+          "items": "artifacts",
+          "field": "name"
+        }
+      ],
+      "deliverable_shape": {
+        "format": "report",
+        "sections": [
+          {
+            "heading": "The read on this longlist",
+            "must": "Whether the role can be filled from these people, and the single thing most likely to stop it.",
+            "depth": "a short paragraph"
+          },
+          {
+            "heading": "Ranked",
+            "must": "Every candidate in rank order with their score and the one line that decides their position. Rank order is the deliverable — an unordered list is the screening not done.",
+            "depth": "a table"
+          },
+          {
+            "heading": "Why these, in order",
+            "must": "For the top of the list, what the evidence was. Cite the candidate's own record, never an impression.",
+            "depth": "a short paragraph each for the top few"
+          },
+          {
+            "heading": "Who we passed on, and why",
+            "must": "The rejections with the reason. A screen that only shows the winners cannot be checked.",
+            "depth": "one line each"
+          },
+          {
+            "heading": "What happens next",
+            "must": "Who to talk to first, what to ask them, and what this desk needs to proceed.",
+            "depth": "a short list"
+          }
+        ]
+      },
+      "input_schema": {
+        "_comment": "Fans out one child per person, then ranks from the aggregate. The longlist is the work; without it this fans out nothing and then ranks it.",
+        "type": "object",
+        "required": [
+          "candidates"
+        ],
+        "properties": {
+          "candidates": {
+            "type": "array",
+            "description": "The longlist. REQUIRED.",
+            "items": {
+              "type": "object"
+            }
+          },
+          "brief": {
+            "type": "string",
+            "description": "The role brief, passed to every child so all of them score against the same bar."
+          }
+        }
+      }
+    }
+  },
+  "tools": [],
+  "capabilities": [
+    "read_crm",
+    "write_crm",
+    "send_email",
+    "book_calendar"
+  ],
+  "fulfillment": {
+    "client_connections": [],
+    "intake_asks": [
+      {
+        "kind": "document",
+        "ask": "Role brief / scorecard for this search"
+      },
+      {
+        "kind": "decision",
+        "ask": "Confirm the hiring manager and interview loop"
+      }
+    ],
+    "money_plan": {
+      "currency": "USD",
+      "lines": [
+        {
+          "label": "Search retainer",
+          "amount_minor": 200000,
+          "kind": "deposit"
+        },
+        {
+          "label": "Placement fee",
+          "amount_minor": 0,
+          "kind": "milestone"
+        }
+      ]
+    },
+    "deliverable_shapes": [
+      "document",
+      "file_set"
+    ],
+    "production_task_type": "screen_longlist"
+  },
+  "requires": [
+    "dunning"
+  ],
+  "workflows": [
+    {
+      "name": "workbook",
+      "description": "Turn a grid you have already decided is correct into a real Excel workbook (.xlsx), attached to this delivery automatically. Use it for anything a client will sort, filter or forward — a longlist, a ranking table, a budget, a control matrix. Do NOT use it to do arithmetic: it formats what you give it and never re-totals a column.",
+      "input_schema": {
+        "type": "object",
+        "required": [
+          "tabs"
+        ],
+        "properties": {
+          "filename": {
+            "type": "string",
+            "description": "e.g. \"april-longlist.xlsx\"."
+          },
+          "currency": {
+            "type": "string",
+            "description": "ISO-4217. Omit it and money renders as a plain number, which is honest."
+          },
+          "tabs": {
+            "type": "array",
+            "description": "One per sheet. A tab per schedule beats one sheet with blank rows between sections.",
+            "items": {
+              "type": "object",
+              "required": [
+                "name",
+                "header",
+                "rows"
+              ],
+              "properties": {
+                "name": {
+                  "type": "string"
+                },
+                "header": {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  }
+                },
+                "note": {
+                  "type": "string",
+                  "description": "A caveat rendered above the header, for something that must be read before the numbers."
+                },
+                "rows": {
+                  "type": "array",
+                  "description": "Each row is an array of cells. A plain string or number is fine; for a formatted number use {kind:\"n\", v:1234, format:\"money\"|\"pct\"|\"int\"} and for a date {kind:\"d\", v:\"2026-04-30\"}."
+                }
+              }
+            }
+          }
+        }
+      },
+      "output_schema": {
+        "type": "object",
+        "properties": {
+          "sheets": {
+            "type": "integer"
+          },
+          "rows": {
+            "type": "integer"
+          }
+        }
+      }
+    }
+  ]
+}

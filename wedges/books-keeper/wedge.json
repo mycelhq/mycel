@@ -1,0 +1,1203 @@
+{
+  "wedge": "books-keeper",
+  "domains": [
+    "bookkeeping"
+  ],
+  "title": "Monthly Close for E-commerce",
+  "provides": [
+    "receipts"
+  ],
+  "task_types": {
+    "send_receipt": {
+      "capabilities": [
+        "read_invoices",
+        "send_email"
+      ],
+      "_comment_ship_requires": "Sends. Needs the words.",
+      "ship_requires": [
+        "message"
+      ],
+      "description": "An invoice has been paid in full. Thank this client for the payment named in the input and confirm what it settled. Use ONLY the amounts, dates and payment method the input gives you: never state a method the input does not name, never restate a figure you were not given, and never imply anything further is owed. The receipt PDF is already attached to this run.",
+      "harness": {
+        "shape": "decide",
+        "max_runtime_s": 420,
+        "max_cost_usd": 0.3,
+        "strict_output": true,
+        "needs_connections": true,
+        "temperature": 0.1,
+        "steps": 20
+      },
+      "output_schema": {
+        "type": "object",
+        "properties": {
+          "channel": {
+            "type": "string",
+            "enum": [
+              "email",
+              "none"
+            ]
+          },
+          "subject": {
+            "type": "string"
+          },
+          "message": {
+            "type": "string"
+          },
+          "reasoning": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "channel",
+          "message"
+        ]
+      },
+      "input_schema": {
+        "_comment": "PER-PAYMENT. Created when an invoice settles, never scheduled. Every amount and date in the message must come from here — the description forbids stating a payment method the input does not name, and a thank-you that invents a figure is worse than none.",
+        "type": "object",
+        "required": [
+          "invoice_id"
+        ],
+        "properties": {
+          "invoice_id": {
+            "type": "string",
+            "description": "Which invoice settled. REQUIRED: a receipt for no invoice is a message with nothing to confirm."
+          },
+          "amount_minor": {
+            "type": "integer",
+            "description": "What was actually paid, in minor units. Absent means read it from the invoice rather than estimating."
+          },
+          "paid_at": {
+            "type": "string",
+            "description": "YYYY-MM-DD. When the money arrived, as the client would date it."
+          },
+          "method": {
+            "type": "string",
+            "description": "How they paid — 'bank transfer', 'card', 'cash'. NEVER state a method that is not here; a wrong one on a receipt is a client correcting their bookkeeper."
+          }
+        }
+      }
+    },
+    "daily_sync": {
+      "capabilities": [
+        "read_bank_transactions"
+      ],
+      "description": "Pull new transactions from the bank feed, categorize what's unambiguous, flag the rest.",
+      "output_schema": {
+        "type": "object",
+        "properties": {
+          "pulled": {
+            "type": "number"
+          },
+          "categorized": {
+            "type": "number"
+          },
+          "flagged": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "questions": {
+            "type": "array",
+            "description": "What could NOT be decided alone, batched into one ask. A confident wrong answer in books is discovered by an accountant months later and costs more to unpick than the month was worth, so anything whose tax treatment depends on INTENT — a laptop, a meal, a payment to a person, anything involving the owner personally — is asked, never inferred. Ask about the RULE, not the transaction, and carry a best guess so it is answerable in one word. See skills/what-not-to-guess.md.",
+            "items": {
+              "type": "object",
+              "properties": {
+                "about": {
+                  "type": "string",
+                  "description": "The merchant, pattern or transaction in question."
+                },
+                "best_guess": {
+                  "type": "string",
+                  "description": "What you would categorise it as, so they can answer yes."
+                },
+                "why_asking": {
+                  "type": "string",
+                  "description": "What makes it ambiguous. If this needs the word 'probably', it belongs here rather than in a categorisation."
+                }
+              },
+              "required": [
+                "about",
+                "best_guess"
+              ]
+            }
+          },
+          "reconciled": {
+            "type": "boolean",
+            "description": "False when the period does not balance. A close that balances because something was forced is worse than an open one — it is the failure that makes them stop trusting the months before it. Name the difference and ask; never plug it."
+          }
+        },
+        "required": [
+          "pulled",
+          "categorized"
+        ]
+      },
+      "internal": true,
+      "input_schema": {
+        "_comment": "A SWEEP. Fires daily with an empty input and looks at whatever the feed holds, so nothing is required. The optional fields exist for the case where a caller already has the rows and re-fetching them would be waste.",
+        "type": "object",
+        "required": [],
+        "properties": {
+          "since": {
+            "type": "string",
+            "description": "YYYY-MM-DD. Only transactions on or after this date. Absent means since the last successful sync."
+          },
+          "transactions": {
+            "type": "array",
+            "description": "THE ROWS, ALREADY PULLED. When present these are the period's transactions and no fetch is needed. Absent means go and get them.",
+            "items": {
+              "type": "object"
+            }
+          }
+        }
+      }
+    },
+    "nudge_client_request": {
+      "_comment": "Inherits the spine (see harness/src/spine.ts). Only the access this trade needs is narrowed here.",
+      "capabilities": [
+        "send_email"
+      ]
+    },
+    "chase_receipts": {
+      "capabilities": [
+        "send_email"
+      ],
+      "_comment_ship_requires": "Sends. Needs the words.",
+      "ship_requires": [
+        "message"
+      ],
+      "description": "Ask the client for the receipts still missing for this period.",
+      "waits_for": {
+        "on": "client_request",
+        "resume": "monthly_close",
+        "reason": "the close is blocked on paperwork only the client has"
+      },
+      "output_schema": {
+        "type": "object",
+        "properties": {
+          "missing": {
+            "type": "number"
+          },
+          "message": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "missing",
+          "message"
+        ]
+      },
+      "input_schema": {
+        "_comment": "A SWEEP over whatever is missing this period. Requires nothing; `period` narrows it when a caller knows which month they mean.",
+        "type": "object",
+        "required": [],
+        "properties": {
+          "period": {
+            "type": "string",
+            "description": "YYYY-MM. Which month's receipts. Absent means the period currently open."
+          },
+          "client": {
+            "type": "string",
+            "description": "Chase one client rather than the whole book. Absent means every client with something outstanding."
+          }
+        }
+      }
+    },
+    "monthly_close": {
+      "capabilities": [
+        "read_bank_transactions"
+      ],
+      "chart": {
+        "series": "profit_and_loss.by_category",
+        "label": "category",
+        "value": "amount_minor",
+        "title": "Where the money went",
+        "currency_at": "currency",
+        "limit": 10
+      },
+      "_comment_ship_requires": "The month's headline. Reconciled figures with no summary is a spreadsheet the client has to      interpret themselves, which is the work they paid not to do.",
+      "ship_requires": [
+        "artifacts",
+        "client_summary",
+        "profit_and_loss",
+        "reconciliation"
+      ],
+      "_comment_ship_checks": "`reconciled: true` beside a non-zero `difference_cents` is this wedge's own description of the worst outcome it can produce — \"a close that balances because something was forced is worse than an open one\" — and it satisfies the schema and ship_requires today. `client_summary` is the ONLY field the client-facing deliverable shows, so the word floor is the delivery not being a sentence and the ceiling is it not being the ledger pasted into prose. NO brand_poetry here on purpose: \"leverage\" is marketing slop on a homepage and an ordinary word in a note about a leverage ratio.",
+      "ship_checks": [
+        {
+          "kind": "agrees",
+          "flag": "reconciled",
+          "zero_when_true": "difference_cents"
+        },
+        {
+          "kind": "not_when",
+          "field": "sales_tax.net_due_minor",
+          "unknown_when": "sales_tax.input_tax_unquantified"
+        },
+        {
+          "kind": "counts",
+          "items": "questions",
+          "field": "profit_and_loss.held_pending_decision.item_count"
+        },
+        {
+          "kind": "sums_to",
+          "items": "questions",
+          "each": "amount_minor",
+          "total": "profit_and_loss.held_pending_decision.amount_minor"
+        },
+        {
+          "kind": "nets_to",
+          "minuend": "profit_and_loss.revenue_minor",
+          "subtrahend": "profit_and_loss.expenses_minor",
+          "total": "profit_and_loss.net_minor"
+        },
+        {
+          "kind": "minor_units",
+          "field": "client_summary"
+        },
+        {
+          "kind": "min_words",
+          "field": "client_summary",
+          "n": 25
+        },
+        {
+          "kind": "max_words",
+          "field": "client_summary",
+          "n": 400
+        },
+        {
+          "kind": "forbids",
+          "field": "client_summary",
+          "vocabulary": "placeholder"
+        },
+        {
+          "kind": "sums_to",
+          "items": "profit_and_loss.by_category",
+          "each": "amount_minor",
+          "total": "profit_and_loss.expenses_minor"
+        },
+        {
+          "kind": "each_has",
+          "items": "questions",
+          "field": "recommendation"
+        },
+        {
+          "kind": "each_has",
+          "items": "artifacts",
+          "field": "name"
+        }
+      ],
+      "description": "Reconcile the period to the cent, produce P&L figures, and flag anomalies. When the ask is client-ready, the deliverable the owner receives leads with a plain-language summary and ends with next steps — never the internal reconciliation notes.",
+      "harness": {
+        "shape": "deliver",
+        "strict_output": true,
+        "needs_connections": true,
+        "instructions": [
+          "knowledge/close-policy.md",
+          "skills/close-the-month.md"
+        ]
+      },
+      "output_schema": {
+        "type": "object",
+        "properties": {
+          "client_summary": {
+            "type": "string",
+            "description": "The plain-language answer the owner reads first, and the only field the client-facing deliverable shows. Lead with the bottom line (did the books balance, what the period looks like), stay in plain business language with no reconciliation jargon, and end with the next steps or anything you need from them. The fields below are the internal working record; this is the delivery."
+          },
+          "reconciled": {
+            "type": "boolean",
+            "description": "False when the period does not balance. A close that balances because something was forced is worse than an open one — it is the failure that makes them stop trusting the months before it. Name the difference and ask; never plug it."
+          },
+          "difference_cents": {
+            "type": "number"
+          },
+          "anomalies": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "questions": {
+            "type": "array",
+            "description": "What could NOT be decided alone, batched into one ask. A confident wrong answer in books is discovered by an accountant months later and costs more to unpick than the month was worth, so anything whose tax treatment depends on INTENT — a laptop, a meal, a payment to a person, anything involving the owner personally — is asked, never inferred. Ask about the RULE, not the transaction, and carry a best guess so it is answerable in one word. See skills/what-not-to-guess.md.",
+            "items": {
+              "type": "object",
+              "properties": {
+                "about": {
+                  "type": "string",
+                  "description": "The merchant, pattern or transaction in question."
+                },
+                "amount_minor": {
+                  "type": "integer",
+                  "description": "What this transaction is worth, in minor units, signed as it appears in the ledger. A client asked about \"the 340.00 card payment\" wants the figure in the question, and it is what makes `held_pending_decision.amount_minor` checkable: a close reported 1,032.90 held across five items that add to 972.90, was 60 out, and the client did the addition and found it."
+                },
+                "best_guess": {
+                  "type": "string",
+                  "description": "What you would categorise it as, so they can answer yes."
+                },
+                "why_asking": {
+                  "type": "string",
+                  "description": "What makes it ambiguous. If this needs the word 'probably', it belongs here rather than in a categorisation."
+                },
+                "recommendation": {
+                  "type": "string",
+                  "description": "What you would DO, said plainly, so the client can answer with one word instead of doing your thinking. 'I would treat this as equipment and depreciate it over three years — confirm and I will book it.' A retainer buys a recommendation and an efficient evidence request; a bare question is homework handed back, which is what a client scored 3/10."
+                },
+                "evidence": {
+                  "type": "array",
+                  "description": "The transaction lines this question is about — date, counterparty, amount. A client cannot decide 'was the Apex payment equipment' without being shown which payment, on what day, for how much.",
+                  "items": {
+                    "type": "object",
+                    "properties": {
+                      "date": {
+                        "type": "string"
+                      },
+                      "counterparty": {
+                        "type": "string"
+                      },
+                      "amount_minor": {
+                        "type": "integer"
+                      },
+                      "reference": {
+                        "type": "string"
+                      }
+                    }
+                  }
+                },
+                "blocks": {
+                  "type": "string",
+                  "description": "What cannot finish until this is answered — the sales-tax return, the P&L, nothing. Tells the client which questions are urgent instead of making them all feel equal."
+                }
+              },
+              "required": [
+                "about",
+                "best_guess",
+                "recommendation"
+              ]
+            }
+          },
+          "needs": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "What this run needs from the CLIENT before it can produce the work, in the client’s own words — one plain item per entry: “Your March bank statement”, “The job description for this role”, “Which of the two logos you prefer”. Populate this WHENEVER the run cannot finish because something only the client has is missing, and say nothing about it in the summary beyond the plain fact. Each entry becomes a request in their portal with an upload box; what they send is mounted into the next run’s ./inputs/, so an accurate ask here is what unblocks the work. Write what THEY would call the thing, never our nouns: “a connected candidate-source ID” is unanswerable, “the job description for this role” is answerable in a minute. At most four, most important first. Leave absent when the work completed — an empty ask sent to a client is worse than silence."
+          },
+          "reconciliation": {
+            "type": "object",
+            "description": "THE EVIDENCE, not the claim. `reconciled: true` on its own is a firm asserting its own competence, and a client who is paying for a control cannot check an assertion. This is what makes the boolean checkable: which account, over which dates, from what balance to what balance, and what is still outstanding. A client asked for exactly this and scored the close 3/10 without it.",
+            "required": [
+              "account",
+              "period_start",
+              "period_end",
+              "opening_balance_minor",
+              "closing_balance_minor",
+              "statement_closing_balance_minor"
+            ],
+            "properties": {
+              "account": {
+                "type": "string",
+                "description": "The bank account reconciled, as the owner would name it."
+              },
+              "period_start": {
+                "type": "string",
+                "description": "YYYY-MM-DD, first day covered."
+              },
+              "period_end": {
+                "type": "string",
+                "description": "YYYY-MM-DD, last day covered."
+              },
+              "opening_balance_minor": {
+                "type": "integer"
+              },
+              "closing_balance_minor": {
+                "type": "integer",
+                "description": "What the LEDGER says at period end."
+              },
+              "statement_closing_balance_minor": {
+                "type": "integer",
+                "description": "What the STATEMENT says. The two agreeing IS the reconciliation; state both so the reader can see they agree rather than being told."
+              },
+              "transactions_reviewed": {
+                "type": "integer"
+              },
+              "outstanding_items": {
+                "type": "array",
+                "description": "Anything unpresented or unmatched at period end. An empty array is a real and good answer; omitting the field is not.",
+                "items": {
+                  "type": "object",
+                  "properties": {
+                    "description": {
+                      "type": "string"
+                    },
+                    "amount_minor": {
+                      "type": "integer"
+                    },
+                    "why": {
+                      "type": "string"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "profit_and_loss": {
+            "type": "object",
+            "description": "The month as a P&L, in minor units. A close with no P&L is a bank-statement summary, and the client said so: 'no profit and loss account, balance sheet, aged debtors'. `provisional` is not a hedge here — it is the honest state whenever an unresolved question could still move a figure, and `provisional_because` names which.\n\nAND CALL IT WHAT IT IS. Built from bank lines alone this is a cash summary, not an accrual profit and loss: there are no invoices raised and unpaid, no bills received and unpaid, no accruals, no prepayments, no depreciation. A client said so — \"calling this a P&L is too generous; it appears to be a bank cashbook\" — and they were right. Say which one you have produced in `tax_basis` and in the summary. A cash summary honestly labelled is useful; the same figures called a P&L are a claim about work nobody did.",
+            "required": [
+              "expenses_minor",
+              "net_minor",
+              "provisional",
+              "revenue_minor",
+              "tax_basis"
+            ],
+            "properties": {
+              "revenue_minor": {
+                "type": "integer",
+                "description": "Net of sales tax. State the tax separately; a revenue figure that quietly includes sales tax overstates the business."
+              },
+              "expenses_minor": {
+                "type": "integer"
+              },
+              "net_minor": {
+                "type": "integer",
+                "description": "revenue_minor - expenses_minor. Checked arithmetically — see ship_checks. AND THE NAME YOU GIVE IT MUST MATCH WHAT YOU DID TO IT. \"Cash surplus\" means money in minus money out and nothing else removed. A close reported 3,730.61 as the July cash surplus when money in less money out was 5,370.61 — the difference being a 1,640.00 output-sales tax provision it had quietly netted off — and the client did the subtraction and found it: \"replace the misleading 'cash surplus' wording and show the calculation explicitly.\" If you have taken something out, say so and show it: 5,370.61 less 1,640.00 provisional tax collected on sales = 3,730.61."
+              },
+              "by_category": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "required": [
+                    "category",
+                    "amount_minor"
+                  ],
+                  "properties": {
+                    "category": {
+                      "type": "string"
+                    },
+                    "amount_minor": {
+                      "type": "integer"
+                    }
+                  }
+                }
+              },
+              "provisional": {
+                "type": "boolean",
+                "description": "True while any open question could change these figures."
+              },
+              "provisional_because": {
+                "type": "array",
+                "description": "Which open questions, and roughly what each could move. 'Provisional' with no range is a number a client cannot use.",
+                "items": {
+                  "type": "string"
+                }
+              },
+              "tax_basis": {
+                "type": "string",
+                "enum": [
+                  "ex_tax",
+                  "inc_tax",
+                  "mixed",
+                  "not_registered"
+                ],
+                "description": "Whether these figures are net of sales tax on BOTH sides. The single most common error in a close is stripping sales tax out of sales and leaving it in expenses, which overstates costs by the whole tax rate and understates profit. If you strip it from one side, strip it from both; if the business is not registered, strip it from neither, because the tax is a real cost to them.\n\n`mixed` EXISTS BECAUSE THE HONEST ANSWER WAS NOT ON THE LIST. Told to strip sales tax from both sides and unable to strip it from expenses — the purchase invoices are not in, so tax paid on purchases is unquantified — a close labelled itself `ex_tax` and stripped only sales. The client found it: \"the P&L is labelled ex_tax, but only sales have had tax collected on sales removed while expenses remain gross. It is therefore not genuinely ex-tax and should be labelled as a provisional cash surplus, not a profit figure.\" The enum had no true value, so it picked a false one.\n\nUse `mixed` when one side is net and the other gross, say which is which in the summary, and call the bottom line a provisional cash surplus rather than a profit. It is the state most closes are in before the receipts arrive, and it is not a failure — presenting it as `ex_tax` is."
+              },
+              "held_pending_decision": {
+                "type": "object",
+                "description": "WHAT THE OPEN QUESTIONS ARE WORTH, as one figure and one swing.\n\nThe complaint that survived three rewrites, in the client's words: \"the report says five items need decisions, yet it has already included all five in the profit and loss categories. Calling the result provisional does not replace explaining the consequences of each choice.\"\n\nThey are right. `provisional: true` says a figure could move and does not say which way or by how much, so it reads as a disclaimer rather than information. A client cannot plan around \"this might change\"; they can plan around \"973.90 sits on your answers, and if all five go the other way profit is 4,721.83 rather than 3,747.93.\"\n\nInclude the amounts in the P&L as your best treatment — that is what a recommendation means — and say here what rides on the answers.\n\nTHERE IS NO \"IF ALL REVERSED\" FIGURE HERE, AND THERE WAS. It asked for what `net_minor` becomes if every held item goes the other way, and that is not well defined once the items sit in different places: three of them are currently IN expenses and the unidentified card payment is currently OUT, in suspense, so \"reverse them all\" moves two of them in opposite directions. Two closes running got it wrong in the same way and the client did the arithmetic both times — \"their 4,954.11 simply adds 883.50, which treats all four items as if they were currently excluded costs.\" A derived figure with a definitional trap in it produces confident wrong numbers, which is worse than not offering one. The amount and the count say what is at stake; say in the summary which way each item currently sits and let the client do the one subtraction they care about.",
+                "properties": {
+                  "amount_minor": {
+                    "type": "integer",
+                    "description": "The SIGNED sum of every question's `amount_minor` — negative when the held items are money out, which they usually are. Signed because the addends are signed: a close reported 97290 against five lines adding to -97290 and was held by `sums_to`, which is the check working and the contract not. A held income receipt is positive and must not cancel a held payment by accident.\n\nSay the magnitude in the summary — \"972.90 sits on your answers\" — because a client does not read minus signs as emphasis. The field is the arithmetic; the sentence is the meaning."
+                  },
+                  "item_count": {
+                    "type": "integer",
+                    "description": "How many. Must equal the number of open questions — a client who counts five in the ledger and reads four here stops trusting both numbers."
+                  }
+                }
+              }
+            }
+          },
+          "cash_vs_profit": {
+            "type": "string",
+            "description": "Why the cash movement and the profit figure differ, in one or two sentences. The client asked this unprompted — cash fell while profit was positive — and it is the single question a non-accountant owner always has. Say 'they are the same this month' when they are."
+          },
+          "sales_tax": {
+            "type": "object",
+            "description": "The sales tax position, and the field that caught a REAL error rather than a stylistic one: the close reported tax collected on sales on sales as if it were the amount owed. Output tax minus input tax is what a client pays, and the difference is money. Omit the whole object only when the business is not registered, and say so in the summary.\n\nIF THE RETURN PERIOD IS WIDER THAN THE TRANSACTIONS YOU WERE GIVEN, DO NOT COMPUTE IT. A client asked for a quarterly return, was handed one month, and received a quarterly liability derived from that month — every figure added up and it was still wrong, and they said so: \"there is no visible June or July work, so the quarterly sales tax liability is unsupported.\" Set `covers_full_period: false`, give the figures for the months you actually hold, and name the missing ones. A number that is right about the wrong period is not a smaller version of the right answer.",
+            "properties": {
+              "registered": {
+                "type": "boolean"
+              },
+              "period": {
+                "type": "string",
+                "description": "The return period, e.g. '2026-07 to 2026-09'."
+              },
+              "output_tax_minor": {
+                "type": "integer",
+                "description": "Tax charged on sales."
+              },
+              "input_tax_minor": {
+                "type": "integer",
+                "description": "Tax reclaimable on purchases."
+              },
+              "net_due_minor": {
+                "type": "integer",
+                "description": "output minus input. NEGATIVE means a refund is due to the client. This is the number they actually owe.\n\nOMIT THIS ENTIRELY WHEN `input_tax_unquantified` IS TRUE. A client read a close that showed 1,640.00 as net due beside a working paper saying the net tax due could not be established, and said the only thing there is to say: \"those positions cannot both be used to tell me what I owe.\" Output tax with no input tax is not a provisional version of the amount payable, it is a different number, and putting it here is telling someone what to pay while saying you do not know. Give `output_tax_minor`, set `input_tax_unquantified`, and leave this out."
+              },
+              "filing_deadline": {
+                "type": "string",
+                "description": "YYYY-MM-DD."
+              },
+              "payment_deadline": {
+                "type": "string",
+                "description": "YYYY-MM-DD. Often the same day as filing and often assumed; state it."
+              },
+              "filed": {
+                "type": "boolean",
+                "description": "Whether the return has actually gone. 'Prepared' is not filed and must never read as if it were."
+              },
+              "covers_full_period": {
+                "type": "boolean",
+                "description": "False when the transactions supplied do not span the whole return period. False makes every figure here a partial, and the summary must say which months are covered."
+              },
+              "months_covered": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                },
+                "description": "The months these figures actually include, e.g. ['2026-08']. Required when covers_full_period is false."
+              },
+              "scheme": {
+                "type": "string",
+                "enum": [
+                  "standard",
+                  "cash",
+                  "flat_rate",
+                  "unknown"
+                ],
+                "description": "Which sales-tax scheme the business is on. It changes the answer entirely — under cash accounting the payment date IS the tax point and bank lines are correct; under standard accrual they are not; under flat rate tax paid on purchases is generally not reclaimable at all. `unknown` is honest and must stop you producing a return."
+              },
+              "basis": {
+                "type": "string",
+                "enum": [
+                  "cash",
+                  "accrual"
+                ],
+                "description": "What these figures were actually computed FROM. Bank lines are cash-basis. Say so — a client on standard accrual needs the return prepared from the invoice ledger, and a cash-basis figure presented as a return is wrong by however much was invoiced but unpaid."
+              },
+              "input_tax_unquantified": {
+                "type": "boolean",
+                "description": "True when purchases carry recoverable sales tax you could not establish — no invoice, an unplaceable supplier. Zero input tax is a CLAIM and is almost never right: hosting, software, professional fees and equipment all carry recoverable sales tax. 'I could not establish it' is the truth; 0 is not."
+              },
+              "boxes": {
+                "type": "object",
+                "description": "The nine boxes of a UK sales-tax return, in WHOLE POUNDS. A return is not one number, and Box 5 — not Box 1 — is what the client pays. Reporting output tax as the amount owed tells them to pay too much. Omit entirely when you are not producing a return; never half-fill it.",
+                "properties": {
+                  "box1_vat_due_sales": {
+                    "type": "integer",
+                    "description": "Whole pounds."
+                  },
+                  "box2_vat_due_acquisitions": {
+                    "type": "integer"
+                  },
+                  "box3_total_vat_due": {
+                    "type": "integer",
+                    "description": "Box 1 + Box 2."
+                  },
+                  "box4_vat_reclaimed": {
+                    "type": "integer"
+                  },
+                  "box5_net_vat": {
+                    "type": "integer",
+                    "description": "Box 3 − Box 4. NEGATIVE means HMRC owes them. This is the number they pay."
+                  },
+                  "box6_sales_ex_tax": {
+                    "type": "integer",
+                    "description": "Excluding sales tax, rounded DOWN to whole pounds."
+                  },
+                  "box7_purchases_ex_tax": {
+                    "type": "integer",
+                    "description": "Excluding sales tax, rounded DOWN."
+                  },
+                  "box8_eu_supplies": {
+                    "type": "integer"
+                  },
+                  "box9_eu_acquisitions": {
+                    "type": "integer"
+                  }
+                }
+              }
+            }
+          },
+          "owed": {
+            "type": "array",
+            "description": "Everything falling due that this close can see — payroll taxes, pension, the tax bill, supplier bills, the sales-tax payment above. The client asked 'do I owe PAYE, NI, pension, corporation tax, suppliers, anyone else' and the close could not answer. An empty array is an answer; a missing field is not. EVERY STANDING LIABILITY GETS A LINE, quantified or not. A sales tax-registered business always has a sales tax position; a business running payroll always has a PAYE and NIC position; a limited company always has corporation tax coming. Listing them with `blocked_by` is the answer to \"what do I owe\". Omitting the ones you cannot price reads as having not looked.",
+            "items": {
+              "type": "object",
+              "required": [
+                "what"
+              ],
+              "properties": {
+                "what": {
+                  "type": "string"
+                },
+                "amount_minor": {
+                  "type": "integer",
+                  "description": "Omit it when you cannot establish it, and give `blocked_by` instead. It used to be REQUIRED, which meant a liability the close could see but not quantify — PAYE until the payroll journal arrives, corporation tax from one month of data — had no truthful representation, so the model left it out entirely and the client's central question went unanswered every month: \"this does not tell me what the company owes for sales tax, PAYE/NIC, pension, or corporation tax.\" A schema that forces a number or silence gets silence, and silence is the wrong answer."
+                },
+                "due_date": {
+                  "type": "string",
+                  "description": "YYYY-MM-DD when known. Say when you do not know."
+                },
+                "status": {
+                  "type": "string",
+                  "enum": [
+                    "due",
+                    "paid",
+                    "estimated",
+                    "unknown"
+                  ],
+                  "description": "'estimated' is honest and useful; presenting an estimate as due is not."
+                },
+                "blocked_by": {
+                  "type": "string",
+                  "description": "What would let you put a figure on it — \"the July payroll journal or RTI submission\", \"the purchase invoices for the quarter\". Required in spirit whenever `amount_minor` is absent: \"we cannot say\" is half an answer and \"we cannot say until you send X\" is the whole one."
+                }
+              }
+            }
+          },
+          "artifacts": {
+            "type": "array",
+            "description": "THE WORK ITSELF, not a description of it.\n\nEvery deliverable task in this system produced a summary and nothing else, and a client scored one 3/10 partly for that reason: they were sent an account of work rather than the work. A service business does not sell reports about bookkeeping, it sells reconciled books; it does not sell a note about a questionnaire, it sells the questionnaire answered.\n\nSo this carries the artifact. A file you wrote to ./output/ and its name, or a URL to something live, or a repository. The `client_summary` is the covering note that goes WITH this — it is not a substitute for it, and a deliverable with an empty `artifacts` array is a deliverable that did not deliver.\n\nSay so plainly in the summary if you genuinely could not produce the artifact, and why. That is a real outcome. Pretending the summary is the work is not.\n\nFor this job: The reconciled ledger for the period as a file, and the sales-tax return as a file when the business is registered. The summary is the covering note that goes with them, not the work.",
+            "items": {
+              "type": "object",
+              "required": [
+                "kind",
+                "name"
+              ],
+              "properties": {
+                "kind": {
+                  "type": "string",
+                  "enum": [
+                    "file",
+                    "url",
+                    "repo"
+                  ],
+                  "description": "`file` for something you wrote to ./output/, `url` for something live, `repo` for source."
+                },
+                "name": {
+                  "type": "string",
+                  "description": "What it is, in the client's words. 'September ledger', not 'output.csv'."
+                },
+                "path": {
+                  "type": "string",
+                  "description": "Relative to ./output/ for a file. Required for kind=file."
+                },
+                "url": {
+                  "type": "string",
+                  "description": "Required for kind=url or kind=repo."
+                },
+                "what_it_is": {
+                  "type": "string",
+                  "description": "One line the client reads before opening it."
+                }
+              }
+            }
+          },
+          "currency": {
+            "type": "string",
+            "description": "ISO-4217, the currency you actually worked in — echo back what the input gave you. Every figure in this output and every figure on the document is in it, so a close that does not say which currency it is in cannot be checked against itself. Never guess one: if the input did not name a currency you could not have done the arithmetic."
+          }
+        },
+        "required": [
+          "client_summary",
+          "difference_cents",
+          "owed",
+          "reconciled"
+        ]
+      },
+      "input_schema": {
+        "type": "object",
+        "required": [
+          "period"
+        ],
+        "properties": {
+          "period": {
+            "type": "string",
+            "description": "The month being closed, e.g. \"2026-09\". REQUIRED — a close with no period is a close of nothing, and production runs have failed asking for exactly this after spending a sandbox to discover it."
+          },
+          "client": {
+            "type": "string",
+            "description": "Whose books these are, as they should appear in the summary."
+          },
+          "currency": {
+            "type": "string",
+            "description": "ISO-4217. NOT required here, and REQUIRED by the arithmetic — the two are different doors on purpose. `close_figures` refuses to format money it was not told the currency of, because a guess there is a wrong symbol on a client's document. This field is optional because a caller often does not know it and the RUN does: it is a durable fact about the client, and AGENTS.md prints what the firm already knows about them. Look there before asking.\n\nWHOSE currency: THE CLIENT'S. A close is about the client's own business, so every figure is in the money that business keeps its books in. Where the firm and the client are in different countries — a London bookkeeper closing a Dublin restaurant — the close is in euro and the firm's own fee note is in pounds. Two documents, two currencies, and the only way both come out right is to carry the currency with the thing being priced rather than with the firm pricing it."
+          },
+          "opening_balance_minor": {
+            "type": "integer",
+            "description": "Bank balance at the start of the period, in minor units."
+          },
+          "closing_balance_minor": {
+            "type": "integer",
+            "description": "Bank balance at the end, from the STATEMENT. This is what the ledger must reconcile to; it is evidence, not something to derive."
+          },
+          "transactions": {
+            "type": "array",
+            "description": "THE LEDGER, ALREADY EXPORTED. When present this is the period's transactions and no further fetching is needed.",
+            "items": {
+              "type": "object",
+              "required": [
+                "date",
+                "amount_minor"
+              ],
+              "properties": {
+                "date": {
+                  "type": "string",
+                  "description": "YYYY-MM-DD."
+                },
+                "amount_minor": {
+                  "type": "integer",
+                  "description": "Minor units. Negative is money out."
+                },
+                "description": {
+                  "type": "string"
+                },
+                "counterparty": {
+                  "type": "string"
+                },
+                "category": {
+                  "type": "string",
+                  "description": "How it was categorised last time this counterparty appeared, when it was. A repeat of something already categorised the same way is the majority of every month — see what-not-to-guess.md."
+                }
+              }
+            }
+          },
+          "sales_tax_rate_pct": {
+            "type": "number",
+            "description": "The registered rate for this period, if the business is registered. Absent means not registered OR not supplied — say which you assumed."
+          },
+          "prior_close_notes": {
+            "type": "string",
+            "description": "What was outstanding at the end of last period."
+          },
+          "sales_tax_scheme": {
+            "type": "string",
+            "description": "Which scheme the business is registered under — \"standard\", \"cash accounting\", \"flat rate 12%\". It changes the answer entirely: under cash accounting the return follows money moved, under the flat rate a fixed percentage of gross turnover is paid and most tax paid on purchases is not reclaimed at all. A close given the rate but not the scheme can compute output tax and can never say what is owed, which is the one thing the client asked. When it is absent here, look for it in what the firm already knows about this client before reporting it unknown."
+          },
+          "sales_tax_period": {
+            "type": "string",
+            "description": "The return period this month falls in, e.g. \"2026-07 to 2026-09\". Without it a monthly close cannot say whether a return is due, and a client who is told \"return period not supplied\" every month is being asked to do the firm's filing calendar for it."
+          },
+          "sales_tax_deadlines": {
+            "type": "object",
+            "description": "Filing and payment dates for that period, when they are known.",
+            "properties": {
+              "filing": {
+                "type": "string",
+                "description": "YYYY-MM-DD."
+              },
+              "payment": {
+                "type": "string",
+                "description": "YYYY-MM-DD."
+              }
+            }
+          },
+          "entity_type": {
+            "type": "string",
+            "description": "\"sole trader\", \"partnership\", \"limited company\", \"LLP\". It decides the answer to the question every close eventually asks. A payment that turns out to be personal is DRAWINGS for a sole trader and a DIRECTOR'S LOAN for a limited company — different treatment, different tax, and a director's loan outstanding nine months after the year end carries a s455 charge that drawings never do. It also decides whether the business pays corporation tax at all.\n\nA close called a possible personal payment \"drawings\" while elsewhere mentioning corporation tax, and the client caught the contradiction: \"if this is a limited company, a potentially personal payment should normally be considered for the director's loan account, not casually called drawings.\" When absent here, look for it in what the firm already knows about this client; if it is nowhere, ask once — it is true for every future month too."
+          }
+        }
+      },
+      "_comment_figures": "THE TWO NUMBERS A CLIENT OPENED THE PACK FOR. On a real run these were buried in the ninth line of the covering note, because `blocksFromMarkdown` only makes a figure panel out of `Key: value` lines and a model writing prose does not write those. Declared here and read off the output that already passed ship_checks, so nothing is retyped — the retyping is what every arithmetic gate in this repo exists to prevent.",
+      "figures": [
+        {
+          "label": "Closing balance",
+          "value": "reconciliation.closing_balance_minor",
+          "currency_at": "currency"
+        },
+        {
+          "label": "Money in",
+          "value": "profit_and_loss.revenue_minor",
+          "currency_at": "currency"
+        },
+        {
+          "label": "Money out",
+          "value": "profit_and_loss.expenses_minor",
+          "currency_at": "currency"
+        },
+        {
+          "label": "Provisional result",
+          "value": "profit_and_loss.net_minor",
+          "currency_at": "currency"
+        }
+      ],
+      "deliverable_shape": {
+        "format": "report",
+        "sections": [
+          {
+            "heading": "The month in one paragraph",
+            "must": "What the month did, in the owner's language: revenue, what it cost, what is left. No ledger vocabulary, no account codes, no reconciliation notes.",
+            "depth": "a short paragraph"
+          },
+          {
+            "heading": "Profit and loss",
+            "must": "Income and expense by category with the period total. Every figure here must be one a line in the reconciliation can be traced to.",
+            "depth": "a table"
+          },
+          {
+            "heading": "Reconciliation",
+            "must": "Closing balance against the statement and the difference to the cent. If the difference is not zero, say so here in the first line — a close that balances because something was forced is worse than an open one.",
+            "depth": "a short paragraph and a figure"
+          },
+          {
+            "heading": "What looked unusual",
+            "must": "Anomalies worth the owner's attention, each with the amount and why it stood out. Nothing to report is a valid section and should say so.",
+            "depth": "a few lines, or one line if clean"
+          },
+          {
+            "heading": "What happens next",
+            "must": "What the owner must do, what is waiting on someone else, and what this desk does without being asked. Dates only where the month's own facts support them.",
+            "depth": "a short list"
+          }
+        ]
+      }
+    },
+    "deliverable_verdict": {
+      "_comment": "Inherits the spine (see harness/src/spine.ts). Only the access this trade needs is narrowed here.",
+      "capabilities": []
+    },
+    "check_in_case": {
+      "_comment": "Inherits the spine (see harness/src/spine.ts). Only the access this trade needs is narrowed here.",
+      "capabilities": [
+        "send_email"
+      ]
+    }
+  },
+  "cases": {
+    "stages": [
+      "open",
+      "collecting",
+      "reconciling",
+      "review",
+      "filed"
+    ],
+    "initial": "open"
+  },
+  "workflows": [
+    {
+      "name": "reconcile",
+      "description": "Reconcile bank transactions against the ledger to the cent and compute sales tax. ALWAYS use this — never do the arithmetic yourself.",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "bank_transactions": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "date": {
+                  "type": "string",
+                  "description": "ISO. A line with no readable date cannot be matched at all."
+                },
+                "amount_cents": {
+                  "type": "integer",
+                  "description": "Minor units, signed. NOT `amount`, NOT `amount_minor` — a decimal here is a hundredfold error in the reconciliation."
+                },
+                "counterparty": {
+                  "type": "string"
+                },
+                "reference": {
+                  "type": "string",
+                  "description": "Whatever the bank put on the line. Matched against the ledger."
+                }
+              }
+            },
+            "description": "The key names are read literally — a row carrying the same fact under a different name is read as absent, and the pass returns an empty section that looks exactly like a measured zero."
+          },
+          "ledger_entries": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "date": {
+                  "type": "string",
+                  "description": "ISO."
+                },
+                "amount_cents": {
+                  "type": "integer",
+                  "description": "Minor units, signed. Must use the same unit as `bank_transactions` or nothing reconciles."
+                },
+                "counterparty": {
+                  "type": "string"
+                },
+                "reference": {
+                  "type": "string"
+                }
+              }
+            },
+            "description": "The key names are read literally — a row carrying the same fact under a different name is read as absent, and the pass returns an empty section that looks exactly like a measured zero."
+          },
+          "sales_tax_rate_pct": {
+            "type": "number"
+          }
+        },
+        "required": [
+          "bank_transactions",
+          "ledger_entries"
+        ]
+      },
+      "output_schema": {
+        "type": "object",
+        "properties": {
+          "reconciled": {
+            "type": "boolean"
+          },
+          "difference_cents": {
+            "type": "number"
+          },
+          "sales_tax_due_cents": {
+            "type": "number"
+          }
+        },
+        "required": [
+          "reconciled",
+          "difference_cents",
+          "sales_tax_due_cents"
+        ]
+      },
+      "lib": "reconcile"
+    },
+    {
+      "name": "close_figures",
+      "description": "EVERY figure a monthly close reports, plus the ledger CSV, the bank reconciliation statement, and a four-tab Excel workbook — rendered and attached for you. Call this and quote its output: never add up a column, never convert minor units to pounds, never retype a number into a table. You supply the judgement (which category, which items are still open, which are excluded pending an answer); it supplies the arithmetic and the files.",
+      "input_schema": {
+        "type": "object",
+        "required": [
+          "transactions"
+        ],
+        "properties": {
+          "transactions": {
+            "type": "array",
+            "description": "Every line, with your category on it. `held: true` means you still need the client's answer. `excluded: true` means you are keeping it OUT of the operating result meanwhile — a probable-personal payment gets both. THE KEY NAMES ARE READ LITERALLY — a line carrying its value under another name is read as absent and silently drops out of the totals.",
+            "items": {
+              "type": "object",
+              "properties": {
+                "date": {
+                  "type": "string",
+                  "description": "ISO. Lines with no readable date fall out of every period figure."
+                },
+                "amount_minor": {
+                  "type": "integer",
+                  "description": "Minor units, signed. NOT `amount` and not a decimal — a pounds figure here is a hundredfold error in the result."
+                },
+                "category": {
+                  "type": "string",
+                  "description": "Your own category. Grouping is on this string exactly."
+                },
+                "counterparty": {
+                  "type": "string"
+                },
+                "held": {
+                  "type": "boolean",
+                  "description": "You still need the client's answer on it."
+                },
+                "excluded": {
+                  "type": "boolean",
+                  "description": "Kept OUT of the operating result meanwhile."
+                }
+              }
+            }
+          },
+          "opening_balance_minor": {
+            "type": "integer"
+          },
+          "closing_balance_minor": {
+            "type": "integer",
+            "description": "From the statement. Omit it if you were not given one — the output then says the difference could not be checked, which is the truth."
+          },
+          "sales_tax_rate_pct": {
+            "type": "number"
+          },
+          "currency": {
+            "type": "string"
+          },
+          "period": {
+            "type": "string"
+          },
+          "client": {
+            "type": "string"
+          }
+        }
+      },
+      "output_schema": {
+        "type": "object",
+        "required": [
+          "reconciled",
+          "difference_minor",
+          "net_minor",
+          "formatted",
+          "files"
+        ],
+        "properties": {
+          "reconciled": {
+            "type": "boolean"
+          },
+          "difference_minor": {
+            "type": "integer"
+          },
+          "net_minor": {
+            "type": "integer"
+          },
+          "formatted": {
+            "type": "object",
+            "description": "Every figure already written the way a client reads it. Quote these."
+          },
+          "files": {
+            "type": "object",
+            "description": "`ledger.csv` and `bank-reconciliation.md`, rendered. Write them to ./output/ as they are."
+          },
+          "workbook": {
+            "type": "object",
+            "description": "Confirmation that the spreadsheet was rendered and attached. Nothing for you to write."
+          }
+        }
+      },
+      "lib": "close-figures"
+    }
+  ],
+  "policy": {
+    "auto_approve": [
+      {
+        "action": "email:send_receipt_chase",
+        "max_per_task": 1,
+        "max_per_day": 20
+      }
+    ]
+  },
+  "_comment_send_check_in": "`send_check_in` is declared at LOW risk and `required: true`, and both halves are deliberate. Required, because a status update is still this firm speaking to a client in its own name, and the one thing a wrong one costs is the client's confidence that we know where their work is — so it stops at a human even though the autonomy sweep may be what started it. Low, because risk.ts scores a queue in which everything urgent is a queue nobody reads: a check-in carries no money, no commitment and no change of tone, and declaring it as serious as a final notice is exactly what teaches a founder to clear the queue without reading it. A standing approval may cover this kind; standing.ts can never let one cover a high-risk verdict.",
+  "approvals": [
+    {
+      "action": "send_statement",
+      "risk": "medium",
+      "required": true
+    },
+    {
+      "action": "send_check_in",
+      "risk": "low",
+      "required": true
+    }
+  ],
+  "_comment_approvals": "This was a blanket `send` at medium, which matched every email the bookkeeper writes and so declared a receipt chase and a client's full statement of account to be the same decision. A blanket floor is a floor under the whole queue: it is why nothing could ever be scored low, however routine it was. Narrowed to the statement, which is the one send here that puts a client's numbers in front of them in a form they will quote back. Everything else is scored from its payload and still gated by the harness's default patterns.",
+  "capabilities": [
+    "read_bank_transactions",
+    "read_invoices",
+    "send_email"
+  ],
+  "skills": [
+    "close-the-month",
+    "what-not-to-guess",
+    "multi-shot-fulfillment"
+  ],
+  "knowledge": [
+    "close-policy.md"
+  ],
+  "packs": [
+    "reconcile_cents@1"
+  ],
+  "intake": [
+    {
+      "id": "engagement-scope",
+      "ask": "What exactly do you deliver each month, and by when?",
+      "why": "The agent uses this to decide when a month is actually finished, and what to tell a client who asks.",
+      "example": "Bank reconciled, receipts chased, P&L and balance sheet issued by the 7th working day. Sales tax prepared each period for my approval — I file it, not you.",
+      "kind": "document",
+      "weight": 10
+    },
+    {
+      "id": "pricing",
+      "ask": "What do you charge, and what's outside the fee?",
+      "why": "So it can answer a pricing question without you, and knows when to stop and ask instead.",
+      "example": "$450/month up to 300 transactions. Above that $0.40 each. Entity formation, payroll and R&D credits are quoted separately.",
+      "kind": "fact",
+      "weight": 9
+    },
+    {
+      "id": "chase-tone",
+      "ask": "How do you chase a client for a missing receipt? Paste one you've actually sent.",
+      "why": "A real example teaches tone far better than adjectives. This becomes the model for every chase it drafts.",
+      "example": "Hi Sam — closing March and I'm missing receipts for 4 card payments ($212.40 total). Could you forward them when you get a minute? Happy to close without them and treat as non-deductible if easier.",
+      "kind": "example",
+      "weight": 9
+    },
+    {
+      "id": "escalate",
+      "ask": "When must the agent stop and come to you rather than deciding?",
+      "why": "Draws the line for policy-bounded autonomy. Everything outside it stops at the approval gate.",
+      "example": "Anything that goes to a tax authority. Any transaction over $2,000 it can't match. Any client asking whether something is tax deductible. Anything that smells like an owner draw.",
+      "kind": "correction",
+      "weight": 10
+    },
+    {
+      "id": "quirks",
+      "ask": "What do you know about these clients that a competent stranger wouldn't?",
+      "why": "This is the knowledge that actually separates you from a generic bookkeeper.",
+      "example": "Acme's Stripe payouts land net of fees, so gross always has to be rebuilt. Their Amazon settlements are 14 days behind. The director expenses his own phone bill every month and it's always allowable.",
+      "kind": "fact",
+      "weight": 8
+    }
+  ],
+  "fulfillment": {
+    "client_connections": [
+      {
+        "toolkit": "xero",
+        "ask": "Connect your Xero account",
+        "detail": "So we can pull your books without chasing CSV exports every month."
+      }
+    ],
+    "intake_asks": [
+      {
+        "kind": "document",
+        "ask": "Your most recent bank statement",
+        "detail": "PDF from online banking is fine."
+      },
+      {
+        "kind": "decision",
+        "ask": "Confirm we can start the monthly close on this engagement"
+      }
+    ],
+    "money_plan": {
+      "currency": "USD",
+      "lines": [
+        {
+          "label": "Setup",
+          "amount_minor": 50000,
+          "kind": "deposit"
+        },
+        {
+          "label": "Monthly close",
+          "amount_minor": 150000,
+          "kind": "retainer",
+          "recurrence": {
+            "every": "month",
+            "interval": 1,
+            "state": "active"
+          }
+        }
+      ]
+    },
+    "deliverable_shapes": [
+      "document",
+      "file_set"
+    ],
+    "production_task_type": "monthly_close"
+  },
+  "requires": [
+    "dunning"
+  ],
+  "capability_inputs": {
+    "read_bank_transactions": "transactions"
+  }
+}

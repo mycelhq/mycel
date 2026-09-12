@@ -1,0 +1,139 @@
+// Finding businesses before spending anything on reaching them.
+//
+// GTM discovery ran on FullEnrich alone — an email waterfall, charged per contact, very good at
+// turning a known person into a reachable one and the wrong tool for finding out who is out there.
+// It also shaped the product around what it can see: LinkedIn-shaped individuals at companies large
+// enough to have them. The studio this was built for sells to independent cafes and bakeries, whose
+// owners are frequently not on LinkedIn at all — and a discovery step that can only return LinkedIn
+// profiles reports that market as EMPTY, which is a much worse answer than an expensive one.
+import test from "node:test";
+import assert from "node:assert/strict";
+import { businessName, cheapDiscover, dorksFor } from "../src/gtm/discover-cheap";
+
+/** A Serper `/search` response, in the shape `growth/lib/sourcing/serper.ts` proves in production. */
+const serperStub = (organic: { title: string; link: string; snippet?: string }[], status = 200) => {
+  const calls: string[] = [];
+  const impl = (async (_url: string, init?: { body?: string }) => {
+    // Recorded HERE, not inside the body reader. It used to be recorded inside `json()`, so a query
+    // whose response was never parsed went unrecorded — which made "how many queries did we send"
+    // silently depend on how the caller happened to read the answer.
+    calls.push(JSON.parse(String(init?.body ?? "{}")).q);
+    const body = JSON.stringify({ organic });
+    return {
+      ok: status === 200,
+      status,
+      // A real `Response` has both, and the caller reads `text()` so it can quote the provider's
+      // own error message on a failure instead of just the status code.
+      text: async () => body,
+      json: async () => JSON.parse(body),
+    };
+  }) as unknown as typeof fetch;
+  return { impl, calls };
+};
+
+test("it finds businesses, not LinkedIn profiles", async () => {
+  const { impl } = serperStub([
+    { title: "Hart's Bakery | Artisan Sourdough in Bristol | Order Online", link: "https://hartsbakery.co.uk/about", snippet: "A railway-arch bakery under Temple Meads." },
+    { title: "Little Victories - Speciality Coffee", link: "https://www.littlevictories.co.uk/", snippet: "Coffee bar and roastery." },
+  ]);
+  const r = await cheapDiscover({
+    industries: ["independent bakery"],
+    location: "Bristol",
+    apiKey: "k",
+    fetchImpl: impl,
+  });
+  assert.equal(r.ok, true);
+  assert.equal(r.businesses.length, 2);
+
+  // The name a person would use, not the SEO tail Google shows.
+  assert.equal(r.businesses[0]!.name, "Hart's Bakery");
+  assert.equal(r.businesses[0]!.domain, "hartsbakery.co.uk");
+  // `www.` is stripped, because it is the dedupe key and a domain that differs by four characters
+  // would be sourced twice.
+  assert.equal(r.businesses[1]!.domain, "littlevictories.co.uk");
+  // Google's snippet is the only free evidence of what they actually do. Kept, for the opener.
+  assert.match(r.businesses[0]!.about!, /railway-arch/);
+  // And which dork found them, so a founder can see why this business is on their list.
+  assert.ok(r.businesses[0]!.via);
+});
+
+test("directories are not businesses you can sell to", async () => {
+  // A dork for "independent bakery Bristol" returns TripAdvisor before it returns a bakery.
+  const { impl } = serperStub([
+    { title: "THE 10 BEST Bakeries in Bristol", link: "https://www.tripadvisor.co.uk/x" },
+    { title: "Bakeries in Bristol | Yell", link: "https://www.yell.com/x" },
+    { title: "Bristol bakery jobs", link: "https://uk.indeed.com/q-bakery" },
+    { title: "Some Bakery", link: "https://linkedin.com/company/some-bakery" },
+    { title: "Mark's Bread", link: "https://marksbread.co.uk" },
+  ]);
+  const r = await cheapDiscover({ industries: ["bakery"], apiKey: "k", fetchImpl: impl });
+  assert.deepEqual(r.businesses.map((b) => b.domain), ["marksbread.co.uk"]);
+});
+
+test("the same business found by two dorks is one business", async () => {
+  const { impl } = serperStub([
+    { title: "Hart's Bakery — About", link: "https://hartsbakery.co.uk/about" },
+    { title: "Hart's Bakery — Contact", link: "https://hartsbakery.co.uk/contact" },
+  ]);
+  const r = await cheapDiscover({ industries: ["bakery"], apiKey: "k", fetchImpl: impl });
+  assert.equal(r.businesses.length, 1);
+});
+
+test("'we could not search' never reads as 'nobody is out there'", async () => {
+  // The state that matters most. A discovery step returning zero and saying nothing is
+  // indistinguishable from an empty market, and a founder who reads that once stops running the loop.
+  const noKey = await cheapDiscover({ industries: ["bakery"], apiKey: "" });
+  assert.equal(noKey.ok, false);
+  assert.equal(noKey.queries, 0);
+  assert.match(noKey.detail!, /no search key/);
+
+  // The failure a founder will actually hit: the account runs out of credits mid-sweep.
+  const { impl } = serperStub([], 400);
+  const broke = await cheapDiscover({ industries: ["bakery"], apiKey: "k", fetchImpl: impl });
+  assert.equal(broke.ok, false);
+  assert.match(broke.detail!, /answered 400/);
+
+  // And a genuine empty result says THAT, distinctly, with what it cost.
+  const { impl: empty } = serperStub([]);
+  const none = await cheapDiscover({ industries: ["bakery"], apiKey: "k", fetchImpl: empty });
+  assert.equal(none.ok, true);
+  assert.match(none.detail!, /found no businesses/);
+  assert.ok(none.queries > 0);
+
+  // A network error is carried out, not swallowed into silence.
+  const throws = (async () => { throw new Error("ECONNRESET"); }) as unknown as typeof fetch;
+  const died = await cheapDiscover({ industries: ["bakery"], apiKey: "k", fetchImpl: throws });
+  assert.equal(died.ok, false);
+  assert.match(died.detail!, /ECONNRESET/);
+});
+
+test("the dorks come from what the founder said, and cost is bounded", async () => {
+  // `growth/`'s dorks hunt agencies. These have to hunt whatever trade the founder actually sells
+  // to, so they are built from the audience rather than from a fixed catalogue.
+  const qs = dorksFor({ industries: ["independent cafe", "bakery"], location: "Bristol" });
+  assert.ok(qs.every((q) => /Bristol/.test(q)));
+  assert.ok(qs.some((q) => /"independent cafe"/.test(q)));
+  // A recruiter's page for a bakery is not a bakery.
+  assert.ok(qs.every((q) => /-jobs -careers -hiring/.test(q)));
+  // Each dork is one paid query, so the count is capped rather than growing with the audience.
+  assert.ok(dorksFor({ industries: ["a", "b", "c", "d", "e", "f"], location: "x" }).length <= 8);
+  // Nothing to search for is not an error, and is not a search.
+  assert.deepEqual(dorksFor({}), []);
+});
+
+test("a title with no separator is kept whole rather than cut at a guessed length", () => {
+  assert.equal(businessName("Hart's Bakery | Artisan Sourdough"), "Hart's Bakery");
+  assert.equal(businessName("Little Victories - Speciality Coffee"), "Little Victories");
+  assert.equal(businessName("Mark's Bread"), "Mark's Bread");
+  // A leading fragment too short to be a name means the split was wrong; use the title.
+  assert.equal(businessName("Co | Bristol Roasters"), "Co | Bristol Roasters");
+});
+
+test("the limit is a spend cap, and it is honoured", async () => {
+  const many = Array.from({ length: 40 }, (_, i) => ({ title: `Shop ${i}`, link: `https://shop${i}.co.uk` }));
+  const { impl } = serperStub(many);
+  const r = await cheapDiscover({ industries: ["bakery"], apiKey: "k", fetchImpl: impl, limit: 5 });
+  assert.equal(r.businesses.length, 5);
+  // Stopped sweeping once it had enough — the queries are what cost money.
+  assert.equal(r.queries, 1);
+});

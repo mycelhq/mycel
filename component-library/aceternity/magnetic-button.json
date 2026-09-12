@@ -1,0 +1,17 @@
+{
+ "name": "magnetic-button",
+ "type": "registry:ui",
+ "dependencies": [
+  "motion"
+ ],
+ "files": [
+  {
+   "path": "components/ui/magnetic-button.tsx",
+   "content": "\"use client\";\n\nimport React, { useRef, useState } from \"react\";\nimport { motion } from \"motion/react\";\n\nexport const MagneticButton = ({\n  children,\n  strength = 0.8,\n  maxDistance = 100,\n}: {\n  children: React.ReactNode;\n  strength?: number;\n  maxDistance?: number;\n}) => {\n  const ref = useRef<HTMLDivElement>(null);\n  const [position, setPosition] = useState({ x: 0, y: 0 });\n\n  const handleMouseMove = (e: React.MouseEvent<HTMLDivElement>) => {\n    if (!ref.current) return;\n\n    const { width, height, left, top } = ref.current.getBoundingClientRect();\n    const { clientX, clientY } = e;\n\n    let x = (clientX - (left + width / 2)) * strength;\n    let y = (clientY - (top + height / 2)) * strength;\n\n    const distance = Math.hypot(x, y);\n    if (distance > maxDistance) {\n      const scale = maxDistance / distance;\n      x *= scale;\n      y *= scale;\n    }\n\n    setPosition({ x, y });\n  };\n\n  const handleMouseLeave = () => {\n    setPosition({ x: 0, y: 0 });\n  };\n\n  const hasMoved = position.x !== 0 || position.y !== 0;\n  return (\n    <div\n      onMouseMove={handleMouseMove}\n      onMouseLeave={handleMouseLeave}\n      className=\"cursor-pointer rounded-lg border border-dashed transition-colors duration-150 [--show-color:var(--color-blue-500)]\"\n      style={{\n        borderColor: hasMoved ? \"var(--show-color)\" : \"transparent\",\n        backgroundColor: hasMoved\n          ? \"color-mix(in srgb,var(--show-color) 20%, transparent)\"\n          : \"transparent\",\n      }}\n    >\n      <motion.div\n        ref={ref}\n        animate={{ x: position.x, y: position.y }}\n        transition={{ type: \"spring\", stiffness: 150, damping: 25, mass: 0.1 }}\n      >\n        {children}\n      </motion.div>\n    </div>\n  );\n};\n",
+   "type": "registry:ui",
+   "target": "components/ui/magnetic-button.tsx"
+  }
+ ],
+ "author": "Manu Arora <hi@manuarora.in>",
+ "title": "Magnetic Button"
+}

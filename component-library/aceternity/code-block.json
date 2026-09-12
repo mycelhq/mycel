@@ -1,0 +1,21 @@
+{
+ "name": "code-block",
+ "type": "registry:ui",
+ "dependencies": [
+  "@tabler/icons-react",
+  "react-syntax-highlighter"
+ ],
+ "devDependencies": [
+  "@types/react-syntax-highlighter"
+ ],
+ "files": [
+  {
+   "path": "components/ui/code-block.tsx",
+   "content": "\"use client\";\nimport React from \"react\";\nimport { Prism as SyntaxHighlighter } from \"react-syntax-highlighter\";\nimport { atomDark } from \"react-syntax-highlighter/dist/cjs/styles/prism\";\nimport { IconCheck, IconCopy } from \"@tabler/icons-react\";\n\ntype CodeBlockProps = {\n  language: string;\n  filename: string;\n  highlightLines?: number[];\n} & (\n  | {\n      code: string;\n      tabs?: never;\n    }\n  | {\n      code?: never;\n      tabs: Array<{\n        name: string;\n        code: string;\n        language?: string;\n        highlightLines?: number[];\n      }>;\n    }\n);\n\nexport const CodeBlock = ({\n  language,\n  filename,\n  code,\n  highlightLines = [],\n  tabs = [],\n}: CodeBlockProps) => {\n  const [copied, setCopied] = React.useState(false);\n  const [activeTab, setActiveTab] = React.useState(0);\n\n  const tabsExist = tabs.length > 0;\n\n  const copyToClipboard = async () => {\n    const textToCopy = tabsExist ? tabs[activeTab].code : code;\n    if (textToCopy) {\n      await navigator.clipboard.writeText(textToCopy);\n      setCopied(true);\n      setTimeout(() => setCopied(false), 2000);\n    }\n  };\n\n  const activeCode = tabsExist ? tabs[activeTab].code : code;\n  const activeLanguage = tabsExist\n    ? tabs[activeTab].language || language\n    : language;\n  const activeHighlightLines = tabsExist\n    ? tabs[activeTab].highlightLines || []\n    : highlightLines;\n\n  return (\n    <div className=\"relative w-full rounded-lg bg-slate-900 p-4 font-mono text-sm\">\n      <div className=\"flex flex-col gap-2\">\n        {tabsExist && (\n          <div className=\"flex  overflow-x-auto\">\n            {tabs.map((tab, index) => (\n              <button\n                key={index}\n                onClick={() => setActiveTab(index)}\n                className={`px-3 !py-2 text-xs transition-colors font-sans ${\n                  activeTab === index\n                    ? \"text-white\"\n                    : \"text-zinc-400 hover:text-zinc-200\"\n                }`}\n              >\n                {tab.name}\n              </button>\n            ))}\n          </div>\n        )}\n        {!tabsExist && filename && (\n          <div className=\"flex justify-between items-center py-2\">\n            <div className=\"text-xs text-zinc-400\">{filename}</div>\n            <button\n              onClick={copyToClipboard}\n              className=\"flex items-center gap-1 text-xs text-zinc-400 hover:text-zinc-200 transition-colors font-sans\"\n            >\n              {copied ? <IconCheck size={14} /> : <IconCopy size={14} />}\n            </button>\n          </div>\n        )}\n      </div>\n      <SyntaxHighlighter\n        language={activeLanguage}\n        style={atomDark}\n        customStyle={{\n          margin: 0,\n          padding: 0,\n          background: \"transparent\",\n          fontSize: \"0.875rem\", // text-sm equivalent\n        }}\n        wrapLines={true}\n        showLineNumbers={true}\n        lineProps={(lineNumber) => ({\n          style: {\n            backgroundColor: activeHighlightLines.includes(lineNumber)\n              ? \"rgba(255,255,255,0.1)\"\n              : \"transparent\",\n            display: \"block\",\n            width: \"100%\",\n          },\n        })}\n        PreTag=\"div\"\n      >\n        {String(activeCode)}\n      </SyntaxHighlighter>\n    </div>\n  );\n};\n",
+   "type": "registry:ui",
+   "target": "components/ui/code-block.tsx"
+  }
+ ],
+ "author": "Manu Arora <hi@manuarora.in>",
+ "title": "Code Block"
+}

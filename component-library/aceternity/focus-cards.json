@@ -1,0 +1,14 @@
+{
+ "name": "focus-cards",
+ "type": "registry:ui",
+ "files": [
+  {
+   "path": "components/ui/focus-cards.tsx",
+   "content": "\"use client\";\n\nimport React, { useState } from \"react\";\nimport { cn } from \"@/lib/utils\";\n\nexport const Card = React.memo(\n  ({\n    card,\n    index,\n    hovered,\n    setHovered,\n  }: {\n    card: any;\n    index: number;\n    hovered: number | null;\n    setHovered: React.Dispatch<React.SetStateAction<number | null>>;\n  }) => (\n    <div\n      onMouseEnter={() => setHovered(index)}\n      onMouseLeave={() => setHovered(null)}\n      className={cn(\n        \"rounded-lg relative bg-gray-100 dark:bg-neutral-900 overflow-hidden h-60 md:h-96 w-full transition-all duration-300 ease-out\",\n        hovered !== null && hovered !== index && \"blur-sm scale-[0.98]\"\n      )}\n    >\n      <img\n        src={card.src}\n        alt={card.title}\n        className=\"object-cover absolute inset-0\"\n      />\n      <div\n        className={cn(\n          \"absolute inset-0 bg-black/50 flex items-end py-8 px-4 transition-opacity duration-300\",\n          hovered === index ? \"opacity-100\" : \"opacity-0\"\n        )}\n      >\n        <div className=\"text-xl md:text-2xl font-medium bg-clip-text text-transparent bg-gradient-to-b from-neutral-50 to-neutral-200\">\n          {card.title}\n        </div>\n      </div>\n    </div>\n  )\n);\n\nCard.displayName = \"Card\";\n\ntype Card = {\n  title: string;\n  src: string;\n};\n\nexport function FocusCards({ cards }: { cards: Card[] }) {\n  const [hovered, setHovered] = useState<number | null>(null);\n\n  return (\n    <div className=\"grid grid-cols-1 md:grid-cols-3 gap-10 max-w-5xl mx-auto md:px-8 w-full\">\n      {cards.map((card, index) => (\n        <Card\n          key={card.title}\n          card={card}\n          index={index}\n          hovered={hovered}\n          setHovered={setHovered}\n        />\n      ))}\n    </div>\n  );\n}\n",
+   "type": "registry:ui",
+   "target": "components/ui/focus-cards.tsx"
+  }
+ ],
+ "author": "Manu Arora <hi@manuarora.in>",
+ "title": "Focus Cards"
+}

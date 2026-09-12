@@ -1,0 +1,17 @@
+{
+ "name": "card-hover-effect",
+ "type": "registry:ui",
+ "dependencies": [
+  "motion"
+ ],
+ "files": [
+  {
+   "path": "components/ui/card-hover-effect.tsx",
+   "content": "import { cn } from \"@/lib/utils\";\nimport { AnimatePresence, motion } from \"motion/react\";\n\nimport { useState } from \"react\";\n\nexport const HoverEffect = ({\n  items,\n  className,\n}: {\n  items: {\n    title: string;\n    description: string;\n    link: string;\n  }[];\n  className?: string;\n}) => {\n  let [hoveredIndex, setHoveredIndex] = useState<number | null>(null);\n\n  return (\n    <div\n      className={cn(\n        \"grid grid-cols-1 md:grid-cols-2  lg:grid-cols-3  py-10\",\n        className\n      )}\n    >\n      {items.map((item, idx) => (\n        <a\n          href={item?.link}\n          key={item?.link}\n          className=\"relative group  block p-2 h-full w-full\"\n          onMouseEnter={() => setHoveredIndex(idx)}\n          onMouseLeave={() => setHoveredIndex(null)}\n        >\n          <AnimatePresence>\n            {hoveredIndex === idx && (\n              <motion.span\n                className=\"absolute inset-0 h-full w-full bg-neutral-200 dark:bg-slate-800/[0.8] block  rounded-3xl\"\n                layoutId=\"hoverBackground\"\n                initial={{ opacity: 0 }}\n                animate={{\n                  opacity: 1,\n                  transition: { duration: 0.15 },\n                }}\n                exit={{\n                  opacity: 0,\n                  transition: { duration: 0.15, delay: 0.2 },\n                }}\n              />\n            )}\n          </AnimatePresence>\n          <Card>\n            <CardTitle>{item.title}</CardTitle>\n            <CardDescription>{item.description}</CardDescription>\n          </Card>\n        </a>\n      ))}\n    </div>\n  );\n};\n\nexport const Card = ({\n  className,\n  children,\n}: {\n  className?: string;\n  children: React.ReactNode;\n}) => {\n  return (\n    <div\n      className={cn(\n        \"rounded-2xl h-full w-full p-4 overflow-hidden bg-black border border-transparent dark:border-white/[0.2] group-hover:border-slate-700 relative z-20\",\n        className\n      )}\n    >\n      <div className=\"relative z-50\">\n        <div className=\"p-4\">{children}</div>\n      </div>\n    </div>\n  );\n};\nexport const CardTitle = ({\n  className,\n  children,\n}: {\n  className?: string;\n  children: React.ReactNode;\n}) => {\n  return (\n    <h4 className={cn(\"text-zinc-100 font-bold tracking-wide mt-4\", className)}>\n      {children}\n    </h4>\n  );\n};\nexport const CardDescription = ({\n  className,\n  children,\n}: {\n  className?: string;\n  children: React.ReactNode;\n}) => {\n  return (\n    <p\n      className={cn(\n        \"mt-8 text-zinc-400 tracking-wide leading-relaxed text-sm\",\n        className\n      )}\n    >\n      {children}\n    </p>\n  );\n};\n",
+   "type": "registry:ui",
+   "target": "components/ui/card-hover-effect.tsx"
+  }
+ ],
+ "author": "Manu Arora <hi@manuarora.in>",
+ "title": "Card Hover Effect"
+}

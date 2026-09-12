@@ -1,0 +1,14 @@
+{
+ "name": "grid",
+ "type": "registry:ui",
+ "files": [
+  {
+   "path": "components/ui/grid.tsx",
+   "content": "import React from \"react\";\n\nconst GridBackgroundPreview = () => {\n  return (\n    <div className=\"h-[50rem] w-full bg-black bg-grid-white/[0.1] relative flex items-center justify-center\">\n      {/* Radial gradient for the container to give a faded look */}\n      <div className=\"absolute pointer-events-none inset-0 flex items-center justify-center bg-black [mask-image:radial-gradient(ellipse_at_center,transparent_20%,black)]\"></div>\n      <p className=\"text-4xl sm:text-7xl font-bold relative z-20 bg-clip-text text-transparent bg-gradient-to-b from-neutral-200 to-neutral-500 py-8\">\n        Backgrounds\n      </p>\n    </div>\n  );\n};\n\nexport default GridBackgroundPreview;",
+   "type": "registry:ui",
+   "target": "components/ui/grid.tsx"
+  }
+ ],
+ "author": "Manu Arora <hi@manuarora.in>",
+ "title": "Grid"
+}

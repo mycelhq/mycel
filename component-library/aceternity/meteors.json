@@ -1,0 +1,14 @@
+{
+ "name": "meteors",
+ "type": "registry:ui",
+ "files": [
+  {
+   "path": "components/ui/meteors.tsx",
+   "content": "\"use client\";\nimport { cn } from \"@/lib/utils\";\nimport { motion } from \"motion/react\";\nimport React from \"react\";\n\nexport const Meteors = ({\n  number,\n  className,\n}: {\n  number?: number;\n  className?: string;\n}) => {\n  const meteors = new Array(number || 20).fill(true);\n  return (\n    <motion.div\n      initial={{ opacity: 0 }}\n      animate={{ opacity: 1 }}\n      transition={{ duration: 0.5 }}\n    >\n      {meteors.map((el, idx) => {\n        const meteorCount = number || 20;\n        // Calculate position to evenly distribute meteors across container width\n        const position = idx * (800 / meteorCount) - 400; // Spread across 800px range, centered\n\n        return (\n          <span\n            key={\"meteor\" + idx}\n            className={cn(\n              \"animate-meteor-effect absolute h-0.5 w-0.5 rotate-[45deg] rounded-[9999px] bg-slate-500 shadow-[0_0_0_1px_#ffffff10]\",\n              \"before:absolute before:top-1/2 before:h-[1px] before:w-[50px] before:-translate-y-[50%] before:transform before:bg-gradient-to-r before:from-[#64748b] before:to-transparent before:content-['']\",\n              className,\n            )}\n            style={{\n              top: \"-40px\", // Start above the container\n              left: position + \"px\",\n              animationDelay: Math.random() * 5 + \"s\", // Random delay between 0-5s\n              animationDuration: Math.floor(Math.random() * (10 - 5) + 5) + \"s\", // Keep some randomness in duration\n            }}\n          ></span>\n        );\n      })}\n    </motion.div>\n  );\n};\n",
+   "type": "registry:ui",
+   "target": "components/ui/meteors.tsx"
+  }
+ ],
+ "author": "Manu Arora <hi@manuarora.in>",
+ "title": "Meteors"
+}

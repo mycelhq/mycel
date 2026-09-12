@@ -1,0 +1,17 @@
+{
+ "name": "moving-line",
+ "type": "registry:ui",
+ "dependencies": [
+  "motion"
+ ],
+ "files": [
+  {
+   "path": "components/ui/moving-line.tsx",
+   "content": "import React, { useRef } from \"react\";\nimport {\n  motion,\n  useMotionValueEvent,\n  useScroll,\n  useSpring,\n  useTransform,\n} from \"motion/react\";\n\nconst MovingLine = () => {\n  const transition = {\n    duration: 14,\n    ease: \"easeInOut\" as const,\n  };\n\n  const ref = useRef<any>(null);\n\n  // Track scroll progress, lies between 0 and 1.\n  const { scrollYProgress } = useScroll({\n    target: ref,\n    offset: [\"end end\", \"start start\"],\n  });\n\n  // when scroll progress reached 1, path length becomes 0.\n  const pathLengthValue = useTransform(scrollYProgress, [0, 1], [1, 0]);\n\n  const PATH = \"M0.5 0.980671L0.5 1566.02\";\n  return (\n    <div\n      className=\"max-w-4xl mx-auto flex flex-row space-x-10 items-start w-full \"\n      ref={ref}\n    >\n      <svg\n        width=\"1\"\n        height=\"1567\"\n        viewBox=\"0 0 1 1567\"\n        fill=\"none\"\n        xmlns=\"http://www.w3.org/2000/svg\"\n        className=\"shrink-0\"\n      >\n        <path d={PATH} stroke=\"url(#paint0_linear_207_38)\" />\n        <defs>\n          <linearGradient\n            id=\"paint0_linear_207_38\"\n            x1=\"1\"\n            y1=\"-102.823\"\n            x2=\"1\"\n            y2=\"1566.02\"\n            gradientUnits=\"userSpaceOnUse\"\n          >\n            <stop stop-color=\"#3879E7\" stop-opacity=\"0\" />\n            <stop offset=\"1\" stop-color=\"#3879E7\" />\n          </linearGradient>\n        </defs>\n        <motion.path\n          // animatng pathLength value, goes from 1 to 0\n          style={{\n            pathLength: useSpring(pathLengthValue, {\n              stiffness: 500,\n              damping: 100,\n            }),\n          }}\n          transition={transition}\n          d={PATH}\n          stroke=\"var(--blue-500)\"\n          strokeOpacity=\"1\"\n          strokeLinecap={\"round\"}\n          strokeWidth=\"3\"\n        />\n      </svg>\n      <div className=\"flex flex-col w-full\">\n        <Content />\n        <Content />\n        <Content />\n      </div>\n    </div>\n  );\n};\n\n{\n  /* dummy content to fill up the screen */\n}\n\nexport const Content = () => {\n  return (\n    <div className=\"content w-full mb-10 \">\n      <p className=\"text-2xl font-bold text-white  \">\n        The path follows the scroll\n      </p>\n      <p className=\"text-base font-normal text-neutral-300  \">\n        If you look closely, you can see the path is being animated.\n      </p>\n      <div className=\"flex space-x-4 w-full \">\n        <div className=\"w-full h-40 md:h-96 rounded-md bg-gradient-to-tr from-slate-800 to-slate-700 mt-4\" />\n        <div className=\"w-full h-40 md:h-96 rounded-md bg-gradient-to-tr from-slate-800 to-slate-700 mt-4\" />\n      </div>\n    </div>\n  );\n};\n\nexport default MovingLine;\n",
+   "type": "registry:ui",
+   "target": "components/ui/moving-line.tsx"
+  }
+ ],
+ "author": "Manu Arora <hi@manuarora.in>",
+ "title": "Moving Line"
+}

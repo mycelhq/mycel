@@ -1,0 +1,47 @@
+# CI for the PUBLISHED repository (github.com/mycelhq/mycel), where the kernel is the root.
+#
+# This file is inert in the upstream monorepo: GitHub only reads workflows from `.github/` at the
+# REPOSITORY root, and here that path is `kernel/.github/`. It becomes live the moment the publish
+# snapshot lifts `kernel/` to the root. That is deliberate — it means the public repo's CI is
+# version-controlled and reviewed alongside the code it tests, rather than being configured by hand
+# in a repo nobody develops in.
+#
+# The monorepo's own equivalent is `.github/workflows/kernel.yml`, which does the same two steps with
+# a `working-directory: kernel`. Keep them in step; if they drift, the public repo is the one that
+# breaks in front of strangers.
+name: ci
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    services:
+      # The suite runs fully in-memory by default. Postgres is supplied so the durability,
+      # multi-instance and two-backend-parity tests actually execute rather than silently skipping —
+      # those are exactly the tests that caught the memory/Postgres store disagreements.
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_PASSWORD: pw
+          POSTGRES_DB: mycel_test
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd pg_isready --health-interval 5s --health-timeout 5s --health-retries 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: package-lock.json
+      - run: npm ci
+      - name: Typecheck
+        run: npx tsc --noEmit
+      - name: Test (in-memory + postgres durability + multi-instance)
+        env:
+          MYCEL_TEST_DATABASE_URL: postgres://postgres:pw@127.0.0.1:5432/mycel_test
+        run: npm test

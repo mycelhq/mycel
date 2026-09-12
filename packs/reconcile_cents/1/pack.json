@@ -1,0 +1,24 @@
+{
+  "name": "reconcile_cents",
+  "version": 1,
+  "digest": "6943b0f89e3f4e14b0d37bdc1fa5b418b3e7d00ff0fce9d698ea4e3d1200cf51",
+  "description": "Bank vs ledger to the cent. Deterministic — never invent the difference.",
+  "input_schema": {
+    "type": "object",
+    "required": ["bank_transactions", "ledger_entries"],
+    "properties": {
+      "bank_transactions": { "type": "array" },
+      "ledger_entries": { "type": "array" },
+      "sales_tax_rate_pct": { "type": "number" }
+    }
+  },
+  "output_schema": {
+    "type": "object",
+    "required": ["reconciled", "difference_cents", "sales_tax_due_cents"],
+    "properties": {
+      "reconciled": { "type": "boolean" },
+      "difference_cents": { "type": "number" },
+      "sales_tax_due_cents": { "type": "number" }
+    }
+  }
+}

@@ -1,0 +1,86 @@
+{
+  "name": "share_of_voice",
+  "version": 1,
+  "digest": "7fd574ac9be1474d142c8a0945a5587f36aecbcb77754589ec40cee45158da76",
+  "description": "Share of voice from raw mention results. Deterministic — the number on the invoice. Probes that never reached a surface are excluded from the denominator and reported separately.",
+  "input_schema": {
+    "type": "object",
+    "required": [
+      "results",
+      "client"
+    ],
+    "properties": {
+      "results": {
+        "type": "array",
+        "items": {
+          "type": "object",
+          "required": [
+            "query",
+            "cited"
+          ],
+          "properties": {
+            "query": {
+              "type": "string"
+            },
+            "cited": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            },
+            "reached": {
+              "type": "boolean",
+              "description": "Did this probe get a real answer. FALSE for a captcha, login wall or consent gate. A false is EXCLUDED from the percentage: an empty citation list from a blocked probe is not evidence that the assistant failed to mention the client. Absent means reached, so rows written before this field existed keep counting."
+            },
+            "surface": {
+              "type": "string",
+              "description": "Which assistant answered, for the blocked-by breakdown."
+            },
+            "blocked_by": {
+              "type": "string",
+              "description": "When `reached` is false, what stopped it, in one line."
+            }
+          }
+        }
+      },
+      "client": {
+        "type": "string"
+      }
+    }
+  },
+  "output_schema": {
+    "type": "object",
+    "required": [
+      "share_of_voice_pct",
+      "queries",
+      "mentions"
+    ],
+    "properties": {
+      "share_of_voice_pct": {
+        "type": [
+          "number",
+          "null"
+        ],
+        "description": "Null when nothing was reached. Zero per cent is a finding; no measurement is not."
+      },
+      "queries": {
+        "type": "integer",
+        "description": "Probes that RETURNED AN ANSWER. The denominator."
+      },
+      "mentions": {
+        "type": "integer"
+      },
+      "top_competitors": {
+        "type": "array"
+      },
+      "unreached": {
+        "type": "integer",
+        "description": "Probes that never got an answer. Never folded into the percentage."
+      },
+      "blocked_by": {
+        "type": "array",
+        "description": "Surface and reason for each refusal, with counts."
+      }
+    }
+  }
+}

@@ -1,0 +1,36 @@
+Design systems vendored from OpenDesign
+=======================================
+
+Source:  https://github.com/nexu-io/open-design  (design-systems/)
+Licence: Apache License 2.0 — see LICENSE-APACHE-2.0 in this directory.
+Vendored: 2026-09-02
+
+WHAT WAS TAKEN
+
+Twenty-nine STYLE systems — corporate, editorial, luxury, brutalism and so on.
+Each is a `DESIGN.md` (design prose) plus a `tokens.css` (a self-contained
+`:root`). Nothing was modified; anything derived from them lives in this
+package's own source files, not inside `systems/`.
+
+WHAT WAS DELIBERATELY NOT TAKEN, AND WHY
+
+The upstream catalogue also ships roughly 120 systems named after companies —
+apple, stripe, bmw, ferrari, airbnb, nike, spotify and the rest — reconstructed
+from those companies' public sites. They are excluded on purpose:
+
+  1. Apache-2.0 section 6 grants patent and copyright rights and explicitly
+     grants NO trademark licence. A style called "brutalism" is a genre; one
+     called "Ferrari" is a mark.
+  2. These systems are used to render deliverables an AGENCY bills a CLIENT
+     for. An open-source design tool offering an Apple-like reference to a
+     designer is one thing; a commercial product shipping that identity inside
+     paid client work is a different one.
+  3. Several specify licensed typefaces by name — the apple system calls for
+     SF Pro, which is not ours to redistribute or to instruct a renderer to use.
+
+The exclusion also happens to be the better product decision. A law firm
+defending traffic citations needs `professional` or `publication`; it has no use
+for `Bugatti`.
+
+If a brand-specific look is ever wanted, the right route is the customer's own
+brand package — see `landing/lib/brand/tokens.ts` — not a third party's identity.

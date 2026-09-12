@@ -1,0 +1,27 @@
+{
+  "name": "@mycel/linkedin",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Self-hosted LinkedIn (Voyager) core: session capture, search/profile/invite/message actions, pacing hooks, proxy pool, bandwidth meter. Host concerns (secrets, pacing semantics, storage, GTM bookkeeping) are injected through the seams in src/host.ts.",
+  "exports": {
+    ".": "./src/index.ts",
+    "./*": "./src/*.ts"
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "test": "node --import tsx --test test/*.test.ts",
+    "verify:profile": "tsx scripts/verify-profile.ts"
+  },
+  "dependencies": {
+    "undici": "^6.28.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.7.4",
+    "tsx": "^4.19.1",
+    "typescript": "^5.6.2"
+  },
+  "optionalDependencies": {
+    "playwright-core": "^1.62.1"
+  }
+}

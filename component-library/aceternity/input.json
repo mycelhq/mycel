@@ -1,0 +1,17 @@
+{
+ "name": "input",
+ "type": "registry:ui",
+ "dependencies": [
+  "motion"
+ ],
+ "files": [
+  {
+   "path": "components/ui/input.tsx",
+   "content": "\"use client\";\nimport * as React from \"react\";\nimport { cn } from \"@/lib/utils\";\nimport { useMotionTemplate, useMotionValue, motion } from \"motion/react\";\n\nexport interface InputProps\n  extends React.InputHTMLAttributes<HTMLInputElement> {}\n\nconst Input = React.forwardRef<HTMLInputElement, InputProps>(\n  ({ className, type, ...props }, ref) => {\n    const radius = 100; // change this to increase the rdaius of the hover effect\n    const [visible, setVisible] = React.useState(false);\n\n    let mouseX = useMotionValue(0);\n    let mouseY = useMotionValue(0);\n\n    function handleMouseMove({ currentTarget, clientX, clientY }: any) {\n      let { left, top } = currentTarget.getBoundingClientRect();\n\n      mouseX.set(clientX - left);\n      mouseY.set(clientY - top);\n    }\n    return (\n      <motion.div\n        style={{\n          background: useMotionTemplate`\n        radial-gradient(\n          ${visible ? radius + \"px\" : \"0px\"} circle at ${mouseX}px ${mouseY}px,\n          #3b82f6,\n          transparent 80%\n        )\n      `,\n        }}\n        onMouseMove={handleMouseMove}\n        onMouseEnter={() => setVisible(true)}\n        onMouseLeave={() => setVisible(false)}\n        className=\"group/input rounded-lg p-[2px] transition duration-300\"\n      >\n        <input\n          type={type}\n          className={cn(\n            `shadow-input dark:placeholder-text-neutral-600 flex h-10 w-full rounded-md border-none bg-gray-50 px-3 py-2 text-sm text-black transition duration-400 group-hover/input:shadow-none file:border-0 file:bg-transparent file:text-sm file:font-medium placeholder:text-neutral-400 focus-visible:ring-[2px] focus-visible:ring-neutral-400 focus-visible:outline-none disabled:cursor-not-allowed disabled:opacity-50 dark:bg-zinc-800 dark:text-white dark:shadow-[0px_0px_1px_1px_#404040] dark:focus-visible:ring-neutral-600`,\n            className,\n          )}\n          ref={ref}\n          {...props}\n        />\n      </motion.div>\n    );\n  },\n);\nInput.displayName = \"Input\";\n\nexport { Input };\n",
+   "type": "registry:ui",
+   "target": "components/ui/input.tsx"
+  }
+ ],
+ "author": "Manu Arora <hi@manuarora.in>",
+ "title": "Input"
+}

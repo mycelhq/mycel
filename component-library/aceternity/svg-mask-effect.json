@@ -1,0 +1,17 @@
+{
+ "name": "svg-mask-effect",
+ "type": "registry:ui",
+ "dependencies": [
+  "motion"
+ ],
+ "files": [
+  {
+   "path": "components/ui/svg-mask-effect.tsx",
+   "content": "\"use client\";\nimport { useState, useEffect, useRef } from \"react\";\nimport { motion } from \"motion/react\";\nimport { cn } from \"@/lib/utils\";\n\nexport const MaskContainer = ({\n  children,\n  revealText,\n  size = 10,\n  revealSize = 600,\n  className,\n}: {\n  children?: string | React.ReactNode;\n  revealText?: string | React.ReactNode;\n  size?: number;\n  revealSize?: number;\n  className?: string;\n}) => {\n  const [isHovered, setIsHovered] = useState(false);\n  const [mousePosition, setMousePosition] = useState<any>({ x: null, y: null });\n  const containerRef = useRef<any>(null);\n  const updateMousePosition = (e: any) => {\n    const rect = containerRef.current.getBoundingClientRect();\n    setMousePosition({ x: e.clientX - rect.left, y: e.clientY - rect.top });\n  };\n\n  useEffect(() => {\n    containerRef.current.addEventListener(\"mousemove\", updateMousePosition);\n    return () => {\n      if (containerRef.current) {\n        containerRef.current.removeEventListener(\n          \"mousemove\",\n          updateMousePosition,\n        );\n      }\n    };\n  }, []);\n  let maskSize = isHovered ? revealSize : size;\n\n  return (\n    <motion.div\n      ref={containerRef}\n      className={cn(\"relative h-screen\", className)}\n      animate={{\n        backgroundColor: isHovered ? \"var(--slate-900)\" : \"var(--white)\",\n      }}\n      transition={{\n        backgroundColor: { duration: 0.3 },\n      }}\n    >\n      <motion.div\n        className=\"absolute flex h-full w-full items-center justify-center bg-black text-6xl [mask-image:url(/mask.svg)] [mask-repeat:no-repeat] [mask-size:40px] dark:bg-white\"\n        animate={{\n          maskPosition: `${mousePosition.x - maskSize / 2}px ${\n            mousePosition.y - maskSize / 2\n          }px`,\n          maskSize: `${maskSize}px`,\n        }}\n        transition={{\n          maskSize: { duration: 0.3, ease: \"easeInOut\" },\n          maskPosition: { duration: 0.15, ease: \"linear\" },\n        }}\n      >\n        <div className=\"absolute inset-0 z-0 h-full w-full bg-black opacity-50 dark:bg-white\" />\n        <div\n          onMouseEnter={() => {\n            setIsHovered(true);\n          }}\n          onMouseLeave={() => {\n            setIsHovered(false);\n          }}\n          className=\"relative z-20 mx-auto max-w-4xl text-center text-4xl font-bold\"\n        >\n          {children}\n        </div>\n      </motion.div>\n\n      <div className=\"flex h-full w-full items-center justify-center\">\n        {revealText}\n      </div>\n    </motion.div>\n  );\n};\n",
+   "type": "registry:ui",
+   "target": "components/ui/svg-mask-effect.tsx"
+  }
+ ],
+ "author": "Manu Arora <hi@manuarora.in>",
+ "title": "Svg Mask Effect"
+}

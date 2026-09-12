@@ -1,0 +1,14 @@
+{
+ "name": "colourful-text",
+ "type": "registry:ui",
+ "files": [
+  {
+   "path": "components/ui/colourful-text.tsx",
+   "content": "\"use client\";\nimport React from \"react\";\nimport { motion } from \"motion/react\";\n\nexport default function ColourfulText({ text }: { text: string }) {\n  const colors = [\n    \"rgb(131, 179, 32)\",\n    \"rgb(47, 195, 106)\",\n    \"rgb(42, 169, 210)\",\n    \"rgb(4, 112, 202)\",\n    \"rgb(107, 10, 255)\",\n    \"rgb(183, 0, 218)\",\n    \"rgb(218, 0, 171)\",\n    \"rgb(230, 64, 92)\",\n    \"rgb(232, 98, 63)\",\n    \"rgb(249, 129, 47)\",\n  ];\n\n  const [currentColors, setCurrentColors] = React.useState(colors);\n  const [count, setCount] = React.useState(0);\n\n  React.useEffect(() => {\n    const interval = setInterval(() => {\n      const shuffled = [...colors].sort(() => Math.random() - 0.5);\n      setCurrentColors(shuffled);\n      setCount((prev) => prev + 1);\n    }, 5000);\n\n    return () => clearInterval(interval);\n  }, []);\n\n  return text.split(\"\").map((char, index) => (\n    <motion.span\n      key={`${char}-${count}-${index}`}\n      initial={{\n        y: 0,\n      }}\n      animate={{\n        color: currentColors[index % currentColors.length],\n        y: [0, -3, 0],\n        scale: [1, 1.01, 1],\n        filter: [\"blur(0px)\", `blur(5px)`, \"blur(0px)\"],\n        opacity: [1, 0.8, 1],\n      }}\n      transition={{\n        duration: 0.5,\n        delay: index * 0.05,\n      }}\n      className=\"inline-block whitespace-pre font-sans tracking-tight\"\n    >\n      {char}\n    </motion.span>\n  ));\n}\n",
+   "type": "registry:ui",
+   "target": "components/ui/colourful-text.tsx"
+  }
+ ],
+ "author": "Manu Arora <hi@manuarora.in>",
+ "title": "Colourful Text"
+}

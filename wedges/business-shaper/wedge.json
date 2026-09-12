@@ -1,0 +1,1131 @@
+{
+  "wedge": "business-shaper",
+  "title": "Business shaper",
+  "provides": [
+    "business_shaping"
+  ],
+  "_comment_internal": "Onboarding machinery. It reads one line about a business before the founder has seen the product; nobody sells business-shaping, and it must not appear as one of their services. See WedgeManifest.internal in harness/src/wedge.ts for why this is declared rather than inferred.",
+  "internal": true,
+  "_comment_budgets": "The max_runtime_s numbers below are counted in MODEL COMPLETIONS, not in minutes. One completion measures 85-95 seconds in production (LiteLLM spend logs; the ALB idle timeout was raised 60 to 300 for exactly this), so the old 180/120/300 were two completions, one, and three. A week of production runs came back p50 175s with four of them finishing at 180.1, 180.2, 180.6 and 180.8 seconds -- the draft_shape ceiling to the tenth of a second, killed mid-answer and reported to the founder as a failure on the first screen they ever saw. These are the runs a founder sits and watches, so they get four completions of headroom rather than two.",
+  "task_types": {
+    "draft_shape": {
+      "description": "Read what someone sells — a line they typed, a finished deliverable they uploaded, or both — and answer two questions: what shape is this business, and can this kernel actually run any of it. An uploaded deliverable outranks the description: it is the work rather than a summary of it. Runs the moment they describe themselves, before they have seen a single screen of the product.",
+      "_comment_speed": "The first screen. `decide` allows webfetch so a fulfillment job can read the open web; this job must not — a good answer in twenty seconds beats a perfect one in three minutes (shape-a-business.md). Forty steps was an invitation to wander. Eight is: read the skill, emit the JSON. The 720s ceiling is still four slow completions of headroom; steps, not the clock, is what stops the loop.",
+      "harness": {
+        "shape": "decide",
+        "max_runtime_s": 720,
+        "max_cost_usd": 0.9,
+        "strict_output": true,
+        "needs_connections": false,
+        "temperature": 0.2,
+        "steps": 8,
+        "permission": {
+          "webfetch": "deny",
+          "websearch": "deny"
+        },
+        "skills": [
+          "shape-a-business"
+        ],
+        "instructions": [
+          "knowledge/how-to-read-a-business-name.md"
+        ]
+      },
+      "output_schema": {
+        "type": "object",
+        "properties": {
+          "name": {
+            "type": "string"
+          },
+          "sells": {
+            "type": "string"
+          },
+          "sells_to": {
+            "type": "string"
+          },
+          "reach": {
+            "type": "object",
+            "description": "`sells_to` as something a search can actually run. It is prose — 'small dental practices around Manchester' — and the autonomous find needs fields. You are already reading the founder's description to write `sells_to`, so you are the right place to structure it; a parser downstream would be guessing at words you had in front of you. Omit entirely if the description genuinely does not say who they sell to. Never invent a market they did not describe.",
+            "properties": {
+              "titles": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                },
+                "description": "Job titles of the person who DECIDES TO BUY, which is usually not the job the client does. A dental practice is sold to by its Practice Owner or Practice Manager, not by 'Dentist'. Two to five titles; more than that means the target is not understood yet. Leave empty rather than guessing — `location` and `company_industries` alone are a workable search, and a wrong title is worse than no title because it silently searches for the wrong people forever."
+              },
+              "location": {
+                "type": "string",
+                "description": "Where their clients are, as a place a search engine would know: a city, region or country. Only if they said so. A founder in Leeds who sells nationally is not a Leeds audience."
+              },
+              "company_industries": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                },
+                "description": "The industries their CLIENTS are in — the buyer's industry, never the founder's. A bookkeeper selling to e-commerce shops has `company_industries: [\"e-commerce\", \"retail\"]`, not [\"accounting\"]. Getting this backwards points the whole loop at the founder's own competitors."
+              },
+              "keywords": {
+                "type": "string",
+                "description": "Anything narrowing left over that is not a title, place or industry — a technology their clients run on, a size, a stage. Free text, kept short."
+              }
+            }
+          },
+          "runs_as": {
+            "type": "object",
+            "description": "The honest answer to 'can you run this?'. `fit: none` is a legitimate outcome and must be returned rather than forced into the nearest entry in the catalogue.",
+            "properties": {
+              "fit": {
+                "type": "string",
+                "enum": [
+                  "direct",
+                  "adjacent",
+                  "none"
+                ]
+              },
+              "wedge": {
+                "type": "string",
+                "description": "REQUIRED when `fit` is `direct` or `adjacent`: one of the `wedge` values in `input.catalogue`, copied character for character. Not the `title`, not a `task_type`, not a description of it however accurate. This field shipped as a bare string with no description, and a production run answered it in prose — a receivables-chasing service rather than `invoice-chaser` — which the console could not resolve, so a bookkeeping practice we can serve was told 'we can't run this yet' on the first screen it ever saw. Omit only when `fit` is `none`."
+              },
+              "covers": {
+                "type": "string",
+                "description": "What we would do, in the founder's own words. Printed on their screen exactly as written, so never use the words wedge, kernel, harness or provision. Required even when `fit` is `none`, where it names the closest honest thing we do at all."
+              },
+              "not_covered": {
+                "type": "string",
+                "description": "The part of their business this does NOT touch, in their words. Printed on their screen exactly as written, so never use the words wedge, kernel, harness or provision."
+              },
+              "also_runs": {
+                "type": "array",
+                "description": "THE REST OF THE BUSINESS. `wedge` above is the trade they SELL; this is everything else that has to run for the business to work, and it was missing entirely — a shape named one wedge and the product treated that as the whole business.\n\nNo service business is one wedge. A bookkeeping practice sells bookkeeping AND chases its own unpaid invoices AND has to find the next client. Those are three different trades in this catalogue and only the first is what they would say when asked what they do.\n\nSo name the supporting ones from the same catalogue, character for character, with a reason. Do not pad it: a wedge here means the founder will see its jobs on their list, and offering a recruiting desk to a bookkeeper because both involve people is how a first screen loses trust. Two or three at most, each one something they described needing or something every business of this shape needs.",
+                "items": {
+                  "type": "object",
+                  "required": [
+                    "wedge",
+                    "why"
+                  ],
+                  "properties": {
+                    "wedge": {
+                      "type": "string",
+                      "description": "From input.catalogue, copied exactly. Never the same as runs_as.wedge."
+                    },
+                    "why": {
+                      "type": "string",
+                      "description": "In their words, not ours. \"You said you spend Fridays chasing payment\" beats \"provides dunning capability\"."
+                    },
+                    "for": {
+                      "type": "string",
+                      "enum": [
+                        "their_clients",
+                        "their_own_business"
+                      ],
+                      "description": "Whether this trade serves the CLIENT'S clients or the founder's own operation. A bookkeeper's invoice chasing is their_own_business; their monthly closes are their_clients. The distinction decides whose name goes on the email and it has been implicit until now."
+                    }
+                  }
+                }
+              },
+              "to_author": {
+                "type": "array",
+                "description": "THE FULFILMENT NOBODY HAS WRITTEN YET — the services this business needs that the catalogue does not contain, to be authored for them.\n\n`wedge` and `also_runs` above can only name trades that already exist. That is right for the OPS SPINE — chasing an invoice, running outreach, answering a questionnaire — because those are the same job in every trade and are already proven. It is wrong for the work the business actually sells, which is different in every trade and is why a dental practice, a planning consultancy and a freight broker are not the same product.\n\nWithout this the choice was binary: a trade we happen to ship, or `fit: none` and one service written from a founder's paragraph. Neither describes a real business. A dental practice reuses invoice chasing and outreach, and needs claims-and-denials written for it.\n\nNAME THE WORK, NOT THE BUSINESS. One entry per distinct piece of delivery that has its own artefacts and its own way of going wrong: \"insurance claims and denials\" and \"patient recalls\" are two, because a denied claim and a missed recall are handled by different people on different clocks. \"Dental practice admin\" is not an entry, it is the whole business.\n\nAT MOST THREE, and fewer is usually right. Each one becomes a service somebody has to read and approve, and three good ones beat six that overlap. Leave the array out entirely when the catalogue genuinely covers the delivery.",
+                "items": {
+                  "type": "object",
+                  "required": [
+                    "title",
+                    "covers"
+                  ],
+                  "properties": {
+                    "title": {
+                      "type": "string",
+                      "description": "What the founder would call this on their own website — \"Insurance claims and denials\", not \"claims_service\". Printed on their screen exactly as written, so never the words wedge, kernel, harness or provision."
+                    },
+                    "covers": {
+                      "type": "string",
+                      "description": "The delivery this covers, in their words, specific enough that somebody in the trade would recognise their own week: the artefacts it moves, who it deals with, and what happens when it goes wrong. This sentence becomes the brief the service is written from, so a vague one here produces a vague service."
+                    },
+                    "why": {
+                      "type": "string",
+                      "description": "Why the catalogue cannot already do this. \"You said most of the week goes on chasing denied claims through the payer portal, and nothing here reads an EOB.\""
+                    }
+                  }
+                }
+              }
+            },
+            "required": [
+              "fit"
+            ]
+          },
+          "first_job": {
+            "type": "object",
+            "properties": {
+              "title": {
+                "type": "string"
+              },
+              "why": {
+                "type": "string"
+              },
+              "cadence": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "title",
+              "why"
+            ]
+          },
+          "connections": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "toolkit": {
+                  "type": "string"
+                },
+                "why": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "toolkit",
+                "why"
+              ]
+            }
+          },
+          "confidence": {
+            "type": "string",
+            "description": "How sure you are of this read. Include it. If you truly cannot judge, say `low` rather than omitting the field — a missing confidence used to hard-fail the whole draft on the first screen a founder ever saw.",
+            "enum": [
+              "high",
+              "medium",
+              "low"
+            ],
+            "default": "low"
+          },
+          "assumptions": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          }
+        },
+        "required": [
+          "sells",
+          "sells_to",
+          "runs_as",
+          "first_job",
+          "confidence"
+        ]
+      },
+      "input_schema": {
+        "_comment": "The FIRST thing a new account runs. `sells` is what the founder typed and `exemplar` is what they uploaded; the description says an uploaded deliverable outranks a typed line, so at least one must be present or there is nothing to read. Neither is required alone because either is enough.",
+        "type": "object",
+        "required": [],
+        "properties": {
+          "sells": {
+            "type": "string",
+            "description": "What the founder typed about what they sell, in their own words."
+          },
+          "site_url": {
+            "type": "string",
+            "description": "Their website, if they gave one. Read for what the business actually does, not only for its colours."
+          },
+          "exemplar": {
+            "type": "string",
+            "description": "Text of one finished deliverable they uploaded. Outranks `sells`: what a firm SENDS says more about the shape of its work than what it says about itself."
+          }
+        }
+      }
+    },
+    "research_service": {
+      "_comment": "THE META-AGENT COULD NOT SEE THE WORLD.\n\n`draft_shape` and `draft_service` both run on the `decide` shape, which allows read/grep/glob/skill and nothing else — no browser, no fetch, no search. So the two jobs that decide what a new service business IS and write its service worked entirely from the model's priors and the one line the founder typed.\n\nFor `draft_shape` that is correct and deliberate: it is the first screen after signup and its own skill says a good answer in twenty seconds beats a perfect one in three minutes. But nothing downstream ever looked either, and the product's claim is that it plugs into ANY service business — a claim it was making without having seen how one is delivered.\n\nThis is the `operate` shape, which has websearch, webfetch and a browser. It runs between the shape and the service, and it is the only job in this wedge that is allowed to be slow.\n\n── WHAT IT MUST COME BACK WITH, AND WHY EACH FIELD HAS A SOURCE ──\n\nEvery finding carries `source`, and `each_has` refuses the output without one. Not because a URL proves a claim — it does not — but because a model asked to cite is a model that had to go and look, and the difference between reading three real agencies' service pages and recalling what such a page usually says is invisible in the prose and total in the result.\n\n`price_range_minor` is deliberately a RANGE and deliberately optional. A single number invented from three data points would be quoted back to a founder as market rate, and they would price against it.",
+      "description": "Go and find out how this service is actually delivered before we write it. What the client gets, what it takes to produce, what it costs, and what the buyer expects to see. Everything you report names where you found it.",
+      "harness": {
+        "shape": "operate",
+        "max_runtime_s": 1800,
+        "max_cost_usd": 3,
+        "strict_output": true,
+        "temperature": 0.2,
+        "steps": 28,
+        "skills": [
+          "research-a-service"
+        ],
+        "_comment_budget": "RAISED WITH THE SCOPE, because the scope changed and the envelope had not. This was 900s / 18 steps / $1.50 for the ladder alone: regulators, vendor docs, practitioners, public templates, sales pages, and the fields those produce. `artefact_examples` then added a different kind of work to the same budget — finding two or three REAL published specimens and OPENING them, which is often a PDF per candidate and several candidates per hit. Asking for that inside an envelope sized for the old job is how a run gets killed mid-look and reports a thin result as a finished one. The multiplier is justified by where this sits rather than by how long it feels: research sets the CEILING on everything authored afterwards — research-quality.ts's own header makes the case, a judge playing the founder scores a service 3 or below when it is general admin in the trade's vocabulary and 8 or above when it names the trade's real artefacts. It runs ONCE per service, at onboarding. Three dollars once, to decide whether every deliverable that business ever ships is generic, is not a close call. Still far under the 3h ceiling, and `max_cost_usd` remains the real bound — a run that finds what it needs in six minutes stops in six minutes."
+      },
+      "input_schema": {
+        "type": "object",
+        "required": [
+          "sells"
+        ],
+        "properties": {
+          "sells": {
+            "type": "string",
+            "description": "What this business sells, from draft_shape."
+          },
+          "to": {
+            "type": "string",
+            "description": "Who they sell it to."
+          },
+          "where": {
+            "type": "string",
+            "description": "Country or region, when it is known. Pricing is local."
+          }
+        }
+      },
+      "output_schema": {
+        "type": "object",
+        "required": [
+          "reached",
+          "deliverables"
+        ],
+        "properties": {
+          "reached": {
+            "type": "boolean",
+            "description": "Did you actually read anything? FALSE if search was unavailable or every page was blocked. A false here is honest and the service gets written from priors instead — a fabricated market is the one thing that makes this job worse than not running it."
+          },
+          "deliverables": {
+            "type": "array",
+            "description": "What the client actually receives. The nouns, not the verbs.",
+            "items": {
+              "type": "object",
+              "required": [
+                "what",
+                "source"
+              ],
+              "properties": {
+                "what": {
+                  "type": "string",
+                  "description": "The thing a client gets, as they would name it."
+                },
+                "cadence": {
+                  "type": "string",
+                  "description": "How often, when the sources agree on one."
+                },
+                "source": {
+                  "type": "string",
+                  "description": "Where you saw it. A URL you actually opened."
+                },
+                "typical_hours": {
+                  "type": "number",
+                  "description": "HOW LONG A COMPETENT PRACTITIONER TAKES to produce this one deliverable, in hours. The number a firm would use to quote it, or that a rate card implies — not how long an agent takes, which is a fact about us and not about the trade. This is the only input to what the product is worth: hours saved is the one measure a service business already thinks in, already bills in, and can check against its own experience. Without it every delivered piece of work is counted and none of it can be valued. Sources that state it directly: a rate card with a fixed fee and an hourly rate beside it, a trade body's guidance on chargeable time, a practitioner writing 'this takes me a morning'. Omit it rather than guess — an invented hours figure inflates a number the founder will quote to a buyer, and that is the worst possible place for one."
+                }
+              }
+            }
+          },
+          "steps": {
+            "type": "array",
+            "description": "How it gets produced, in order. This is what becomes the job the harness runs.",
+            "items": {
+              "type": "object",
+              "required": [
+                "step",
+                "source"
+              ],
+              "properties": {
+                "step": {
+                  "type": "string"
+                },
+                "who": {
+                  "type": "string",
+                  "description": "Who normally does it — the firm, the client, a third party."
+                },
+                "source": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "price_range_minor": {
+            "type": "object",
+            "description": "A RANGE, and absent when the sources do not support one. A single invented number gets quoted back as market rate and priced against.",
+            "properties": {
+              "low": {
+                "type": "integer"
+              },
+              "high": {
+                "type": "integer"
+              },
+              "currency": {
+                "type": "string"
+              },
+              "basis": {
+                "type": "string",
+                "description": "Per month, per project, per hour."
+              },
+              "source": {
+                "type": "string"
+              }
+            }
+          },
+          "client_expects": {
+            "type": "array",
+            "description": "What a buyer of this service assumes is included without asking. The out-of-scope list on a proposal is written from this.",
+            "items": {
+              "type": "string"
+            }
+          },
+          "what_goes_wrong": {
+            "type": "array",
+            "description": "How this service disappoints people, in the words of somebody it disappointed. Reviews, forums, complaints. This is the most valuable thing on the page and the hardest to get.",
+            "items": {
+              "type": "object",
+              "required": [
+                "problem",
+                "source"
+              ],
+              "properties": {
+                "problem": {
+                  "type": "string"
+                },
+                "source": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "blocked_by": {
+            "type": "string",
+            "description": "When `reached` is false, what stopped you, in one line."
+          },
+          "identities": {
+            "type": "array",
+            "description": "THE ARITHMETIC OF THIS TRADE — the relations a practitioner expects to hold in the finished work, and the first thing one of them would tell you. A recruiter's longlist: presented plus rejected plus shortlisted equals screened. A studio's invoice: hours times rate, less the deposit, is the balance. A visibility report: share of voice is mentions over queries. Everything here becomes a gate the work must pass before a client sees it, so report only what you actually found somebody state — an invented identity fails correct work, and the second time that happens somebody deletes the gate.",
+            "items": {
+              "type": "object",
+              "required": [
+                "says",
+                "shape",
+                "fields",
+                "source"
+              ],
+              "properties": {
+                "says": {
+                  "type": "string",
+                  "description": "The relation in a practitioner's words, one sentence."
+                },
+                "shape": {
+                  "type": "string",
+                  "enum": [
+                    "sum_of_list",
+                    "difference",
+                    "ratio",
+                    "count_of_list",
+                    "unknowable"
+                  ],
+                  "description": "Which SHAPE it is — never a check name. `sum_of_list`: a total equals the sum of a list's figures. `difference`: one figure equals another minus a third. `ratio`: a percentage equals one count over another. `count_of_list`: a stated number equals how many entries there are. `unknowable`: a figure must not be stated when a flag says it cannot be established."
+                },
+                "fields": {
+                  "type": "object",
+                  "description": "Which output field plays which role, using the names YOU would give them: `items`/`each`/`total` for a sum, `minuend`/`subtrahend`/`total` for a difference, `numerator`/`denominator`/`pct` for a ratio, `items`/`field` for a count, `field`/`unknown_when` for an unknowable. A name that does not end up in the finished schema is dropped rather than guessed at, so use the plainest name for the thing."
+                },
+                "source": {
+                  "type": "string",
+                  "description": "Where you found somebody state it."
+                }
+              }
+            }
+          },
+          "mechanics": {
+            "type": "array",
+            "description": "THE STRUCTURE A PRACTITIONER KNOWS AND A NOVICE DOES NOT. Not the steps — `steps` already has those — the rules about how the work has to be SHAPED to score well. In SEO it is internal linking topology and topic clusters; in tax it is the order reliefs are applied; in recruiting it is how a scorecard is anchored so two interviewers agree. This is the part of a trade that reads as arbitrary until somebody explains it, and it is what separates work that passes from work that wins. Each entry names where you found it.",
+            "items": {
+              "type": "object",
+              "required": [
+                "rule",
+                "why",
+                "source"
+              ],
+              "properties": {
+                "rule": {
+                  "type": "string",
+                  "description": "The structural rule, stated so it can be followed."
+                },
+                "why": {
+                  "type": "string",
+                  "description": "What goes wrong without it."
+                },
+                "source": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "artefact_examples": {
+            "type": "array",
+            "description": "REAL FINISHED WORK OF THIS KIND, PUBLISHED BY SOMEBODY WHO DOES IT. Not a description of the deliverable and not a sales page about it — an actual specimen a reader can open: a published sample report, a regulator's model return, a trade body's worked example, an anonymised case study with the artefact attached, a template a practitioner released. Everything else this job collects teaches the PROCESS; this is the only field that shows what the OUTPUT looks like when a professional is finished with it — the section order, the depth, what gets a table and what gets a sentence. Two or three good ones beat ten. If you cannot find a real specimen, leave this empty and say so in `blocked_by`; a described example is a fabrication with a citation attached.",
+            "items": {
+              "type": "object",
+              "required": [
+                "what",
+                "source",
+                "why_good"
+              ],
+              "properties": {
+                "what": {
+                  "type": "string",
+                  "description": "What the specimen is, as its publisher names it."
+                },
+                "source": {
+                  "type": "string",
+                  "description": "A URL that opens the actual artefact. Not a page describing one."
+                },
+                "why_good": {
+                  "type": "string",
+                  "description": "What this specimen does that a weak one does not — the specific property worth copying. 'It reconciles the opening balance on page one' is useful; 'it is professional' is not."
+                }
+              }
+            }
+          }
+        }
+      },
+      "ship_requires": [
+        "deliverables"
+      ],
+      "ship_checks": [
+        {
+          "kind": "min_items",
+          "field": "deliverables",
+          "n": 1
+        },
+        {
+          "kind": "each_has",
+          "items": "deliverables",
+          "field": "source"
+        },
+        {
+          "kind": "each_has",
+          "items": "steps",
+          "field": "source"
+        },
+        {
+          "kind": "each_has",
+          "items": "what_goes_wrong",
+          "field": "source"
+        }
+      ],
+      "internal": true
+    },
+    "draft_service": {
+      "description": "Write the service itself, for a business nothing installed covers. Runs only after draft_shape has honestly answered `fit: none` — the alternative for that founder is the sentence 'we can't run this yet', which is the end of their visit. The output is a DRAFT: nothing runs until the founder reads what it would do and agrees to it.",
+      "harness": {
+        "shape": "decide",
+        "max_runtime_s": 900,
+        "max_cost_usd": 1,
+        "strict_output": true,
+        "needs_connections": false,
+        "temperature": 0.2,
+        "steps": 32,
+        "skills": [
+          "service-authoring-contract",
+          "write-a-service"
+        ],
+        "instructions": [
+          "knowledge/how-to-read-a-business-name.md"
+        ],
+        "permission": {
+          "webfetch": "allow"
+        }
+      },
+      "output_schema": {
+        "type": "object",
+        "properties": {
+          "slug": {
+            "type": "string",
+            "description": "A short kebab-case name for the service, from the WORK it does and not from the customer's company name (`proposal-desk`, not `acme-studio`). Normalised before it is stored, so approximate is fine."
+          },
+          "manifest": {
+            "type": "object",
+            "description": "The service definition. Validated in full before it is stored, against exactly the same rules a hand-written definition is held to plus the ones in harness/src/wedgeauthor.ts. Anything refused there is reported to the founder as a refusal — nothing is quietly dropped or repaired — so do not guess at a field: leave it out.",
+            "properties": {
+              "wedge": {
+                "type": "string",
+                "description": "Ignored and overwritten with the stored identifier. Do not spend effort on it."
+              },
+              "title": {
+                "type": "string",
+                "description": "What the founder would call this on their own website. 'Proposal and sign-off', not 'Proposal Desk Service Module'."
+              },
+              "tier": {
+                "type": "string",
+                "enum": [
+                  "fast",
+                  "standard",
+                  "deep"
+                ]
+              },
+              "task_types": {
+                "type": "object",
+                "description": "The jobs this service does, keyed by snake_case name. Between one and eight. EVERY one needs an `output_schema` describing what it produces, with at least one property — a job that does not say what it produces cannot be checked, so it would report success on anything.",
+                "additionalProperties": {
+                  "type": "object",
+                  "properties": {
+                    "description": {
+                      "type": "string",
+                      "description": "One sentence, in the founder's language. This is printed on the review card they read before agreeing, so it must never contain the words wedge, kernel, harness or provision."
+                    },
+                    "tier": {
+                      "type": "string",
+                      "enum": [
+                        "fast",
+                        "standard",
+                        "deep"
+                      ]
+                    },
+                    "input_schema": {
+                      "type": "object"
+                    },
+                    "output_schema": {
+                      "type": "object"
+                    },
+                    "waits_for": {
+                      "type": "object",
+                      "description": "Use when this job ends by asking the client for something. `resume` must name another job in this same service — never this one, which would ask the client the same thing again the moment they answered.",
+                      "properties": {
+                        "on": {
+                          "type": "string",
+                          "enum": [
+                            "client_request"
+                          ]
+                        },
+                        "resume": {
+                          "type": "string"
+                        },
+                        "reason": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "on",
+                        "resume",
+                        "reason"
+                      ]
+                    },
+                    "ship_requires": {
+                      "type": "array",
+                      "items": {
+                        "type": "string"
+                      },
+                      "description": "THE BAR FOR WHAT SHIPS: the fields of this job's own `output_schema` that must actually carry something before the work is allowed to reach the client. Name them in order of importance — a run that fails the bar is held, and the founder is told about the FIRST one named. A monthly report whose `recommendations` came back empty is a screenshot, not a report, and this is the only thing that catches it: the schema is satisfied, the run 'succeeded', and the client opens a document that measures something and advises nothing. Pick the fields a client would feel the absence of, usually the prose ones — the finding, the advice, the next step. Do NOT name booleans (they are ignored here on purpose), and do not name a field that a legitimate run might honestly leave empty. Required for any job whose output a client opens."
+                    },
+                    "internal": {
+                      "type": "boolean",
+                      "description": "True when this job is MACHINERY — its output is read by the next job in this service, never by the client. A step that probes a search engine, pulls transactions, or scores a batch so a later step can write the summary. Internal jobs need no `ship_requires`, because nothing they produce is ever delivered. Leave it out for anything a client sees; the default is that a job ships."
+                    },
+                    "typical_hours": {
+                      "type": "number",
+                      "description": "HOW LONG A PERSON IN THIS TRADE TAKES to do this job once, in hours. Copy it from the matching `typical_hours` in the research findings; omit it when the research did not find one. It is what makes the work MEASURABLE: the kernel stamps this onto every deliverable version the job produces, and hours saved is the one number a service business already thinks in and can check against its own experience. A job with no figure still runs and is still delivered — it is counted as unestimated rather than valued, which is honest. Never invent one. It gets multiplied by the founder's rate and shown to them as what this saved, and it is the number they repeat to a buyer."
+                    }
+                  },
+                  "required": [
+                    "description",
+                    "output_schema"
+                  ],
+                  "description": null
+                }
+              },
+              "capabilities": {
+                "type": "array",
+                "description": "What this service needs to be able to DO, by capability, chosen only from `input.capabilities`. Never a vendor name. At most four — every one is a setup step the founder must finish before anything runs.",
+                "items": {
+                  "type": "string"
+                }
+              },
+              "approvals": {
+                "type": "array",
+                "description": "Everything this service would do that reaches a real person, each of which stops for the founder. `required` must be true on every one: a permission that is not required is not a permission.",
+                "items": {
+                  "type": "object",
+                  "properties": {
+                    "action": {
+                      "type": "string"
+                    },
+                    "risk": {
+                      "type": "string",
+                      "enum": [
+                        "low",
+                        "medium",
+                        "high"
+                      ]
+                    },
+                    "required": {
+                      "type": "boolean",
+                      "enum": [
+                        true
+                      ]
+                    }
+                  },
+                  "required": [
+                    "action",
+                    "risk",
+                    "required"
+                  ]
+                }
+              },
+              "cases": {
+                "type": "object",
+                "description": "Only when the work is a long engagement rather than a one-shot job. `initial` must be one of `stages`.",
+                "properties": {
+                  "stages": {
+                    "type": "array",
+                    "items": {
+                      "type": "string"
+                    }
+                  },
+                  "initial": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "stages"
+                ]
+              },
+              "intake": {
+                "type": "array",
+                "description": "What must be learned from this founder before the service can do the job well. At most eight, and each must change what the agent visibly does.",
+                "items": {
+                  "type": "object",
+                  "properties": {
+                    "id": {
+                      "type": "string",
+                      "description": "kebab-case; names the knowledge file the answer becomes."
+                    },
+                    "ask": {
+                      "type": "string"
+                    },
+                    "why": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "id",
+                    "ask"
+                  ]
+                }
+              },
+              "policy": {
+                "type": "object",
+                "description": "DAY-ONE ALLOWANCES: the few routine actions this service may take without waking the founder, each with a hard daily count. Optional, and most services should declare ONE or NONE. What qualifies: an action that is (a) routine and repeated — the founder would approve it identically every time, (b) bounded by its own nature — a status note to an existing client, a reminder on an agreed schedule, (c) NOT first contact with anyone, NOT money, NOT public, NOT destructive. What never qualifies: anything reaching a stranger, anything with an amount, anything a reasonable founder would want to read first at least once. Your rules are clamped after you write them (max three rules, max 10/day each, money rules deleted, wildcards deleted) — so write the honest narrow thing; the wide thing will not survive.",
+                "properties": {
+                  "auto_approve": {
+                    "type": "array",
+                    "items": {
+                      "type": "object",
+                      "properties": {
+                        "action": {
+                          "type": "string",
+                          "description": "The EXACT action id, e.g. \"email:send_email\". Never a wildcard or prefix — those are deleted."
+                        },
+                        "max_per_day": {
+                          "type": "number",
+                          "description": "Required. The most of these that may run unattended in a day. Clamped to 10."
+                        },
+                        "max_per_task": {
+                          "type": "number"
+                        }
+                      },
+                      "required": [
+                        "action",
+                        "max_per_day"
+                      ]
+                    }
+                  }
+                }
+              },
+              "fulfillment": {
+                "type": "object",
+                "description": "HOW THIS SERVICE TRANSACTS. Without it the service can think and cannot trade: kickoff raises no asks, there is no money plan to invoice, and ignition has no production task type, so it runs and delivers to nobody. Declare it even when a field is empty — an empty list is an answer.",
+                "required": [
+                  "intake_asks",
+                  "deliverable_shapes",
+                  "production_task_type"
+                ],
+                "properties": {
+                  "client_connections": {
+                    "type": "array",
+                    "description": "Accounts the CLIENT must connect for this work to be possible, e.g. their accounting system. Use an integration that really exists; if you are unsure one does, ask for the file under intake_asks instead — an ask always works and a connection we do not have never does. Empty is correct for a trade that needs nothing of the client's systems.",
+                    "items": {
+                      "type": "object",
+                      "required": [
+                        "toolkit",
+                        "ask"
+                      ],
+                      "properties": {
+                        "toolkit": {
+                          "type": "string",
+                          "description": "Lowercase slug, e.g. \"xero\", \"quickbooks\", \"hubspot\"."
+                        },
+                        "ask": {
+                          "type": "string",
+                          "description": "One line the client reads: \"Connect your Xero account\"."
+                        },
+                        "detail": {
+                          "type": "string",
+                          "description": "Why, in their terms."
+                        }
+                      }
+                    }
+                  },
+                  "intake_asks": {
+                    "type": "array",
+                    "description": "Documents, answers and decisions needed from the client before the first run can produce anything. This is the path that always works, so prefer it over an integration when in doubt.",
+                    "items": {
+                      "type": "object",
+                      "required": [
+                        "kind",
+                        "ask"
+                      ],
+                      "properties": {
+                        "kind": {
+                          "type": "string",
+                          "enum": [
+                            "document",
+                            "answer",
+                            "decision"
+                          ]
+                        },
+                        "ask": {
+                          "type": "string",
+                          "description": "One line, in the client's language."
+                        },
+                        "detail": {
+                          "type": "string"
+                        }
+                      }
+                    }
+                  },
+                  "money_plan": {
+                    "type": "object",
+                    "description": "What this engagement charges. Amounts in MINOR units — 150000 is 1,500.00.",
+                    "required": [
+                      "currency",
+                      "lines"
+                    ],
+                    "properties": {
+                      "currency": {
+                        "type": "string",
+                        "description": "ISO 4217, e.g. \"USD\", \"GBP\"."
+                      },
+                      "lines": {
+                        "type": "array",
+                        "items": {
+                          "type": "object",
+                          "required": [
+                            "label",
+                            "amount_minor",
+                            "kind"
+                          ],
+                          "properties": {
+                            "label": {
+                              "type": "string"
+                            },
+                            "amount_minor": {
+                              "type": "integer"
+                            },
+                            "kind": {
+                              "type": "string",
+                              "enum": [
+                                "deposit",
+                                "retainer",
+                                "fixed"
+                              ]
+                            },
+                            "recurrence": {
+                              "type": "object",
+                              "properties": {
+                                "every": {
+                                  "type": "string",
+                                  "enum": [
+                                    "week",
+                                    "month",
+                                    "quarter",
+                                    "year"
+                                  ]
+                                },
+                                "interval": {
+                                  "type": "integer"
+                                }
+                              }
+                            }
+                          }
+                        }
+                      }
+                    }
+                  },
+                  "deliverable_shapes": {
+                    "type": "array",
+                    "description": "What the client actually receives.",
+                    "items": {
+                      "type": "string",
+                      "enum": [
+                        "document",
+                        "file_set",
+                        "link"
+                      ]
+                    }
+                  },
+                  "production_task_type": {
+                    "type": "string",
+                    "description": "Which task type above actually produces the client's deliverable. Must be one of the keys of task_types. Nothing starts on a schedule without it."
+                  }
+                }
+              }
+            },
+            "required": [
+              "title",
+              "task_types",
+              "fulfillment"
+            ]
+          },
+          "skills": {
+            "type": "array",
+            "description": "How to do this job WELL — the procedures a competent person in this trade follows. This is where the value is: the definition says what the jobs are, the skills are the only thing that makes them good. At most six files.",
+            "items": {
+              "type": "object",
+              "properties": {
+                "name": {
+                  "type": "string",
+                  "description": "kebab-case, no extension."
+                },
+                "content": {
+                  "type": "string",
+                  "description": "Markdown. A procedure, not an essay."
+                }
+              },
+              "required": [
+                "name",
+                "content"
+              ]
+            }
+          },
+          "knowledge": {
+            "type": "array",
+            "description": "Background this trade takes for granted — norms, sequences, the words its customers use. Only what is generally true of the trade; never invented facts about THIS business, which is what the setup questions are for.",
+            "items": {
+              "type": "object",
+              "properties": {
+                "name": {
+                  "type": "string"
+                },
+                "content": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "name",
+                "content"
+              ]
+            }
+          }
+        },
+        "required": [
+          "slug",
+          "manifest",
+          "skills"
+        ]
+      },
+      "input_schema": {
+        "_comment": "Runs only after draft_shape honestly answered `fit: none`. THE FIELD IS `description`, NOT `shape`, and that is read off the production caller rather than assumed: runtime.ts branches on `task.input.description` being a string to decide this run gets a deliverable-shaped harness. A contract written from the task type NAME instead of from its caller refuses the only path that creates it — which is what the first version of this did, and what the suite caught.",
+        "type": "object",
+        "required": [
+          "description"
+        ],
+        "properties": {
+          "description": {
+            "type": "string",
+            "description": "What this firm sells, in the founder's own words. REQUIRED: writing a service without it is inventing a business rather than reading one. `runtime.ts` also branches on this field to give the run a deliverable-shaped harness."
+          },
+          "shape": {
+            "type": "object",
+            "description": "The confirmed `draft_shape` output, when the caller has it. Richer than the sentence and worth passing."
+          },
+          "practice": {
+            "type": "object",
+            "description": "The derived practice from `draft_practice`, when the founder uploaded real work. Absent means write from the description alone and say so."
+          }
+        }
+      }
+    },
+    "draft_questions": {
+      "description": "Decide which few questions are actually worth asking this founder about their business, before asking any of them. Runs once, between the shape being confirmed and the conversation starting.",
+      "harness": {
+        "shape": "decide",
+        "max_runtime_s": 300,
+        "max_cost_usd": 0.4,
+        "strict_output": true,
+        "needs_connections": false,
+        "temperature": 0.3,
+        "steps": 20,
+        "skills": [
+          "ask-the-right-questions"
+        ],
+        "instructions": [
+          "knowledge/how-to-read-a-business-name.md"
+        ]
+      },
+      "output_schema": {
+        "type": "object",
+        "properties": {
+          "questions": {
+            "type": "array",
+            "description": "Candidates, not a script. The harness ranks these against gaps the agent hit on real work and the wedge's own declared questions, then keeps a handful — see buildInterview in intake.ts.",
+            "items": {
+              "type": "object",
+              "properties": {
+                "id": {
+                  "type": "string",
+                  "description": "kebab-case, stable, topic-shaped (`pricing`, `chase-tone`). Names the knowledge file the answer is stored as, so re-answering corrects rather than accumulates."
+                },
+                "ask": {
+                  "type": "string"
+                },
+                "why": {
+                  "type": "string"
+                },
+                "decides": {
+                  "type": "string",
+                  "description": "What the agent will do differently once this is answered. A question that cannot name this is dropped before the founder ever sees it."
+                },
+                "example": {
+                  "type": "string"
+                },
+                "weight": {
+                  "type": "number"
+                }
+              },
+              "required": [
+                "id",
+                "ask",
+                "decides"
+              ]
+            }
+          }
+        },
+        "required": [
+          "questions"
+        ]
+      },
+      "input_schema": {
+        "_comment": "Runs once, between the shape being confirmed and the conversation starting. REQUIRES `description` and not `shape`, deliberately: the shaper CAN draft worthwhile questions from what the founder typed alone, so requiring the richer field would refuse a run that could still do useful work. `shape` is optional and strongly preferred — interview.ts passes both, and its own comment says why the confirmed shape is the better evidence: the founder has by then read our reading of their business and either accepted or corrected it.",
+        "type": "object",
+        "required": [
+          "description"
+        ],
+        "properties": {
+          "description": {
+            "type": "string",
+            "description": "What this firm sells, in the founder's own words. REQUIRED — the minimum needed to know which questions are worth their time."
+          },
+          "shape": {
+            "type": "object",
+            "description": "The CONFIRMED shape, when there is one. Better evidence than the raw sentence, because the founder has read it back and corrected it."
+          },
+          "wedge": {
+            "type": "string",
+            "description": "Which service the answers will be filed against, so the questions are about that work rather than about the business in general."
+          },
+          "asked_before": {
+            "type": "array",
+            "description": "Questions already answered, so none is asked twice.",
+            "items": {
+              "type": "string"
+            }
+          }
+        }
+      }
+    },
+    "draft_practice": {
+      "description": "Read the real work this firm has already sent a client and derive how they practise: what the deliverable is, its spine, what it needs each cycle, and what makes one correct. Runs once, after the founder uploads an example, and governs every delivery run after it.",
+      "_comment_why": "The system used to answer 'what does this firm do' by matching them to a fixed list of trades we had already built. Thirteen of them, written by us. A firm that did not fit one got the nearest neighbour, and the nearest neighbour is a different business. This reads what they actually shipped instead. The catalogue stays as knowledge the model can learn shape from - it is no longer the set of things a customer is allowed to be.",
+      "_comment_budget": "Runs once per tenant and its output is mounted into every delivery run for the life of the account, so this is the highest-leverage inference in the product and the obvious place to spend on the model. It is ALSO watched: the founder sits on the practice step while it lands, so the ceiling is set where a run finishes inside a minute or two rather than where a perfect one would. Sixteen steps and 600s, down from 24 and 1500, which costs depth this job does not need - it is reading one document, not researching a market. Compare draft_shape, which is cheaper again because it answers a first screen in twenty seconds from a single line of text.",
+      "harness": {
+        "shape": "decide",
+        "max_runtime_s": 600,
+        "max_cost_usd": 2,
+        "strict_output": true,
+        "needs_connections": false,
+        "temperature": 0.3,
+        "steps": 16,
+        "permission": {
+          "webfetch": "allow",
+          "websearch": "allow"
+        },
+        "skills": [
+          "derive-the-practice"
+        ]
+      },
+      "output_schema": {
+        "type": "object",
+        "required": [
+          "deliverable",
+          "answers",
+          "cadence",
+          "needs",
+          "checks",
+          "practice"
+        ],
+        "properties": {
+          "deliverable": {
+            "type": "string",
+            "description": "What this firm calls the thing, in their words where their words are visible."
+          },
+          "answers": {
+            "type": "string",
+            "description": "The client's question in one sentence. What they are actually buying."
+          },
+          "cadence": {
+            "type": "string",
+            "description": "How often this recurs. 'unknown' when the artefact does not say - guessing monthly because most things are monthly is how a system starts being confidently wrong."
+          },
+          "needs": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "What must be gathered each cycle before this can be written. Concrete enough to act on: not 'data' but 'last month's search console export'."
+          },
+          "checks": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "What must be true for one of these to be correct. These become refusal conditions, so each must be checkable against a finished draft."
+          },
+          "practice": {
+            "type": "string",
+            "description": "The long form: spine, evidence, where judgement shows, what they refuse to do, voice. Mounted into every later delivery run, so it is written for whoever does this work next month."
+          }
+        }
+      },
+      "input_schema": {
+        "_comment": "Reads the real work a firm has already sent a client. The exemplar IS the input — running this without one produces a description of a practice nobody has.",
+        "type": "object",
+        "required": [
+          "exemplar"
+        ],
+        "properties": {
+          "exemplar": {
+            "type": "string",
+            "description": "Text of the finished deliverable the founder uploaded. REQUIRED."
+          },
+          "raw_input": {
+            "type": "string",
+            "description": "What went IN to that deliverable — the statement, export or form. Present makes the derived cycle far more accurate, because it shows what the work consumes as well as what it produces."
+          },
+          "sells": {
+            "type": "string",
+            "description": "The founder's own line about what they sell, for context."
+          }
+        }
+      }
+    }
+  },
+  "tools": [],
+  "connections": [],
+  "approvals": [],
+  "skills": [
+    "shape-a-business",
+    "ask-the-right-questions",
+    "write-a-service",
+    "service-authoring-contract"
+  ],
+  "knowledge": [
+    "how-to-read-a-business-name.md"
+  ]
+}

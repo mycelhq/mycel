@@ -1,0 +1,5 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Hosted product
+    url: https://mycelai.dev
+    about: Invite-only Cloud, not this repo. The kernel here is Apache-2.0 and self-hosted.
