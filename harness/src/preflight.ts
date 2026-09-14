@@ -108,7 +108,7 @@ export function runtimeAdvisories(cfg: MycelConfig, env: NodeJS.ProcessEnv = pro
     ...problems,
     ``,
     `Ways forward:`,
-    `  · npm run demo          a seeded business on the mock runtime, no keys, nothing to install`,
+    `  · npm run demo          boots, seeds a business and ranks its work — no keys, one terminal`,
     `  · MYCEL_RUNTIME=mock    canned runs (read the "[mock]" note above before you judge output)`,
     `  · MYCEL_SANDBOX=docker  run the agent in a container instead of on this machine`,
     `  · install OpenCode (https://opencode.ai) and export ${keyVar}=…   ← real work`,

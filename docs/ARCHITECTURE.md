@@ -85,34 +85,37 @@ PROTOCOL / TYPES ───────── @mycel/protocol: the task/event/ski
 
 ## 2b. Repository structure & extensibility model
 
-Four roots, with a **capability-agnostic core** — the single most important structural rule.
-Core never hardcodes a provider, channel, or wedge; everything optional is a plugin behind a
-versioned SDK.
+**The layout lives in [AGENTS.md](../AGENTS.md), not here.** One directory tree, in the file a
+coding agent already reads, so the two cannot disagree — which they did: this section described
+`core/`, `plugins/` and `clients/` roots and four `@mycel/*` SDK packages (`protocol`,
+`plugin-sdk`, `agent-core`, `gateway-protocol`), plus a `mycel.plugin.json` manifest and a
+`mycel doctor` command. None of it was ever built. It was a design sketch written in the present
+tense under the heading "Repository structure", which is the most expensive kind of wrong doc: a
+reader trying to find their way around gets a confident, detailed map of a different repository.
 
-```
-mycel/
-  core/         runtime, agent loop, sessions, gateway, config, routing — PLUGIN-AGNOSTIC
-  packages/     versioned SDK + contract libs (shared by core AND third-party plugins):
-                @mycel/protocol · @mycel/plugin-sdk · @mycel/agent-core · @mycel/gateway-protocol
-  plugins/      everything optional: model providers, channel adapters, harness bridges
-                (claude-code/opencode/copilot), tools, memory backends, skill bundles
-  clients/      the dashboard (Next.js) + frontend skills (generate the UI) + the mycel CLI
-```
+What survived the sketch is the rule it was built to serve, and that one is real:
 
-**Plugin model (manifest-first).** Each plugin ships a declarative `mycel.plugin.json` read
-*before any code loads*: `id, version, activation{onStartup, onHarness[], onDemand},
-configSchema (JSON Schema, additionalProperties:false), channels/providers/skills declared,
-authChoices, uiHints`. Code entry is one typed hook: `register(api: MycelPluginApi)` where
-the api exposes `registerTool, registerChannel, registerHarness, registerHook,
-registerService, emitAgentEvent, ...`. Two tiers: **bundle plugins** (skills/MCP/config —
-safe, preferred for founders) and **code plugins** (deep runtime hooks). Boundaries enforced
-by tsconfig project refs + an SDK-surface check in CI.
+**The core hardcodes no vendor.** Not as an aspiration — as something you can check:
 
-**Storage & config discipline (stolen):** one canonical store (Postgres for the multi-tenant
-cloud), no sidecar files; a `mycel doctor` tool owns all config/schema
-migrations (runtime only ever reads the current shape); `SecretRef` indirection for secrets
-(fail-closed, per-owner isolation, never logged); an explicit config-surface budget to fight
-sprawl.
+- **Outside services** resolve through `harness/src/gtm/providers.ts`. Four capabilities, nine
+  options, and whichever key you set is the provider you get. No module names a vendor; the ones
+  that used to (`firecrawlConfigured`, `fullEnrichConfigured`) ask the registry now.
+- **A trade** is `wedges/<slug>/wedge.json` plus skills and knowledge — eleven lines is a working
+  one. Adding a service is adding config, and `harness/test/connectivity.test.ts` fails a mechanism
+  that is built and left unwired.
+- **Sandbox, model, store and artifacts** are interfaces with more than one implementation each
+  (`local` | `docker` | `daytona`, memory | Postgres, inline | fs | s3). Swapping one is a case in
+  a factory, which is what CONTRIBUTING asks for in a sandbox backend contribution.
+
+**What is NOT here:** a plugin manifest format, a versioned plugin SDK, or third-party code loaded
+at runtime. A wedge is config the harness reads, not code it executes — `docs/WEDGES.md` is explicit
+that authored config cannot widen its own limits, and a `register(api)` hook would be exactly the
+hole that rule exists to close. If that changes it will be because something needed it, and this
+section will say so after it is built rather than before.
+
+**Storage & config discipline:** one canonical store (Postgres for the multi-tenant cloud, in-memory
+otherwise), no sidecar files, `SecretRef` indirection for secrets — fail-closed, per-owner isolation,
+never logged.
 
 ---
 
@@ -193,25 +196,43 @@ Plus:
   `capabilities()`. Compliance (e.g. WhatsApp Business API rules) enforced in the adapter.
 - Channels are how the harness "interacts with the world" and how end clients reach agents.
 
-### 3.8 Self-Improvement Loop  (cloud → local, the moat)
-The closed, auditable loop you asked for. Not vibes — measured.
+### 3.8 The learning loop  (a human is the only source)
 
 ```
-   agent run ─► outcome captured ─► measured vs. wedge KPI ─► candidate config/skill edit
-       ▲                                                              │
-       │                                                     run eval / benchmark
-       │                                                              │
-   promote if better  ◄──── A/B or shadow test ◄──── gate: no regression on eval suite
-       │
-       └─► telemetry + the diff surface back to the LOCAL Studio (founder reviews/approves)
+   agent drafts ─► founder approves WITH AN EDIT ─► the diff is distilled into a rule
+                                                            │
+   agent's next draft on that subject ◄── rendered into the prompt ◄── ranked, budgeted
+                                                            │
+                                     corrections_since counts the ones it did not prevent
 ```
 
-- **Unit of learning:** a skill's example set and a wedge's `knowledge_config` (winning
-  scripts, objection handlers), not model weights (v1).
-- **Gate:** every candidate improvement must pass the skill/agent eval suite and beat the
-  incumbent on the wedge KPI (e.g. reply→booking conversion) in a shadow/A-B test.
-- **Auditable:** every promotion is a versioned, reviewable change. The founder sees it in
-  the local Studio and can approve/reject. Autonomy of the *loop itself* is configurable.
+- **Unit of learning:** a `Rule` — one imperative line plus the verbatim before/after it came
+  from. `distillFromAnswer` when a human answers a gap the run reported, `distillFromRejection`
+  when they reject, `distillFromOnboarding` when they answer a setup question. There is
+  deliberately no `inferred` source: if the only witness to a lesson is the model that claims to
+  have learned it, it is a guess with provenance-shaped decoration.
+- **Scope:** `project_id` + `wedge` + optional `client_id`, with a sensitivity that defaults
+  CLOSED. Facts cross wedges inside one business — a VAT scheme learned during a close is true
+  when the invoice chaser writes — and never cross clients.
+- **Selection:** `retrieveRules` ranks and fits them to a character budget, because thirty
+  one-liners is a worse prompt than eight good ones. A stated rule yields to an observed one.
+- **Honest measurement:** `corrections_since` counts corrections on a subject a rule ALREADY
+  covers. If the agent is still being corrected on something the rule addresses, the rule is not
+  working — badly worded, or never retrieved — and accumulating more does not fix that.
+  `GET /v1/wedges/:wedge/knowledge/quality` and `/recurrence` report it.
+
+**There was an autonomous version of this and it was deleted.** `harness-operator` ran three
+reflection tasks a day across every project — read the company brain, propose one improvement to
+memory, procedure or artifact quality — and a founder could promote a proposal into a knowledge
+file. Measured on 6 September after nine days: 216 runs, 60 succeeded, **261 sandbox-hours**, second
+only to the GTM loop, and **four proposals of which none were adopted**. It was removed rather than
+tuned (−2,392 lines).
+
+That is worth stating in an architecture document rather than quietly dropping, because the design
+it argued for is seductive and this repo has the measurement. A loop that grades its own homework
+generates candidates at the rate a model can write them and improvements at the rate a human can
+judge them, and only the second rate matters. The loop that survived starts at a human editing a
+draft they were about to send.
 
 ### 3.9 Go-To-Market Plane  (cloud, founder-gated)
 Sourcing (Apollo/Maps/IG), enrichment, qualification, outreach drafting, scheduling,

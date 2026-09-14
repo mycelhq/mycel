@@ -30,6 +30,66 @@ You bring judgment (skills) and facts (knowledge); the kernel does the rest.
 take a service nobody here has run and turn its craft into requirements a machine can check. Read it
 before authoring a wedge for a trade you are not yourself an expert in, which is most of them.
 
+## 1b. Your first wedge, in eleven lines
+
+The three examples below are 250–460 lines each, which is what a wedge looks like after it has been
+run against real clients. None of that is required to get one working. This is:
+
+```bash
+mkdir -p wedges/hello-desk
+cat > wedges/hello-desk/wedge.json <<'JSON'
+{
+  "wedge": "hello-desk",
+  "title": "Hello desk",
+  "task_types": {
+    "greet": {
+      "description": "Write a one-line greeting for the person named in the input.",
+      "input_schema": { "type": "object", "properties": { "name": { "type": "string" } }, "required": ["name"] },
+      "output_schema": { "type": "object", "properties": { "greeting": { "type": "string" } }, "required": ["greeting"] }
+    }
+  }
+}
+JSON
+
+MYCEL_RUNTIME=mock MYCEL_API_KEY=wk npm run dev
+```
+
+In another shell:
+
+```bash
+ID=$(curl -s -X POST localhost:4000/v1/tasks -H "authorization: Bearer wk" \
+  -H 'content-type: application/json' \
+  -d '{"wedge":"hello-desk","task_type":"greet","input":{"name":"Ada"}}' | jq -r .id)
+
+curl -s localhost:4000/v1/tasks/$ID/artifacts -H "authorization: Bearer wk" | jq
+curl -s localhost:4000/v1/artifacts/$(curl -s localhost:4000/v1/tasks/$ID/artifacts \
+  -H "authorization: Bearer wk" | jq -r '.[0].id') -H "authorization: Bearer wk"
+```
+
+```json
+{"greeting":"[mock] handled \"greet\" for wedge \"hello-desk\""}
+```
+
+`[mock]` is the fake runtime stamping a placeholder — see the README. Unset `MYCEL_RUNTIME`, give
+the kernel an agent, and the same eleven lines produce a real greeting.
+
+**What those eleven lines already bought you.** A queue, a sandbox, an event stream you can `curl -N`,
+a cost ceiling, a trace, and both schemas enforced — `input` is rejected at the door:
+
+```bash
+curl -s -o /dev/null -w '%{http_code}\n' -X POST localhost:4000/v1/tasks \
+  -H "authorization: Bearer wk" -H 'content-type: application/json' \
+  -d '{"wedge":"hello-desk","task_type":"greet","input":{}}'
+# 400 — `name` is required, and the task never started
+```
+
+The output is validated the same way on the way back, and an `output.validated` event records the
+verdict. Everything after this — skills, knowledge, approvals, connections, cases, workflows — is
+added when the job needs it, not to get started.
+
+Nothing here is committed to this repo, and it does not need to be: `harness/test/docs-do-not-lie.test.ts`
+only holds the README to the wedges git tracks, so your experiment will not fail `npm run check`.
+
 ## 2. Three worked examples
 
 Examples, not a catalogue. Nothing here is a service you can buy switched on: a wedge is written to

@@ -1,4 +1,5 @@
 import { test } from "node:test";
+import { inMonorepo, ONLY_IN_MONOREPO } from "./_monorepo";
 import assert from "node:assert/strict";
 import { existsSync, readFileSync, readdirSync, statSync } from "node:fs";
 import { join } from "node:path";
@@ -73,7 +74,7 @@ test("nothing in the kernel reads DATABASE_URL directly", () => {
   );
 });
 
-test("the deployment really does set the variables config.ts reads", () => {
+test("the deployment really does set the variables config.ts reads", { skip: inMonorepo() ? false : ONLY_IN_MONOREPO }, () => {
   /**
    * The other end of the same wire, and the half that makes the test above mean something.
    *
@@ -81,13 +82,12 @@ test("the deployment really does set the variables config.ts reads", () => {
    * infrastructure does not set — that is the identical bug one level up, and it is how the first
    * one survived: every individual file was self-consistent.
    *
-   * Skipped in the published kernel tree, where `infra/` does not exist. `existsSync` rather than a
-   * try/catch so the skip is a decision rather than a swallowed failure.
+   * Skipped in the published kernel tree, where `infra/` does not exist — and skipped BY NAME.
+   * This used to be `if (!existsSync(infra)) return;` inside the body, which is a decision rather
+   * than a swallowed failure but still reports a PASS for a test that measured nothing of what it
+   * is about. `_monorepo.ts` makes the argument; seven other files already follow it.
    */
-  const infra = new URL("../../../infra/services.tf", import.meta.url).pathname;
-  if (!existsSync(infra)) return;
-
-  const tf = readFileSync(infra, "utf8");
+  const tf = readFileSync(new URL("../../../infra/services.tf", import.meta.url).pathname, "utf8");
   const config = readFileSync(join(SRC, "config.ts"), "utf8");
 
   // Every `MYCEL_*` name `databaseUrl` and `sessionDatabaseUrl` read has to be set somewhere in the

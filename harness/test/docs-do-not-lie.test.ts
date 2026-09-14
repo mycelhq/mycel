@@ -20,6 +20,7 @@ import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
+import { between } from "./helpers/anchor";
 
 const root = (p: string): string => fileURLToPath(new URL(`../../${p}`, import.meta.url));
 const read = (p: string): string => readFileSync(root(p), "utf8");
@@ -52,7 +53,12 @@ const PKG = JSON.parse(read("package.json")) as { scripts: Record<string, string
 
 test("docs: every `npm run X` is a script that exists", () => {
   for (const doc of ALL) {
-    for (const m of TEXT[doc].matchAll(/npm run ([a-z][a-z0-9:-]*)/g)) {
+    /**
+     * A script name is colon-SEPARATED, never colon-terminated: `demo:seed`, not `demo:`. The
+     * looser `[a-z0-9:-]*` swallowed the punctuation in an ordinary sentence — "npm run demo: nine
+     * ranked moves…" in an image's alt text — and reported `demo:` as a missing script.
+     */
+    for (const m of TEXT[doc].matchAll(/npm run ([a-z][a-z0-9-]*(?::[a-z0-9-]+)*)/g)) {
       assert.ok(
         Object.hasOwn(PKG.scripts, m[1]!),
         `${doc} tells the reader to run "npm run ${m[1]}", which is not in package.json`,
@@ -61,11 +67,26 @@ test("docs: every `npm run X` is a script that exists", () => {
   }
 });
 
+
+/**
+ * Slugs this document teaches the reader to CREATE.
+ *
+ * `docs/WEDGES.md` walks through writing `wedges/hello-desk/wedge.json` and then posting a task
+ * against it. That reference is correct and the wedge is deliberately not in this repo — so the
+ * rule is not "every wedge named exists", it is "every wedge named exists OR this document is the
+ * thing that creates it". Keyed on the `mkdir`/path the walkthrough itself shows, so a doc cannot
+ * claim the exemption without actually teaching the reader to make the directory.
+ */
+const taughtHere = (text: string): Set<string> =>
+  new Set([...text.matchAll(/wedges\/([a-z0-9][a-z0-9-]*)\/wedge\.json/g)].map((m) => m[1]!));
+
 test("docs: every wedge named in a request body is a wedge on disk", () => {
   const wedges = new Set(readdirSync(root("wedges"), { withFileTypes: true }).filter((d) => d.isDirectory()).map((d) => d.name));
   for (const doc of ALL) {
     // `\\?"` because a shell script prints these through an escaped double quote.
+    const taught = taughtHere(TEXT[doc]);
     for (const m of TEXT[doc].matchAll(/\\?"wedge\\?"\s*:\s*\\?"([a-z0-9-]+)\\?"/g)) {
+      if (taught.has(m[1]!)) continue; // this document creates it — see `taughtHere`
       assert.ok(wedges.has(m[1]!), `${doc} shows a call against wedge "${m[1]}", which does not exist`);
     }
   }
@@ -79,6 +100,8 @@ test("docs: every task_type in an example is one that wedge declares", () => {
       /\\?"wedge\\?"\s*:\s*\\?"([a-z0-9-]+)\\?"\s*,\s*\\?"task_type\\?"\s*:\s*\\?"([a-z0-9_]+)\\?"/g,
     )) {
       const [, wedge, taskType] = m;
+      // A wedge the document itself creates has no manifest here to read.
+      if (taughtHere(TEXT[doc]).has(wedge!)) continue;
       // `task_types` is an object KEYED by the type, not a list of records with a `type` field.
       const declared = (JSON.parse(read(`wedges/${wedge}/wedge.json`)) as { task_types?: Record<string, unknown> }).task_types ?? {};
       assert.ok(
@@ -191,15 +214,36 @@ interface Manifest {
   internal?: boolean;
 }
 
-const WEDGES = readdirSync(root("wedges"), { withFileTypes: true })
-  .filter((d) => d.isDirectory())
-  .map((d) => ({ slug: d.name, m: JSON.parse(read(`wedges/${d.name}/wedge.json`)) as Manifest }));
+/**
+ * TRACKED wedges only.
+ *
+ * The README documents what SHIPS. A wedge somebody created five minutes ago by following the
+ * "your first wedge" walkthrough in docs/WEDGES.md is not that — and before this, their very next
+ * `npm run check` failed with "wedges/hello-desk exists and the README never names it". A guard
+ * that punishes a reader for following the tutorial is worse than no guard.
+ *
+ * Falls back to every directory when git cannot answer (a tarball, a vendored copy), because the
+ * check is still right there and only the tutorial case needs the exemption.
+ */
+const trackedWedges = (): Set<string> | null => {
+  try {
+    const out = execFileSync("git", ["ls-files", "wedges"], { cwd: root("."), encoding: "utf8" });
+    const slugs = new Set(out.split("\n").filter(Boolean).map((f) => f.split("/")[1]!).filter(Boolean));
+    return slugs.size ? slugs : null;
+  } catch {
+    return null;
+  }
+};
+
+const WEDGES = (() => {
+  const tracked = trackedWedges();
+  return readdirSync(root("wedges"), { withFileTypes: true })
+    .filter((d) => d.isDirectory() && (!tracked || tracked.has(d.name)))
+    .map((d) => ({ slug: d.name, m: JSON.parse(read(`wedges/${d.name}/wedge.json`)) as Manifest }));
+})();
 
 test("docs: every wedge in the repo is in the README, on the right side of the line", () => {
-  const table = TEXT["README.md"].slice(
-    TEXT["README.md"].indexOf("**Sellable wedges**"),
-    TEXT["README.md"].indexOf("A generated definition"),
-  );
+  const table = between(TEXT["README.md"], "**Sellable wedges**", "A generated definition");
   assert.ok(table.length > 0, "could not find the wedge section — this test is pinned to its headings");
 
   for (const { slug, m } of WEDGES) {
@@ -344,7 +388,7 @@ function varsNamedInMessages(): Map<string, string> {
         for (const lit of stripComments(readFileSync(p, "utf8")).match(LITERAL) ?? []) {
           if (!PROSE.test(lit) || !DIRECTIVE.test(lit)) continue;
           for (const m of lit.matchAll(/\b(MYCEL_[A-Z0-9_]+)\b/g)) {
-            if (!out.has(m[1]!)) out.set(m[1]!, p.slice(p.indexOf("harness/")));
+            if (!out.has(m[1]!)) out.set(m[1]!, between(p, "harness/"));
           }
         }
       }
@@ -408,4 +452,270 @@ test("docs: every commit the changelog cites is a commit that exists", () => {
     }
   });
   assert.deepEqual(missing, [], "the changelog cites commits that do not exist");
+});
+
+test("docs: one answer to 'what do I run before I push'", () => {
+  /**
+   * Four places answer this: CI, CONTRIBUTING, the README's build section, and package.json.
+   * They had drifted to two answers — CONTRIBUTING said `npm run check` while the README still
+   * said `npm i && npm test` — and a contributor who follows the README pushes without a
+   * typecheck, which is the half CI fails on. `tsc` and the suite catch different things: a
+   * backtick inside a SQL string in a template literal breaks the template, and only `tsc` sees
+   * it, because the suite passes when nothing imports the broken module.
+   */
+  assert.ok(PKG.scripts.check, "there must be one command that does both");
+  assert.match(PKG.scripts.check!, /typecheck/);
+  assert.match(PKG.scripts.check!, /test/);
+
+  for (const doc of ["README.md", "CONTRIBUTING.md"] as const) {
+    assert.match(TEXT[doc], /npm run check/, `${doc} must point at the single pre-push command`);
+  }
+
+  // CI must actually run both halves, or "what CI runs" is a claim rather than a fact.
+  const ci = readFileSync(root(".github/workflows/ci.yml"), "utf8");
+  assert.match(ci, /tsc --noEmit/, "CI must typecheck");
+  assert.match(ci, /npm test/, "CI must run the suite");
+});
+
+test("docs: a shell example never uses a variable the reader's shell does not have", () => {
+  /**
+   * The README's task example sent `-H "authorization: Bearer $MYCEL_API_KEY"`. `npm run demo`
+   * sets that variable inside a CHILD process, so a reader who pastes the block into their own
+   * shell sends `Bearer ` and gets a 401 — verified against a live kernel. Same shape as the
+   * login block that answered "invalid credentials": a command that cannot work as written.
+   *
+   * The rule is mechanical. Inside one fenced bash block, every `$VAR` must either be assigned in
+   * that same block or be one a shell always has. Nothing here needs to know what the variables
+   * mean.
+   */
+  const ALWAYS_SET = new Set(["HOME", "PATH", "PWD", "USER", "SHELL", "TMPDIR", "PORT"]);
+
+  for (const doc of DOCS) {
+    for (const m of TEXT[doc].matchAll(/```bash\n([\s\S]*?)```/g)) {
+      const block = m[1]!;
+      // `FOO=…`, `export FOO=…`, and `read FOO` all count as assignment.
+      const assigned = new Set([...block.matchAll(/(?:^|\n)\s*(?:export\s+)?([A-Z_][A-Z0-9_]*)=/g)].map((a) => a[1]!));
+      for (const use of block.matchAll(/\$\{?([A-Z_][A-Z0-9_]*)\}?/g)) {
+        const name = use[1]!;
+        if (assigned.has(name) || ALWAYS_SET.has(name)) continue;
+        assert.fail(
+          `${doc}: a bash block uses $${name} without setting it — pasted into a fresh shell this ` +
+            `sends an empty value. Use the literal, or assign it in the block.`,
+        );
+      }
+    }
+  }
+});
+
+test("scripts: an instruction they PRINT does not send an empty bearer", () => {
+  /**
+   * setup.sh finished by printing `curl … -H "authorization: Bearer $MYCEL_API_KEY"`, and it never
+   * exports that variable — it writes `.env`, which the KERNEL reads, and the kernel prints an
+   * ephemeral key at boot. So the reader pastes a header with nothing in it and gets a 401.
+   *
+   * Narrow on purpose. A shell script uses `$VAR` legitimately everywhere; what cannot be right is
+   * a variable inside a command the script is telling a HUMAN to run, because that human's shell is
+   * not this script's.
+   */
+  for (const script of SCRIPTS) {
+    for (const line of TEXT[script].split("\n")) {
+      if (!/\b(say|echo|printf|Write-Host)\b/.test(line) || !line.includes("curl")) continue;
+      assert.ok(
+        !/Bearer\s+\\?\$\{?[A-Za-z_]/.test(line),
+        `${script} prints a curl using a shell variable the reader does not have:\n  ${line.trim()}`,
+      );
+    }
+  }
+});
+
+
+/**
+ * GitHub's heading anchor, near enough for our own headings.
+ *
+ * Lowercase, drop anything that is not a word character, space or hyphen, then spaces to hyphens.
+ * `## 1b. Your first wedge, in eleven lines` → `1b-your-first-wedge-in-eleven-lines`.
+ */
+function anchorFor(heading: string): string {
+  return heading
+    .trim()
+    .toLowerCase()
+    .replace(/[^\w\s-]/g, "")
+    .replace(/\s+/g, "-");
+}
+
+test("docs: a link to a heading lands on a heading that exists", () => {
+  /**
+   * The link checker strips the `#` fragment and only resolves the FILE, so
+   * `docs/WEDGES.md#a-heading-that-was-renamed` passed while sending the reader to the top of a
+   * long document with no idea what they were meant to see. On GitHub that is a silent miss: no
+   * 404, just the wrong scroll position.
+   */
+  const headings = new Map<string, Set<string>>();
+  for (const doc of [...DOCS, ...DOC_DIR]) {
+    headings.set(doc, new Set([...TEXT[doc as keyof typeof TEXT].matchAll(/^#{1,6}\s+(.+)$/gm)].map((m) => anchorFor(m[1]!))));
+  }
+
+  let checked = 0;
+  for (const doc of [...DOCS, ...DOC_DIR]) {
+    const from = doc.includes("/") ? `${doc.slice(0, doc.lastIndexOf("/"))}/` : "";
+    for (const m of TEXT[doc as keyof typeof TEXT].matchAll(/\]\(([^)\s]*#[^)\s]+)\)/g)) {
+      const [path, frag] = m[1]!.split("#") as [string, string];
+      if (/^https?:/.test(path)) continue;
+      // Same document when the path is empty, otherwise resolve it the way the link checker does.
+      const target = path === "" ? doc : `${from}${path}`.replace(/^\.\//, "").replace(/\/\.\//g, "/");
+      const known = headings.get(target as string);
+      if (!known) continue; // a link into a non-markdown file; the link checker already resolved it
+      checked += 1;
+      assert.ok(known.has(frag), `${doc} links to ${m[1]} — ${target} has no heading with that anchor`);
+    }
+  }
+  assert.ok(checked > 0, "no in-document anchors were checked — the scan stopped resolving");
+});
+
+test("docs: nothing points at a document that only exists in the private monorepo", () => {
+  /**
+   * `docs/ROADMAP.md` shipped a "see the internal stress-test doc" pointer for months. That
+   * directory lives in the monorepo and is never published, so it is a dead reference for every
+   * reader of the public repo — and it puts the filename of a strategy document on the internet,
+   * which is the half that cannot be withdrawn.
+   *
+   * The filename is deliberately not repeated here. The publish scanner greps the whole staged
+   * tree, this file is IN that tree, and a comment quoting the thing it bans is indistinguishable
+   * from the thing itself to a grep — which is the third time in this pass that prose describing a
+   * rule tripped the rule.
+   *
+   * `scripts/publish-oss.sh` scans for this too and would REFUSE the publish. That is the right
+   * place for the last line of defence and the wrong place to find out: the publish is the moment
+   * you least want a surprise. This fails in CI instead, on the commit that introduces it.
+   *
+   * Scoped to a document extension so `/v1/internal/gate` and `harness/src/internal-sender.ts` —
+   * both real and both public — are not swept up.
+   */
+  const PRIVATE_DOC = /(^|[^a-z/])internal\/[A-Za-z0-9_-]+\.(md|pdf|docx?|xlsx?)/;
+  for (const doc of [...DOCS, ...SCRIPTS, ...DOC_DIR]) {
+    const hit = PRIVATE_DOC.exec(TEXT[doc as keyof typeof TEXT]);
+    assert.equal(hit, null, `${doc} references a private monorepo document: ${hit?.[0]}`);
+  }
+});
+
+test("docs: the private siblings the comments cite are explained, not just cited", () => {
+  /**
+   * 52 comments in the published tree cite `growth/…`, `cloud/…` or `landing/…`. Those directories
+   * are the private siblings this kernel was extracted from and are deliberately not published, so
+   * to a reader every one of those paths looks like a file they should be able to open and cannot.
+   *
+   * They are worth keeping — each names the failure that shaped the code — but only if something
+   * says what they are. This fails if the citations exist and the explanation does not, which is
+   * the state the repo was in.
+   */
+  const PRIVATE_SIBLING = /(^|[^a-z/])(growth|cloud|landing)\/[A-Za-z0-9_./-]+\.(ts|tsx|md|json)/;
+  const cites = readdirSync(root("harness/src"), { recursive: true, withFileTypes: true })
+    .filter((e) => e.isFile() && e.name.endsWith(".ts"))
+    .some((e) => PRIVATE_SIBLING.test(readFileSync(`${e.parentPath ?? e.path}/${e.name}`, "utf8")));
+
+  if (!cites) return; // nothing cites them any more — the explanation may go too
+
+  assert.match(
+    TEXT["AGENTS.md"],
+    /are not missing/,
+    "comments cite private sibling directories and AGENTS.md does not say what they are",
+  );
+  for (const dir of ["growth/", "cloud/", "landing/"]) {
+    assert.ok(TEXT["AGENTS.md"].includes(dir), `AGENTS.md must name ${dir} as a private sibling`);
+  }
+});
+
+test("docs: a command an example depends on is one the docs tell you to have", () => {
+  /**
+   * The README's login block pipes through `jq`, in six places across two documents, and nothing
+   * ever said you needed it. On a machine without it the first copy-paste block after the quickstart
+   * dies with `jq: command not found` — which reads as the repo being broken, not as a missing tool.
+   *
+   * Bounded by an allowlist of what is genuinely always there: POSIX text utilities, and the two
+   * runtimes the repo already requires. Anything outside that is an assumption, and an assumption
+   * has to be written down where the prerequisites are.
+   */
+  const ALWAYS = new Set([
+    // POSIX, present on any machine that can run a shell.
+    "cat", "cd", "echo", "export", "grep", "sed", "awk", "sort", "uniq", "head", "tail", "mkdir",
+    "rm", "cp", "mv", "ls", "printf", "read", "set", "unset", "test", "true", "false", "tr", "wc",
+    "find", "xargs", "ln", "chmod", "exit", "source", "if", "then", "fi", "for", "do", "done",
+    "while", "case", "esac", "else", "elif", "return", "local",
+    // Already required by name, one line above this check's own subject.
+    "node", "npm", "npx", "git",
+  ]);
+
+  const declared = TEXT["AGENTS.md"];
+  const missing = new Map<string, Set<string>>();
+
+  for (const doc of [...DOCS, ...DOC_DIR]) {
+    for (const block of TEXT[doc as keyof typeof TEXT].matchAll(/```bash\n([\s\S]*?)```/g)) {
+      for (const raw of block[1]!.split("\n")) {
+        const line = raw.trim();
+        if (!line || line.startsWith("#")) continue;
+        for (const seg of line.split("|")) {
+          const cleaned = seg.trim().replace(/^\$\(/, "").trim();
+          const first = /^([a-z][a-z0-9_.-]*)\s/.exec(cleaned)?.[1];
+          // Only a command with arguments; a bare word is usually a heredoc terminator or a value.
+          if (!first || ALWAYS.has(first)) continue;
+          if (declared.includes(`\`${first}\``)) continue;
+          if (!missing.has(first)) missing.set(first, new Set());
+          missing.get(first)!.add(doc);
+        }
+      }
+    }
+  }
+
+  assert.deepEqual(
+    [...missing.keys()],
+    [],
+    `these commands are used in examples and never named as something to install:\n` +
+      [...missing].map(([c, where]) => `  ${c} — in ${[...where].join(", ")}`).join("\n"),
+  );
+});
+
+test("docs: a directory tree in a doc is a tree that exists", () => {
+  /**
+   * `docs/ARCHITECTURE.md` §2b drew a repository with `core/`, `plugins/` and `clients/` roots and
+   * four `@mycel/*` SDK packages. None of it was ever built — it was a design sketch written in the
+   * present tense under the heading "Repository structure", contradicting the accurate tree in
+   * AGENTS.md one directory away.
+   *
+   * That is the most expensive kind of wrong doc. A reader trying to find their way around gets a
+   * confident, detailed map of a different repository, and the more carefully they read it the
+   * longer they are lost.
+   *
+   * Matched on the SHAPE of a tree entry — `  name/` with a description after it — because that is
+   * what both of those blocks looked like and what makes a line a claim about the filesystem rather
+   * than prose that happens to contain a slash.
+   */
+  // Leading indentation is OPTIONAL: AGENTS.md's tree starts at column zero and
+  // ARCHITECTURE.md's was indented under a repo name. Requiring it examined nothing, which the
+  // floor below turned into a failure rather than a pass.
+  const ENTRY = /^\s*([a-z][a-z0-9-]*)\/\s{2,}\S/;
+  let checked = 0;
+
+  for (const doc of [...DOCS, ...DOC_DIR]) {
+    /**
+     * Fences matched from line starts, alternating open/close.
+     *
+     * `/```\n([\s\S]*?)```/g` scans from the top of the file and pairs whichever fence it meets
+     * first with the next one — so in a document whose first block is ```bash it locks onto the
+     * CLOSING fence and captures the prose between blocks. It examined zero tree entries, and only
+     * the floor at the end of this test turned that into a failure instead of a pass.
+     */
+    for (const block of TEXT[doc as keyof typeof TEXT].matchAll(/^```[a-z]*\n([\s\S]*?)^```/gm)) {
+      for (const line of block[1]!.split("\n")) {
+        const name = ENTRY.exec(line)?.[1];
+        if (!name) continue;
+        checked += 1;
+        assert.ok(
+          existsSync(root(name)),
+          `${doc} draws a tree containing ${name}/, which is not in the published tree:\n  ${line.trim()}`,
+        );
+      }
+    }
+  }
+
+  assert.ok(checked >= 5, `only ${checked} tree entries examined — the scan stopped resolving`);
 });

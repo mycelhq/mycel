@@ -11,7 +11,8 @@ import { startScheduler, nextRun } from "../src/scheduler";
 import { runWorkflow } from "../src/workflows";
 
 // Integration guard: a REAL agency wedge (UK e-commerce bookkeeping) must stay expressible on the
-// kernel. This is the stress test from internal/WEDGE-STRESS-TEST.md, executed rather than argued.
+// kernel. This is that stress test executed rather than argued — the analysis it came from is not
+// public, so the assertions below have to carry the reasoning themselves.
 // It exercises the whole operational spine: cases, schedules, ungated reads, deterministic
 // workflows, policy-bounded autonomy, and living knowledge.
 test("stress test: a bookkeeping agency is expressible end to end", async () => {

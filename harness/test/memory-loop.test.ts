@@ -10,6 +10,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
+import { inMonorepo, ONLY_IN_MONOREPO } from "./_monorepo";
 import {
   MEMORY_MAX_BYTES,
   getMemoryStore,
@@ -33,13 +34,18 @@ const code = (p: string) =>
     .replace(/\/\/.*$/gm, "");
 const runtime = code("../src/runtime.ts");
 const server = code("../src/server.ts");
-const tf = (() => {
-  try {
-    return readFileSync(new URL("../../../infra/sandbox.tf", import.meta.url), "utf8");
-  } catch {
-    return ""; // infra/ is not in the open-source distribution — see sandbox-paths.test.ts.
-  }
-})();
+/**
+ * `infra/` is not in the open-source distribution, so this read only works in the monorepo.
+ *
+ * It used to catch and fall back to `""`, and the one assertion that uses it was written
+ * `if (tf) assert.match(…)`. That is a SILENT partial skip: the published suite printed the test as
+ * a pass while three of its four assertions ran. `_monorepo.ts` argues the case against exactly
+ * this — "a guard that reports success when it measured nothing is the failure mode this repo keeps
+ * writing tests to avoid" — and seven other files already follow it. The ALB check is its own test
+ * now, skipped by name and with a reason, so the published suite is green AND says what it did not
+ * look at.
+ */
+const infraTf = (): string => readFileSync(new URL("../../../infra/sandbox.tf", import.meta.url), "utf8");
 
 test("a run writes, and the next run recalls it", async () => {
   resetMemoryStoreForTests();
@@ -151,7 +157,12 @@ test("THE WRITE PATH EXISTS, IS ADDRESSED, AND IS REACHABLE FROM A SANDBOX", () 
   assert.match(runtime, /\$MYCEL_MEMORY_URL/, "the prompt no longer shows the agent the call");
   // This one is prose the agent reads, so it survives comment-stripping as a string literal.
   assert.match(runtime, /Write down what you learned/, "the agent is never told the tool exists");
-  if (tf) assert.match(tf, /"\/v1\/internal\/memory\/write"/, "the ALB does not admit the path");
+});
+
+test("the edge admits the memory path at all", { skip: inMonorepo() ? false : ONLY_IN_MONOREPO }, () => {
+  // The other half of the loop, and the half that has broken before: the ALB allowlist 404s a path
+  // the kernel serves perfectly well, so every assertion above can be true and nothing reaches it.
+  assert.match(infraTf(), /"\/v1\/internal\/memory\/write"/, "the ALB does not admit the path");
 });
 
 test("RECALL IS READ AFTER THE RULES, AND THE ORDER IS THE SAFETY PROPERTY", () => {

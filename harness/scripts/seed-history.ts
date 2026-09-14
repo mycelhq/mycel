@@ -154,11 +154,25 @@ const pickStatus = (seed: string): string => {
  *
  * Varied on purpose: a queue of one repeated action reads as a stuck loop rather than a day's work,
  * and the point of the screen is that a person can judge each item in about four seconds.
+ *
+ * ═══ `client` IS NOT DECORATION — THE CARD SHOWS BOTH ═══
+ *
+ * Seen on the live demo the first time `--only gates` ran: a card headed "Send an email to
+ * office@delgado.build" with "Sunset Coffee Roasters" underneath it. The draft was picked at random
+ * and the client was picked at random, so the address, the greeting ("Hi Tom") and the name on the
+ * card were three different businesses.
+ *
+ * These are not generic templates — each one was written FOR somebody, names them in the first line
+ * and refers to their work. So each one says who, the seeder resolves that against the real roster,
+ * and a card that cannot be matched is not dealt at all. The queue is the screen this product is
+ * sold on; a visitor who reads one card closely must not find three businesses in it.
  */
 const APPROVAL_DRAFTS = [
   {
     action: "send_email",
     to: "ops@ridgeline.com",
+    /** Matched against the real roster on `display_name`. */
+    for: "Ridgeline",
     subject: "March visibility report — one thing to look at",
     body:
       "Hi Dan,\n\nMarch is attached. Short version: you are named in 6 of 9 buyer questions, up from 4 in February.\n\nThe one to look at is \"third party logistics UK\" — Kuehne+Nagel is taking that answer outright and it is the highest-intent question on the list. I have drafted a page for it; say the word and I will put it live this week.\n\nInvoice for March follows separately.\n\nRachel",
@@ -166,6 +180,8 @@ const APPROVAL_DRAFTS = [
   {
     action: "send_email",
     to: "admin@fairmont.com",
+    /** Matched against the real roster on `display_name`. */
+    for: "Fairmont",
     subject: "Fairview opening hours — which is right?",
     body:
       "Hi Sue,\n\nQuick one before I push the listings live. Google says Fairview closes at 17:00 on Fridays, your site says 18:30. Which should I use?\n\nThe other three practices matched, so this is the last thing holding the audit up.\n\nRachel",
@@ -173,6 +189,8 @@ const APPROVAL_DRAFTS = [
   {
     action: "send_invoice",
     to: "hello@willow.co",
+    /** Matched against the real roster on `display_name`. */
+    for: "Willow",
     subject: "Invoice 2041 — Webflow build, milestone 2",
     body:
       "Milestone 2 of 3, £8,750, due in 14 days.\n\nCovers the pricing page rebuild and the two template changes we agreed on the call. Milestone 3 invoices on launch.",
@@ -180,6 +198,8 @@ const APPROVAL_DRAFTS = [
   {
     action: "send_email",
     to: "office@delgado.build",
+    /** Matched against the real roster on `display_name`. */
+    for: "Delgado",
     subject: "Post-launch review — 30 days in",
     body:
       "Hi Tom,\n\nThe site has been up a month. Enquiries are running at 11 a week against 4 before, and the quote form is the page doing the work.\n\nOne thing worth fixing: the gallery is 8MB on mobile and it is the slowest page you have. Half a day to sort.\n\nRachel",
@@ -187,6 +207,7 @@ const APPROVAL_DRAFTS = [
   {
     action: "chase_overdue",
     to: "ops@ridgeline.com",
+    for: "Ridgeline",
     subject: "Invoice 2038 — 47 days",
     body:
       "Hi Dan,\n\nInvoice 2038 (£4,200, March retainer) is 47 days past due. I know March was busy — is there anything holding it up on your side, or shall I resend to accounts?\n\nRachel",
@@ -316,11 +337,22 @@ async function ensureGates(db: pg.Client): Promise<void> {
     return;
   }
 
-  const clients = await db.query<{ id: string; display_name: string }>(
-    `SELECT id, display_name FROM public.clients WHERE project_id = $1 ORDER BY created_at`,
+  /*
+    `handles` comes back too, and the card is why. `approval-card.tsx` resolves the recipient address
+    against the founder's own client list and renders the BUSINESS NAME when it matches — "Willow &
+    Pine" rather than "hello@willow.co". Seeding the draft's own written-in address meant it never
+    matched, so the one screen this product is sold on introduced every card by an email address.
+    The address inside the draft is decoration; the client's real handle is what makes the row read.
+  */
+  const clients = await db.query<{ id: string; display_name: string; handles: unknown }>(
+    `SELECT id, display_name, handles FROM public.clients WHERE project_id = $1 ORDER BY created_at`,
     [PROJECT],
   );
   if (clients.rows.length === 0) throw new Error("no clients on this project — run seed-tenant.ts --only book first");
+  const emailOf = (c: { handles: unknown }): string | undefined => {
+    const list = Array.isArray(c.handles) ? c.handles : [];
+    return list.find((h): h is string => typeof h === "string" && h.includes("@"));
+  };
   const cases = await db.query<{ id: string; client_id: string }>(
     `SELECT id, client_id FROM public.cases WHERE project_id = $1 ORDER BY created_at`,
     [PROJECT],
@@ -332,11 +364,33 @@ async function ensureGates(db: pg.Client): Promise<void> {
     chase_overdue: { wedge: "invoice-chaser", type: "chase_overdue" },
   };
 
+  /*
+    DEALT FROM THE DECK, NOT DRAWN WITH REPLACEMENT. The first run of this produced two cards
+    reading "Invoice 2041 — Webflow build, milestone 2" for two different clients, which is the
+    "queue of one repeated action reads as a stuck loop" failure the drafts list exists to avoid,
+    reintroduced by the picker.
+
+    And each draft goes to the client it was WRITTEN for. `for` is matched against the real roster;
+    a draft whose business is not on this tenant's books is skipped rather than mailed at a
+    stranger, because a card naming three different companies is worse than one card fewer.
+  */
+  const dealt = APPROVAL_DRAFTS.map((d) => ({
+    draft: d,
+    client: clients.rows.find((c) => c.display_name.toLowerCase().includes(d.for.toLowerCase())),
+  })).filter(
+    (x): x is { draft: (typeof APPROVAL_DRAFTS)[number]; client: (typeof clients.rows)[number] } =>
+      !!x.client && !!emailOf(x.client),
+  );
+  if (!dealt.length) throw new Error("no draft matches any client on this project — the roster and APPROVAL_DRAFTS have drifted apart");
+
   for (let i = have; i < WANT_GATES; i++) {
     const seed = `${PROJECT}:gate:${i}`;
-    const draft = APPROVAL_DRAFTS[Math.floor(rnd(`d:${seed}`) * APPROVAL_DRAFTS.length)]!;
+    // Modulo rather than random: WANT_GATES above the deck size repeats in order instead of
+    // colliding at random, and three gates against five drafts never repeats at all.
+    const hand = dealt[i % dealt.length]!;
+    const draft = hand.draft;
+    const client = hand.client;
     const work = WEDGE_FOR[draft.action] ?? WEDGE_FOR.send_email!;
-    const client = clients.rows[Math.floor(rnd(`c:${seed}`) * clients.rows.length)]!;
     const kase = cases.rows.find((k) => k.client_id === client.id) ?? null;
     /*
       Across this morning, newest first, so the queue reads as a day's work — and so every one of
@@ -359,10 +413,11 @@ async function ensureGates(db: pg.Client): Promise<void> {
       [
         randomUUID(), taskId, draft.action,
         JSON.stringify({
-          to: draft.to,
+          // The client's OWN address, not the one written into the draft — see `emailOf` above.
+          to: emailOf(client) ?? draft.to,
           subject: draft.subject,
           body: draft.body,
-          preview: `${draft.action.replace(/_/g, " ")} to ${draft.to}`,
+          preview: `${draft.action.replace(/_/g, " ")} to ${emailOf(client) ?? draft.to}`,
           client: client.display_name,
           connection: "Zoho — hello@ridgelinestudio.com",
         }),

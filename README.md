@@ -7,11 +7,11 @@
 </p>
 
 <p align="center">
-  <img src="design/brand/next-moves.gif" alt="Ranked next moves: chase overdue invoices with the score shown, a human gate above them." width="820">
+  <img src="design/brand/demo.svg" alt="Terminal showing nine ranked moves for a seeded business — chase Invoice INV-0001, 34 days overdue, $2,970.00 outstanding, scored money +27.8, deadline +30, staleness +20, and blocked because no mailbox is connected." width="820">
 </p>
 <p align="center"><sub>
-  Ranked next moves on <code>npm run demo:seed</code>. Filmed on Cloud against this kernel, on an earlier seed.
-  The clone is headless — Cloud is a <code>/v1</code> consumer, not in the repo.
+  What <code>npm run demo</code> prints, rendered from a real run — regenerate with
+  <code>node scripts/render-demo-svg.mjs</code>. Six seconds from <code>npm i</code>, no keys.
 </sub></p>
 
 <p align="center">
@@ -26,16 +26,11 @@ git clone https://github.com/mycelhq/mycel && cd mycel
 npm i && npm run demo      # no keys, no Docker, no Postgres, one terminal
 ```
 
-Boots a kernel, seeds a real service business into it, and prints **the work it thinks you should
-do next** — ranked, with the arithmetic that put each item where it is:
+<sub>Six seconds from `npm i` to the output below, measured on a cold clone on an M-series laptop.</sub>
 
-```
-  1   77.8  chase invoice         Invoice INV-0001                  $2,970.00
-      INV-0001 is 34 days overdue with $2,970.00 outstanding; never chased
-      money +27.8 · deadline +30 · staleness +20
-      ⏸ Not chasing INV-0001: this business has no mailbox connected, so the
-      reminder could be written but never sent and nothing would reach your client.
-```
+Boots a kernel, seeds a real service business into it, and prints **the work it thinks you should
+do next** — ranked, with the arithmetic that put each item where it is. That is the image above,
+and it is generated from a real run rather than drawn.
 
 That order came from the seeded state, not from a model. You can argue with the weights — they are
 in the API. The kernel stays up afterwards, so `GET /v1/moves` returns the same list as JSON.
@@ -56,7 +51,9 @@ until a human approves, the artifact is a deliverable, the money is an invoice.
 
 A **wedge** is a service as config — `wedge.json` + skills (how) + knowledge (what's true) — not a
 fork of the engine. Bookkeeping, dunning, GEO, recruiting, and a contract desk all sit on the same
-kernel.
+kernel. **Eleven lines of JSON is a working one**, and it already has a queue, a sandbox, an event
+stream, a cost ceiling and both schemas enforced:
+[your first wedge](docs/WEDGES.md#1b-your-first-wedge-in-eleven-lines).
 
 The agent **never holds a credential.** It gets an opaque nonce. The harness holds the secret, shows
 a preview, executes on approve, and writes an audit row. There is no code path from the sandbox to
@@ -97,20 +94,21 @@ npm run demo         # boot + seed + the ranked moves, one terminal
 Iterating on the seed? `npm run demo:kernel` keeps a server up across runs and `npm run demo:seed`
 re-seeds it.
 
-Five clients, invoices in every state, engagements, a wait blocked on a bank statement, ranked
-**moves** derived from that state. There is **no UI in this repository** — Mycel is headless. The
-console at `:3000` is a separate consumer of the same contract, not part of the kernel. The GIF at
-the top, and this invoice, are that consumer — filmed on an earlier seed, so the business and client
-names differ from what `demo:seed` builds today:
+Five clients, invoices draft through paid, engagements, a wait blocked on a bank statement, and the
+ranked **moves** derived from all of it. There is **no UI in this repository** — Mycel is headless,
+and the demo renders those moves in your terminal. The console at `:3000` is a separate consumer of
+the same contract, not part of the kernel. The GIF at the top, and this invoice, are that consumer —
+filmed on an earlier seed, so the business and client names differ from what the demo builds today:
 
 <p align="center">
   <img src="design/brand/money-owed.png" alt="Invoice INV-0001 Harborline Ceramics, overdue, $1,450 still to pay." width="820">
 </p>
 
-### A business to look at
+### The same list, over HTTP
 
-The seed writes into the **owner's** project. `/v1` is project-scoped with no default, so read it
-back as the owner, with that project's id. `demo:seed` prints the same command when it finishes.
+`npm run demo` prints the moves; this is how to read them from your own code. The seed writes into
+the **owner's** project, and `/v1` is project-scoped with no default — so log in as the owner and
+send that project's id.
 
 ```bash
 LOGIN=$(curl -s localhost:4000/v1/auth/login -H 'content-type: application/json' \
@@ -129,12 +127,13 @@ curl -s localhost:4000/v1/moves \
 A task, from curl:
 
 ```bash
+# mycel_demo_key is the key `npm run demo` boots with. Set MYCEL_API_KEY yourself and it is yours.
 curl -X POST http://localhost:4000/v1/tasks \
-  -H "authorization: Bearer $MYCEL_API_KEY" -H "content-type: application/json" \
+  -H "authorization: Bearer mycel_demo_key" -H "content-type: application/json" \
   -d '{"wedge":"books-keeper","task_type":"chase_receipts","input":{"period":"2026-10"}}'
 
 curl -N http://localhost:4000/v1/tasks/<id>/events \
-  -H "authorization: Bearer $MYCEL_API_KEY"
+  -H "authorization: Bearer mycel_demo_key"
 ```
 
 Or: `curl -fsSL https://mycelai.dev/init | bash` — same tree, `setup.sh` writes the env.
@@ -192,12 +191,17 @@ What the kernel still cannot express: **[docs/ROADMAP.md](docs/ROADMAP.md)**.
 ## Build it, change it
 
 ```bash
-npm i && npm test
+npm i
+npm run check    # typecheck + the whole suite. What CI runs, and the one command before you push.
+npm run demo     # boot, seed and rank, in one terminal
+npm run dev      # a bare kernel, watched
 ```
 
 Commands, environment, repo layout, the optional outside services and the constraints worth
 knowing before you change anything: **[AGENTS.md](./AGENTS.md)** — the
 [open convention](https://agents.md) for this, so your coding agent finds it on its own.
+Contributing, and a first one that is not "understand the architecture first":
+**[CONTRIBUTING.md](./CONTRIBUTING.md)**.
 
 ## Principles
 

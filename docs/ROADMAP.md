@@ -111,26 +111,29 @@ This is also the identity primitive the generated business app will need, which 
 
 Five services that AI is *creating* rather than accelerating — AI Act conformity, security
 questionnaire response, generative engine optimisation, agent eval ops, prior authorisation — were
-modelled against the kernel. See `internal/WEDGE-STRESS-TEST-2027.md`.
+modelled against the kernel.
 
-It confirmed the priority order below is wrong: **items 7 and 8 block three of the five** and are
-listed last. "Ask a third party for a document, wait, chase, receive a file" is the shape of most
-professional services, not an edge case.
+It confirmed the priority order below was wrong: **items 7 and 8 blocked three of the five** and
+were listed last. "Ask a third party for a document, wait, chase, receive a file" is the shape of
+most professional services, not an edge case. Both have since shipped — see below.
 
-It also found three gaps not previously written down, and one hard boundary:
+It also found three gaps not previously written down, and one hard boundary. **The three gaps have
+shipped. The boundary has not**, and the difference matters: one is work, the other is a decision
+nobody has made yet.
 
-- **No fan-out/fan-in.** A task cannot spawn N children and aggregate. Blocks eval ops entirely, and
-  the bookkeeping wedge already wants it — chasing 40 receipts runs serially inside one task today.
-  Highest-leverage missing primitive, and the Postgres queue makes it tractable now.
-- **Knowledge has no client scope.** `KnowledgeItem` is `{project_id, wedge, name}`. For any service
-  where the evidence base belongs to the customer, grounding one client's answer in another's
-  material isn't a quality bug, it's a confidentiality breach.
-- **Records are point-in-time, not a time series.** Unique on `(project, wedge, collection, key)` with
-  replace-on-upsert — right for "the current state of invoice #42", wrong for any service that sells
-  a measurement trending over time.
-- **No data classification anywhere.** Nothing distinguishes PHI/PII from a shipping address, so no
-  redaction, residency, or no-training assertion is possible. Regulated verticals are closed until
-  that's a deliberate project rather than a gap.
+- **Fan-out/fan-in**  ✅ shipped. A task spawns N children and aggregates; the parent sits in
+  `awaiting_batch` until join fires (`harness/src/batches.ts`, `/v1/batches`). A parent interrupted
+  mid-batch rejoins on restart rather than discarding the children's work.
+- **Knowledge client scope**  ✅ shipped. `Rule` and `KnowledgeItem` carry `client_id` and a
+  `sensitivity` that defaults CLOSED, and `ruleMayApply` refuses to show one client's material on
+  another's job. Facts cross WEDGES within a business — a VAT scheme learned during a close is true
+  when the chaser writes — but never cross clients.
+- **Records as a time series**  ✅ shipped. `observed_at` on a record, with range queries, so a
+  collection can hold a measurement trending over time as well as "the current state of invoice #42".
+- **No data classification anywhere.**  Still true, and still a boundary rather than a gap. Nothing
+  distinguishes PHI/PII from a shipping address, so no redaction, residency or no-training assertion
+  is possible. `KnowledgeSensitivity` is `house | client` — an AUDIENCE, which is a different
+  question from what a value is. Regulated verticals stay closed until that is a deliberate project.
 
 Also: `contract-desk` — a recruitment agency's weekly timesheet and billing run — was built to check
 the primitives aren't bookkeeping-shaped. Intake, cases, schedules, policy envelopes and
@@ -138,12 +141,19 @@ deterministic workflows all carried over unchanged. It replaced `geo-monitor`, w
 same point with a manifest that had no workflow, no skill and no connection behind its headline
 task, and so was only evidence that a JSON file can be written.
 
-### 7. External-party requests
-Ask the *client or candidate* for something, wait, remind, escalate. Distinct from founder approval
-(which is about permission, not information).
+### 7. External-party requests  ✅ shipped
+Ask the *client or candidate* for something, wait, remind, escalate — distinct from founder approval,
+which is about permission rather than information. A request carries its own portal link, and a
+client who has never been given one is itself a ranked move: `npm run demo` shows two.
 
-### 8. Binary artifacts and files
-PDFs/images in (parse, OCR), spreadsheets/PDFs out. Artifacts are text today.
+### 8. Binary artifacts and files  ✅ shipped, except OCR — deliberately
+Files in through the portal (`/v1/portal/requests/:id/attachments`), files out with a preview and
+block-level editing, and generated workbooks that are byte-identical for identical figures. The
+demo seed releases a rendered PDF alongside its CSV working.
+
+Image OCR and arbitrary archive walking are **refused, not missing**: `harness/src/attachments.ts`
+makes the argument — a full office/OCR farm is a decompression bomb with a friendly name. Anything
+needing OCR runs in the sandbox, where the blast radius is the sandbox.
 
 ### 9. Audit trail  ✅ shipped
 An immutable record of who changed what — a legal requirement in regulated wedges like bookkeeping.

@@ -11,7 +11,7 @@ WORKDIR /app
 # immune to the AWS SDK's lockstep-sibling version skew. The lock must be copied for it to work.
 # WORKSPACE PACKAGES, COPIED BEFORE `npm ci` BECAUSE THE LOCKFILE POINTS AT THEM.
 #
-# `kernel/package.json` depends on `@mycel/linkedin` as `file:../packages/linkedin`. A `file:` dep is
+# `kernel/package.json` depends on `@mycel/linkedin` as `file:./packages/linkedin`. A `file:` dep is
 # resolved by npm at INSTALL time, so if the directory is absent `npm ci` either fails or — worse —
 # succeeds against a stale tree and the container dies at import with
 # "Cannot find package '@mycel/linkedin'". That is exactly how the 2026-08-20 kernel deploy shipped a
@@ -23,7 +23,7 @@ WORKDIR /app
 # The destination is ABSOLUTE (`/packages`) so that `../packages/linkedin` resolves correctly from
 # the `/app` workdir, which keeps the container's layout identical to the repository's and means the
 # path in package.json is true in both places rather than true in one and patched in the other.
-COPY packages /packages
+COPY packages ./packages
 
 # ...AND THEY INSTALL THEIR OWN DEPENDENCIES, because node cannot borrow the kernel's.
 #

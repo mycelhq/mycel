@@ -9,6 +9,7 @@ import { fileURLToPath } from "node:url";
 import { TIER_MODELS } from "../src/models";
 import { providerAdvisories, runtimeAdvisories } from "../src/preflight";
 import { PROVIDERS, shortestPath } from "../src/gtm/providers";
+import { between } from "./helpers/anchor";
 import { KERNEL_VERSION } from "../src/version";
 import type { MycelConfig } from "../src/config";
 
@@ -35,7 +36,7 @@ test("B1 stranger-install: runtimeAdvisories is actually CALLED at boot, not jus
 
   // And it must not exit the way sandboxPreflight does: `npm run demo` is the one README path that
   // deliberately needs no binary and no key.
-  const call = INDEX.slice(INDEX.indexOf("runtimeAdvisories(cfg)"));
+  const call = between(INDEX, "runtimeAdvisories(cfg)");
   assert.ok(
     !/process\.exit/.test(call.slice(0, 400)),
     "runtimeAdvisories must warn, never exit — a kernel with no agent runtime is still legitimate",
@@ -122,7 +123,17 @@ test("B6 stranger-install: the README's showcase curl uses a credential that can
   // key-derived project — a different tenant from the one demo:seed writes into. It returned
   // {"moves":[]}, and the README elsewhere pre-frames [] as "nothing seeded", so the only available
   // conclusion was that the seed had failed. Tenant isolation was right; the doc was wrong.
-  const showcase = README.slice(README.indexOf("### A business to look at"), README.indexOf("## What Mycel provides"));
+  /**
+   * ANCHORED ON THE CODE, NOT ON THE HEADING.
+   *
+   * This sliced from the literal "### A business to look at", so renaming that heading made the
+   * slice start at -1 and the whole assertion silently move to a different part of the file. A
+   * test pinned to prose fails when the prose is edited and says nothing about the thing it guards.
+   * The login call is what this test is actually about, so the window is built around that.
+   */
+  const anchor = README.indexOf("/v1/auth/login");
+  assert.ok(anchor > 0, "the README no longer shows a login call — that IS the thing this guards");
+  const showcase = README.slice(README.lastIndexOf("\n## ", anchor), README.indexOf("## What Mycel provides"));
 
   /**
    * DERIVED FROM THE SEED, because this test pinned the credential rather than checking it.
@@ -151,7 +162,7 @@ test("B6 stranger-install: the README's showcase curl uses a credential that can
   assert.match(showcase, /different tenant/i);
 
   // The seed itself hands over the working call, so nothing has to be retyped.
-  const report = SEED.slice(SEED.indexOf("✓ Seeded"));
+  const report = between(SEED, "✓ Seeded");
   // Matched on the INTERPOLATION, not on a variable name. This asserted `${PROJECT}` and broke the
   // day the seed renamed its local to `s.project` — a test that fails when nothing a stranger sees
   // has changed is a test that trains people to edit tests. What matters is that the report prints
@@ -169,7 +180,7 @@ test("B7 stranger-install: PORT and MYCEL_URL are documented, and reachable from
   // a move, not a deletion, so this asserts what it always meant — DISCOVERABLE — rather than the
   // heading it used to sit under. Both halves are load-bearing: documented somewhere nobody is
   // pointed to is the same as undocumented.
-  const table = AGENTS.slice(AGENTS.indexOf("## Environment"), AGENTS.indexOf("## Layout"));
+  const table = between(AGENTS, "## Environment", "## Layout");
   assert.match(table, /\| `PORT` \|/);
   assert.match(table, /\| `MYCEL_URL` \|/);
   assert.match(README, /\(\.\/AGENTS\.md\)/, "the README must link to it, or it is not discoverable");
@@ -224,7 +235,7 @@ test("B7 stranger-install: the seed does not promise a UI this repo does not con
   assert.match(SEED, /async function consoleIsUp\(\)/, "the seed must ask before it links");
   assert.match(SEED, /await consoleIsUp\(\)/, "and the report must actually branch on the answer");
 
-  const report = SEED.slice(SEED.indexOf("✓ Seeded"));
+  const report = between(SEED, "✓ Seeded");
   assert.ok(
     !/Sign in at http:\/\/localhost:3000/.test(report),
     "a hardcoded console URL in the report is the unconditional promise this guards against",
@@ -233,7 +244,8 @@ test("B7 stranger-install: the seed does not promise a UI this repo does not con
   assert.match(report, /github\.com\/mycelhq\/console/, "and point at where the console actually is");
 
   // The probe must not be able to take the seed down after the work is committed.
-  const probe = SEED.slice(SEED.indexOf("async function consoleIsUp()"), SEED.indexOf("async function consoleIsUp()") + 400);
+  // Bounded on the function that follows it, not on a character count — see `after` in the helper.
+  const probe = between(SEED, "async function consoleIsUp()", "\n/**");
   assert.match(probe, /try \{/, "a diagnostic must not throw");
   assert.match(probe, /AbortSignal\.timeout/, "and must not hang waiting for a port nobody is on");
 });

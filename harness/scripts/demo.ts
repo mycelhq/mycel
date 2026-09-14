@@ -45,7 +45,17 @@ const DEMO_ENV = {
 };
 
 const ESC = "\u001b[";
-const paint = (code: string, s: string): string => (process.stdout.isTTY ? `${ESC}${code}m${s}${ESC}0m` : s);
+/**
+ * Colour when a person is watching, or when something asks for it.
+ *
+ * `isTTY` alone is right for a human and wrong for the two cases that matter otherwise: a CI log,
+ * which renders ANSI perfectly well, and `scripts/render-demo-svg.mjs`, which captures this output
+ * to draw the README's image. Without the override that renderer would have to reimplement the
+ * formatting, and an image of the demo produced by different code is exactly the kind of claim this
+ * repo does not make.
+ */
+const COLOUR = process.env.MYCEL_FORCE_COLOR === "1" || process.stdout.isTTY;
+const paint = (code: string, s: string): string => (COLOUR ? `${ESC}${code}m${s}${ESC}0m` : s);
 const dim = (s: string): string => paint("2", s);
 const bold = (s: string): string => paint("1", s);
 const green = (s: string): string => paint("32", s);
@@ -180,6 +190,35 @@ function render(moves: Move[], project: string): void {
 }
 
 async function main(): Promise<void> {
+  /**
+   * IS THE PORT ALREADY SOMEBODY ELSE'S.
+   *
+   * `waitForKernel` polls `/health` and cannot tell our kernel from any other. With a stray one
+   * already on :4000 — a previous `npm run demo` that was never stopped is the common case — the
+   * spawned child fails to bind, the poll sees the STRANGER answer, and the seed runs against a
+   * kernel booted with a different owner password. What the reader gets is:
+   *
+   *     The demo business could not be seeded.
+   *     ✗ [founder] POST /v1/auth/login → 401 {"error":"invalid credentials"}
+   *
+   * — which points at credentials, and the credentials are fine. Found by running this on a machine
+   * that happened to have one left over, which is the only way this was ever going to be found.
+   *
+   * So: ask before spawning, and say the two things that fix it.
+   */
+  try {
+    const already = await fetch(`${BASE}/health`, { signal: AbortSignal.timeout(1000) });
+    if (already.ok) {
+      console.error(`\n  Something is already serving on ${BASE}.\n`);
+      console.error(`  The demo needs its own kernel — it seeds a business with its own owner, and`);
+      console.error(`  a kernel booted by something else will refuse that login.\n`);
+      console.error(`  Stop it, or:  PORT=4001 npm run demo\n`);
+      process.exit(1);
+    }
+  } catch {
+    /* nothing there — which is what we want */
+  }
+
   const kernel = run(["harness/src/index.ts"], { ...DEMO_ENV, PORT });
   let stopping = false;
   const stop = (code = 0): never => {

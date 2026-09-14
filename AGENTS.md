@@ -32,8 +32,28 @@ MYCEL_TEST_DATABASE_URL=postgres://... npm test
 Some tests `# SKIP` with a reason naming a sibling that lives in a private monorepo and is not
 published here. They skip rather than fail so a stranger's clone is green **honestly**.
 
-Needs Node 20+ and git. Docker / Daytona / Postgres only if you choose those backends. A real run
-needs an `opencode` binary and a provider key.
+### `growth/`, `cloud/` and `landing/` are not missing
+
+Comments cite them 52 times — "same policy as `growth/lib/enrich/waterfall.ts`", "`cloud/lib/gtm.ts`
+reads this". Those are the PRIVATE siblings this kernel was extracted from, and they are deliberately
+not published (see [docs/OPEN-CORE.md](docs/OPEN-CORE.md)). A path under one of those three is
+context for why a rule exists, not a file you are expected to open, and nothing here imports one —
+the vendored packages under `packages/` are the only cross-directory dependency and they ship with
+the kernel.
+
+The references are kept rather than scrubbed because the failure each one names is the reason the
+code is shaped the way it is, and "this mirrors a thing you cannot see" is more useful than silence.
+A path under `internal/` is different and must never appear: that is where strategy and customer
+documents live, and the publish tooling refuses to ship a tree that mentions one.
+`harness/test/docs-do-not-lie.test.ts` fails first, on the commit rather than at publish time.
+
+Needs Node 20+ and git. The `curl` and `jq` examples in the README and in
+[docs/WEDGES.md](docs/WEDGES.md) need those two as well — `jq` is the one most machines do not
+already have (`brew install jq`, `apt install jq`). Nothing the kernel RUNS depends on either; they
+are how the docs show you the JSON.
+
+Docker / Daytona / Postgres only if you choose those backends. A real run needs an `opencode` binary
+and a provider key.
 
 ## The `[mock]` trap
 

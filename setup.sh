@@ -219,9 +219,9 @@ else
   say "  A browser UI:       ${C}git clone $CONSOLE_REPO && cd console && npm install && npm run dev${N}"
 fi
 say ""
-say "  ${D}No keys at all:${N}     ${C}npm run demo${N}${D}, then ${N}${C}npm run demo:seed${N} ${D}in another shell${N}"
+say "  ${D}No keys at all:${N}     ${C}npm run demo${N} ${D}— boots, seeds a business and ranks its work${N}"
 say "  ${D}Or drive it directly:${N}"
-say "    ${D}${C}curl localhost:4000/v1/tasks -H \"authorization: Bearer \$MYCEL_API_KEY\" -H 'content-type: application/json' -d '{\"wedge\":\"invoice-chaser\",\"task_type\":\"chase_invoice\",\"input\":{}}'${N}"
-say "    ${D}${C}curl -N localhost:4000/v1/tasks/<id>/events -H \"authorization: Bearer \$MYCEL_API_KEY\"${N}"
+say "    ${D}${C}curl localhost:4000/v1/tasks -H \"authorization: Bearer <the key printed on boot>\" -H 'content-type: application/json' -d '{\"wedge\":\"invoice-chaser\",\"task_type\":\"chase_invoice\",\"input\":{}}'${N}"
+say "    ${D}${C}curl -N localhost:4000/v1/tasks/<id>/events -H \"authorization: Bearer <the key printed on boot>\"${N}"
 say ""
 if [ -z "$NONINTERACTIVE" ] && yesno "Start the harness now?" "y"; then ( cd "$HERE" && exec npm run dev ); fi

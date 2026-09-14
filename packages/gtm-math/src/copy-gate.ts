@@ -175,9 +175,9 @@ const VENDOR_SIGNOFF = /^(mycel(\s*ai)?|the mycel team|team mycel|.*\bteam\b)$/i
  *     "The same check runs across a client list under Carrhill's name."
  *     "Want a line you can bill for in client monthly reports, under your logo?"
  *
- * That is the white-label subscription from internal/CRITICAL-STRATEGIC-DECISIONS.md. We now RUN
- * the work on a retainer and own the outcome — lib/copy/product.ts says so to the drafter, and
- * that file shipped on 6 September, AFTER every one of these went out.
+ * That is the white-label subscription we used to sell, and no longer do. We RUN the work on a
+ * retainer and own the outcome — the product brief says so to the drafter, and it shipped on
+ * 6 September, AFTER every one of these went out.
  *
  * A prompt is a suggestion and a gate is a guarantee, and this is the single highest-evidence
  * defect in the corpus, so it gets the guarantee. Redraftable: the model is choosing the wrong

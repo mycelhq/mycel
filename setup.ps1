@@ -92,7 +92,22 @@ Push-Location $Here
 npm install | Out-Null; Ok "npm install done"
 Pop-Location
 
+# THE ORDER IS THE MESSAGE, and it has to be the same message setup.sh gives.
+#
+# This ended at "Start the harness: npm run dev / Then POST to /v1/tasks" — which points a Windows
+# user at an EMPTY kernel and never mentions `npm run demo`, the no-keys path that is the whole
+# first look. They finished setup and were told to POST to a business with nothing in it, while
+# every Unix user got the seeded one. Same endings now; `harness/test/setup-scripts-agree.test.ts`
+# keeps them that way.
 Write-Host "`nMycel is set up." -ForegroundColor Green
-Write-Host "  Start the harness:  npm run dev" -ForegroundColor Cyan
-Write-Host "  Then POST to http://localhost:4000/v1/tasks" -ForegroundColor Cyan
+Write-Host "  Start the kernel:   npm run dev" -ForegroundColor Cyan
+Write-Host "                      it prints an API key and an owner login on boot" -ForegroundColor DarkGray
+Write-Host "  A browser UI:       git clone https://github.com/mycelhq/console; cd console; npm install; npm run dev" -ForegroundColor Cyan
+Write-Host ""
+Write-Host "  No keys at all:     npm run demo" -ForegroundColor Cyan -NoNewline
+Write-Host " - boots, seeds a business and ranks its work" -ForegroundColor DarkGray
+Write-Host "  Or drive it directly:" -ForegroundColor DarkGray
+Write-Host "    curl localhost:4000/v1/tasks -H `"authorization: Bearer <the key printed on boot>`" -H 'content-type: application/json' -d '{`"wedge`":`"invoice-chaser`",`"task_type`":`"chase_invoice`",`"input`":{}}'" -ForegroundColor Cyan
+Write-Host "    curl -N localhost:4000/v1/tasks/<id>/events -H `"authorization: Bearer <the key printed on boot>`"" -ForegroundColor Cyan
+Write-Host ""
 if (YesNo "Start the harness now?" "y") { Push-Location $Here; npm run dev }

@@ -14,24 +14,14 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { existsSync, readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
+import { directives } from "./helpers/directives";
 
 const here = (p: string): string => fileURLToPath(new URL(p, import.meta.url));
 const PUBLIC_CI = readFileSync(here("../../.github/workflows/ci.yml"), "utf8");
 
-/**
- * The workflow with its comments removed.
- *
- * The first version of this test scanned the raw file for `branches: ["**"]` and failed on a file
- * that was already correct — the string was inside the comment explaining what had been REMOVED. A
- * guard on configuration must read configuration; prose that quotes a bad setting is documentation
- * doing its job, not the setting coming back.
- */
-const config = (yaml: string): string =>
-  yaml
-    .split("\n")
-    .filter((l) => !/^\s*#/.test(l))
-    .join("\n");
-const PUBLIC_CONFIG = config(PUBLIC_CI);
+// Comments stripped — this looked for `branches: ["**"]` and found it in the comment saying that
+// setting had been REMOVED, failing a correct file. See the helper.
+const PUBLIC_CONFIG = directives(PUBLIC_CI);
 
 /**
  * The monorepo's copy, which is NOT in the published tree.
@@ -55,7 +45,7 @@ test("ci: the published workflow runs once per commit and cancels what it supers
 
 test("ci: the two workflows agree on what they run", { skip: existsSync(MONOREPO_CI) ? false : "monorepo .github/workflows/kernel.yml is not in the published tree" }, () => {
   const mono = readFileSync(MONOREPO_CI, "utf8");
-  const nodeOf = (s: string): string | undefined => /node-version:\s*"([^"]+)"/.exec(config(s))?.[1];
+  const nodeOf = (s: string): string | undefined => /node-version:\s*"([^"]+)"/.exec(directives(s))?.[1];
   assert.equal(
     nodeOf(PUBLIC_CI),
     nodeOf(mono),
