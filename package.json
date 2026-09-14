@@ -53,7 +53,7 @@
     "@aws-sdk/client-s3": "^3.1101.0",
     "@aws-sdk/client-transcribe": "^3.1101.0",
     "@daytona/sdk": "^0.203.0",
-    "@hono/node-server": "^1.13.1",
+    "@hono/node-server": "^2.1.1",
     "@mycel/deliverability": "file:./packages/deliverability",
     "@mycel/gtm-math": "file:./packages/gtm-math",
     "@mycel/linkedin": "file:./packages/linkedin",
