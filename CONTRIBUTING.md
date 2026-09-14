@@ -86,6 +86,28 @@ the guards in `harness/test/`.
 
 Small, focused PRs with a clear description of the failure mode you're fixing.
 
+## What happens to your pull request
+
+**This repository is a distribution, not the place the code is written.** Every commit here is a
+snapshot built from a private monorepo where the kernel lives alongside the hosted product. That is
+stated in the README, and it has one consequence you should know before you spend an evening on a
+patch:
+
+**a PR merged here is reverted by the next snapshot.** Not maliciously and not with a force-push —
+the snapshot commit simply carries the monorepo's tree, so anything changed only on this side goes
+back. The publisher now refuses to run when this repo has commits it did not make, so this fails
+loudly instead of quietly, but the fix is the same either way.
+
+So the flow is:
+
+1. Open the PR here. It is the right place — it is where the discussion happens and where the diff
+   is reviewed.
+2. We apply it upstream, with your authorship preserved in the commit trailer.
+3. It reaches this repo in the next snapshot, and the PR closes referencing that commit.
+
+It is more steps than a normal repo and we would rather say so than have you find out. If that is a
+dealbreaker, an issue with a failing test is worth as much to us as a patch and costs you less.
+
 ## Security
 
 Please don't open public issues for vulnerabilities — see [SECURITY.md](./SECURITY.md).

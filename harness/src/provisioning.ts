@@ -59,12 +59,32 @@ const PERMANENT = /unauthor|forbidden|invalid api key|not found|no such image|do
  * A provider that could not give us a sandbox RIGHT NOW, as distinct from one that will never give
  * us this sandbox.
  *
- * Capacity, rate limits, and the provider's own 5xx. Deliberately NOT: an unknown image (a real
+ * Capacity, rate limits, the provider's own 5xx, and — the case this missed for a month — a
+ * provider that simply did not answer in time. Deliberately NOT: an unknown image (a real
  * configuration error a retry repeats forever), an auth failure (the key is wrong now and in five
  * minutes), or a quota that is structural rather than momentary.
+ *
+ * ═══ TIMEOUTS WERE TERMINAL, AND THEY ARE THE COMMONEST FAILURE THERE IS ═══
+ *
+ * Measured over the seven days to 14 September: 62 failed runs, and the top three causes were
+ *
+ *     daytona acquire timed out after 300000ms — the call never returned      11
+ *     Failed to create and start sandbox within 60 seconds. Operation timed out.  3
+ *     snapshot mycel-sandbox-… did not become active within 15m                2
+ *
+ * None of them matched. `ETIMEDOUT` is here as an ERRNO — the literal string Node puts on a socket
+ * error — and none of those three is a socket error. They are a provider that accepted the call and
+ * never came back, which is the most ordinary form of "not right now" a provider has, and every one
+ * of them killed a founder's job permanently. The 502s beside them retried correctly, which is what
+ * makes the gap legible: the same outage, reported two ways, handled two ways.
+ *
+ * A timeout is a MOMENT, not a mistake — exactly the distinction this file is organised around. And
+ * the safety argument above is unchanged and does not need re-making: the classifier is consulted
+ * only for a failure out of `createSandbox()`, before the first prompt, before any grant is minted.
+ * Nothing can have happened yet, whatever the provider's reason for not answering.
  */
 const UNAVAILABLE =
-  /disk limit|quota exceeded|capacity|rate.?limit|too many requests|\b429\b|\b50[0234]\b|ECONNRESET|ETIMEDOUT|ECONNREFUSED|EAI_AGAIN|socket hang up|temporarily unavailable|try again/i;
+  /disk limit|quota exceeded|capacity|rate.?limit|too many requests|\b429\b|\b50[0234]\b|ECONNRESET|ETIMEDOUT|ECONNREFUSED|EAI_AGAIN|socket hang up|temporarily unavailable|try again|timed out|timeout|deadline exceeded|did not become active|never returned/i;
 
 /** Could the provider plausibly answer differently in a minute? */
 export function provisioningUnavailable(error: unknown): boolean {

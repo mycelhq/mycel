@@ -102,3 +102,50 @@ test("the error carries its attempt, and is a TYPE so a later failure cannot pos
   assert.ok(e instanceof Error);
   assert.equal(new Error("Total disk limit exceeded") instanceof ProvisioningUnavailable, false);
 });
+
+// ── The strings production actually produced, verbatim ──────────────────────
+//
+// The patterns above were written from what a provider MIGHT say. These are what Daytona did say,
+// copied out of `tasks.error` for the seven days to 14 September 2026: 62 failed runs, and the top
+// three causes were all timeouts that this classifier called terminal.
+//
+//     daytona acquire timed out after 300000ms — the call never returned          11
+//     Failed to create and start sandbox within 60 seconds. Operation timed out.   3
+//     snapshot mycel-sandbox-… did not become active within 15m                    2
+//
+// `ETIMEDOUT` was in the pattern the whole time — as an ERRNO, the literal string Node puts on a
+// socket error, and not one of those three is a socket error. The 502s sitting beside them retried
+// correctly, which is what makes the gap legible: one outage, reported two ways, handled two ways.
+//
+// Written as fixtures rather than as new patterns so the next person adding a provider adds ITS
+// words here and finds out whether they match, instead of reasoning about the regex.
+
+test("provisioning: a provider that did not answer in time is a moment, not a mistake", () => {
+  const seenInProduction = [
+    "daytona acquire timed out after 300000ms — the call never returned",
+    "Failed to create and start sandbox within 60 seconds. Operation timed out.",
+    "snapshot mycel-sandbox-1c724b92775a did not become active within 15m",
+    "Request failed with status code 502",
+    "Total disk limit exceeded. Maximum allowed: 300GiB.",
+  ];
+  for (const message of seenInProduction) {
+    assert.equal(
+      provisioningUnavailable(message),
+      true,
+      `this killed a run permanently and nothing had started yet: ${message}`,
+    );
+  }
+});
+
+test("provisioning: widening it for timeouts did not make a mistake retryable", () => {
+  // The other half. Each of these is a configuration error or a credential that will be just as
+  // wrong in four minutes, and retrying is the same failure at a slower cadence.
+  for (const message of [
+    "unauthorized: invalid api key",
+    "403 forbidden",
+    "no such image: mycel/sandbox:nope",
+    "Snapshot with name \"mycel-sandbox-9164b48de109\" already exists for this organization",
+  ]) {
+    assert.equal(provisioningUnavailable(message), false, `a retry repeats this forever: ${message}`);
+  }
+});
