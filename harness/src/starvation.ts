@@ -20,7 +20,7 @@
 // worker has quietly stopped taking jobs. `recoverTasks` will not run again until the next deploy,
 // so the founder watches "queued" for hours and nothing anywhere says why.
 //
-// Suna hit exactly this and wrote the backstop for it in
+// a comparable runtime hit exactly this and wrote the backstop for it in
 // `session-lifecycle/undelivered-prompts.ts`:
 //
 //     "A command still `queued` TEN MINUTES past its available_at means that drain is starved —
@@ -99,7 +99,7 @@ export async function reconcileStarvedTasks(
   /**
    * LOUD, because this is our fault and not the founder's.
    *
-   * Suna's phrasing is the standard to hold to: ship a real error "so a dead scheduler pages instead
+   * a comparable runtime's phrasing is the standard to hold to: ship a real error "so a dead scheduler pages instead
    * of silently eating prompts". A sweep that quietly repairs the symptom every two minutes would
    * hide a worker that has been dead for a week.
    */

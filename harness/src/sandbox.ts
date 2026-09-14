@@ -813,7 +813,7 @@ export async function sandboxPreflight(backend: string): Promise<string | null> 
  * signal that something in the run path has started leaking, and it is invisible until the quota is
  * hit." Between deploys — which can be a week — nothing swept, so a leak had a week to run.
  *
- * `kortix-ai/suna` document what that costs in `projects/disk-quota-guard.ts`. Their org rode its
+ * a comparable runtime document what that costs in `projects/disk-quota-guard.ts`. Their org rode its
  * 40000GiB sandbox-disk quota to the edge because stopped boxes only left disk on the provider's own
  * auto-archive timer, and then "EVERY session create/resume org-wide failed with
  * `DaytonaValidationError: Total disk limit exceeded`" until a human spent twenty minutes archiving
@@ -862,7 +862,7 @@ export async function reapStoppedSandboxes(): Promise<void> {
    * ═══ IT ARCHIVED, WHICH IS NOT WHAT IT WAS FOR ═══
    *
    * This function existed to stop `Total disk limit exceeded`, ran on a clock to catch leaks
-   * between deploys, and cited the suna outage above. It then POSTed `/archive`.
+   * between deploys, and cited the outage above. It then POSTed `/archive`.
    *
    * Archiving is a state change, not a deletion. So the sweep ran, logged a healthy number, and
    * left every byte where it was — which is exactly what the account looked like when this was

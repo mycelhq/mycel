@@ -34,9 +34,16 @@ before authoring a wedge for a trade you are not yourself an expert in, which is
 
 Examples, not a catalogue. Nothing here is a service you can buy switched on: a wedge is written to
 fit the business it serves, and these three are in the repo so you can see the three *shapes* a
-service takes before you write a fourth. `kernel/wedges/` also holds `gtm-operator` and
-`product-builder`, plus `business-shaper` and `harness-operator`, which are machinery rather than
-services — they onboard a business and let the kernel work on itself.
+service takes before you write a fourth. `wedges/` also holds `gtm-operator`, `content-desk`,
+`geo-monitor`, `recruiting-desk` and `security-questionnaire`, plus `business-shaper` and
+`product-builder`, which are machinery rather than services — they onboard a business and scaffold
+the founder's own app.
+
+There was a harness-operator here too, the kernel working on itself. It is gone: 261 sandbox-hours
+produced four proposals and none were adopted, so it was deleted rather than left running. It is
+named in plain text and not in backticks on purpose — a slug in code font is an invitation to go and
+find the directory, and `harness/test/docs-do-not-lie.test.ts` reads it that way. Both this file and
+the README went on listing it for months, which is the drift that test now fails on.
 
 Completeness varies and it is worth knowing which is which before copying one. `invoice-chaser`,
 `books-keeper` and `contract-desk` are end to end — manifest, workflows, skills, knowledge and a

@@ -7,7 +7,7 @@
 // created — a second sandbox, a second run, and for a `chase_invoice` a second email to somebody's
 // client. The caller cannot detect it, because their retry succeeded.
 //
-// `kortix-ai/suna` state the principle in `apps/api/src/projects/session-lifecycle/requeue-policy.ts`:
+// a comparable runtime state the principle in `apps/api/src/projects/session-lifecycle/requeue-policy.ts`:
 // "retryability is a property of WHO OWNS THE OUTCOME, not of the error", and record the same
 // outcome when both owners act — "Two billed sandboxes execute the baked initial_prompt."
 //

@@ -11,10 +11,25 @@
 # breaks in front of strangers.
 name: ci
 
+# ═══ ONCE PER COMMIT, NOT FOUR TIMES ═══
+#
+# This was `push: branches: ["**"]` AND `pull_request:`, which is the configuration the monorepo
+# measured and removed: a branch with a PR open ran every job TWICE on the same commit, and with no
+# `concurrency` group, three commits pushed in a minute ran three full matrices to completion —
+# including the two whose results nobody would ever read.
+#
+# In a public repo that lands on contributors. Their PR check takes twice as long as it needs to,
+# and a fix pushed on top of a mistake waits behind a run of the mistake. Pushing to a branch is not
+# a trigger; the PR is, which also covers forks. `main` has no PR to stand in for it, so it keeps
+# its own.
 on:
   push:
-    branches: ["**"]
+    branches: [main]
   pull_request:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
   test:

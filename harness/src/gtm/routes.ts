@@ -19,8 +19,8 @@ import {
   type ProspectDraft,
   type SequenceStep,
 } from "./campaign";
-import { enrichEmails, enrichableFromGraph, enrichmentConfigured, fullEnrichConfigured, FULLENRICH_KEY_ENV } from "./enrich";
-import { FIRECRAWL_KEY_ENV, firecrawlConfigured } from "./firecrawl";
+import { enrichEmails, enrichableFromGraph, enrichmentConfigured, paidVendor, FULLENRICH_KEY_ENV } from "./enrich";
+import { crawlConfigured, crawlKeyEnv } from "./firecrawl";
 import { serperConfigured } from "./discover-cheap";
 import { casesForCampaign, enrolProspects, findProspects, prospectsFromGraph } from "./prospects";
 import {
@@ -36,6 +36,10 @@ import { advanceSequences, ensureSequenceSchedule, setTouchDeps } from "./sequen
 import { decideReply, proposeReply, ReplyError, ReplySendError } from "./reply";
 import { expandLookalikes } from "./lookalike";
 import { detectSignals, ingestSignals, type SignalHit } from "./signals";
+import { observedSignalFor } from "./signal-bridge";
+import { funnelOf, type FunnelCase } from "./funnel";
+import { howToEnable, PROVIDERS, resolveAll, shortestPath } from "./providers";
+import signalScore from "../../../library/workflows/signal-score.mjs";
 // Extracted so `proposal-envelope.ts` can read the business name too — see business-shape.ts.
 import { readBusinessShape } from "../business-shape";
 import { gtmWedge, hasGtmWedge } from "./stages";
@@ -148,11 +152,18 @@ export function mountGtm(app: Hono, deps: GtmRouteDeps): void {
           capability: "enrich_emails",
           title: "Find someone's email",
           available: enrichmentConfigured(),
-          requires_key: firecrawlConfigured() ? FIRECRAWL_KEY_ENV : FULLENRICH_KEY_ENV,
+          /**
+           * The key that would turn this on, or the one already doing it — never the hardest one.
+           *
+           * This named `FULLENRICH_API_KEY` whenever crawling was off, which on a fresh clone is
+           * always, so the answer to "what do I need for email lookup" was a sales conversation.
+           * The crawl hop is free and self-serve, and it is the one that runs first anyway.
+           */
+          requires_key: crawlConfigured() ? crawlKeyEnv() : shortestPath(PROVIDERS.crawl)!.env,
           detail: enrichmentConfigured()
             ? [
-                firecrawlConfigured() ? "We check public company pages for an email that's already listed." : null,
-                fullEnrichConfigured() ? "A paid lookup fills in the ones we can't find that way." : null,
+                crawlConfigured() ? "We check public company pages for an email that's already listed." : null,
+                paidVendor() ? "A paid lookup fills in the ones we can't find that way." : null,
               ]
                 .filter(Boolean)
                 .join(" ")
@@ -166,6 +177,24 @@ export function mountGtm(app: Hono, deps: GtmRouteDeps): void {
       works_without_keys:
         "Finding people, inviting them, messaging, and spotting replies all run on your connected " +
         "LinkedIn — no extra setup. Only finding emails needs a bit more.",
+      /**
+       * ═══ WHICH OUTSIDE SERVICES ARE IN PLAY, AND HOW TO SWITCH THEM ═══
+       *
+       * The GTM path reached four vendors by name, each hardcoded in the file that used it. Those
+       * are OUR picks, chosen because they are cheapest at the volume we run — and a bad first hour
+       * for anybody else, who has to open accounts with three unfamiliar companies in a particular
+       * combination before any of this works, with the requirement written down nowhere.
+       *
+       * Each capability now takes whichever key is present, so configuration asks one question
+       * instead of two. Reported here rather than in a doc because a doc goes stale and this is read
+       * from the same environment the code is.
+       */
+      providers: resolveAll().map((r) => ({
+        capability: r.capability,
+        using: r.chosen?.id ?? null,
+        detail: howToEnable(r),
+        options: r.options.map((o) => ({ id: o.id, label: o.label, env: o.env, signup: o.signup })),
+      })),
     }),
   );
 
@@ -560,7 +589,7 @@ export function mountGtm(app: Hono, deps: GtmRouteDeps): void {
       if (!found || !deps.inScope(deps.accessible(c), found.project_id)) return c.json({ error: "unknown connection" }, 404);
       if (found.project_id !== projectId) return c.json({ error: "that account belongs to another project" }, 403);
       conn = found;
-    } else if (!fullEnrichConfigured() && !serperConfigured()) {
+    } else if (!paidVendor() && !serperConfigured()) {
       return c.json(
         {
           error:
@@ -614,8 +643,36 @@ export function mountGtm(app: Hono, deps: GtmRouteDeps): void {
     const campaign = await loadCampaign(domain, projectId, c.req.param("id") ?? "");
     if (!campaign || !deps.inScope(deps.accessible(c), campaign.project_id)) return c.json({ error: "not found" }, 404);
     const cases = await casesForCampaign(domain, campaign.project_id, campaign.id);
+    /**
+     * ═══ WHAT THESE CASES ADD UP TO ═══
+     *
+     * This route returned rows and no total, and nothing else in the kernel or the cloud divided
+     * replies by sends. Every ingredient was already on the case — `touch_count` rises per
+     * `send_message`, `has_reply` is set when somebody answers — so the reply rate was computable
+     * from day one and never computed. A founder could read every stage on the board and still not
+     * know whether the campaign worked.
+     *
+     * Gilbert's tip 5 is a debugging ORDER whose every rung is read off this number. Without it the
+     * first instinct is to rewrite the copy, which is fourth on her list and the most expensive
+     * place to start. See gtm/funnel.ts, including why it refuses to render a percentage on a small
+     * sample.
+     */
+    const funnel = funnelOf(
+      cases.map((k): FunnelCase => {
+        const d = (k.data ?? {}) as Record<string, unknown>;
+        return {
+          stage: k.stage,
+          touch_count: Number(d.touch_count ?? 0),
+          has_reply: d.has_reply === true,
+          opt_out: d.opt_out === true,
+          title: typeof d.title === "string" ? d.title : null,
+          headline: typeof d.headline === "string" ? d.headline : null,
+        };
+      }),
+    );
     return c.json({
       campaign_id: campaign.id,
+      funnel,
       cases: cases.map((k) => {
         const d = (k.data ?? {}) as Record<string, unknown>;
         return {
@@ -652,7 +709,7 @@ export function mountGtm(app: Hono, deps: GtmRouteDeps): void {
       return c.json(
         {
           error: "email enrichment is not configured",
-          detail: `set ${FIRECRAWL_KEY_ENV} to crawl public company pages, or ${FULLENRICH_KEY_ENV} for the paid waterfall. Everything else in GTM runs on the LinkedIn session.`,
+          detail: `set ${crawlKeyEnv()} to crawl public company pages, or ${FULLENRICH_KEY_ENV} for the paid waterfall. Everything else in GTM runs on the LinkedIn session.`,
         },
         501,
       );
@@ -920,6 +977,33 @@ export function mountGtm(app: Hono, deps: GtmRouteDeps): void {
      * is a real success; zero writes from a non-zero set of hits is not.
      */
     const ok = hits.length === 0 || r.written > 0;
-    return c.json({ ok, considered: b.people?.length ?? 0, ...r }, ok ? 200 : 502);
+
+    /**
+     * ═══ AND SAY WHICH OF THEM IS WORTH TODAY ═══
+     *
+     * This answered "I wrote N rows", which is a fact about our database rather than about their
+     * week. `library/workflows/signal-score.mjs` has always been able to answer the real question —
+     * twelve types, a half-life and a death window each, stale signals REFUSED rather than ranked
+     * low — and nothing on this path could reach it, because the detector emits three names and the
+     * catalogue knows twelve OTHER ones. The overlap was empty, so every signal ever detected would
+     * have landed in the scorer's `unknown` bucket, which exists to report a feed nobody configured.
+     *
+     * `signal-bridge.ts` is the translation. An `open_to_work` hit maps to nothing and never reaches
+     * the scorer at all: it is a job loss, not a buying signal, and a deliberate refusal must not
+     * look like a misconfigured feed.
+     *
+     * Fails soft. The ranking is the useful half, the ingest is the durable half, and a scorer that
+     * throws must not lose the rows we just wrote.
+     */
+    let ranked: unknown = undefined;
+    try {
+      const observed = hits
+        .map((h) => observedSignalFor({ signal: h.signal, signal_evidence: h.evidence, signal_at: new Date().toISOString() }))
+        .filter((o): o is NonNullable<typeof o> => o !== null);
+      if (observed.length) ranked = signalScore({ now: new Date().toISOString().slice(0, 10), signals: observed });
+    } catch {
+      // See above: the write already happened and is what matters.
+    }
+    return c.json({ ok, considered: b.people?.length ?? 0, ...r, ...(ranked ? { ranked } : {}) }, ok ? 200 : 502);
   });
 }

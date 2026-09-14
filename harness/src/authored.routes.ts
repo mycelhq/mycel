@@ -360,7 +360,9 @@ export function mountAuthoredRoutes(app: Hono, deps: AuthoredRouteDeps): void {
      * task is the research and reporting `finished` would flip the card back to "we can write one"
      * mid-flight. So a terminal research run with no draft behind it still reads as working.
      */
-    const tasks = await deps.store.listTasks({ limit: 200 });
+    // Scoped in the QUERY — see `/v1/tasks`. Filtering afterwards means a founder's own
+    // service-writing run is invisible whenever other tenants are busier, which is onboarding.
+    const tasks = await deps.store.listTasks({ project_ids: [projectId], limit: 200 });
     const mine = tasks
       .filter((t) => t.project_id === projectId)
       .filter((t) => t.task_type === DRAFT_SERVICE_TASK_TYPE || t.task_type === RESEARCH_SERVICE_TASK_TYPE)

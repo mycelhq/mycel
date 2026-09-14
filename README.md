@@ -7,10 +7,10 @@
 </p>
 
 <p align="center">
-  <img src="design/brand/next-moves.gif" alt="Ranked next moves on Ridgeline Books: chase overdue invoices with the score shown, a human gate above them." width="820">
+  <img src="design/brand/next-moves.gif" alt="Ranked next moves: chase overdue invoices with the score shown, a human gate above them." width="820">
 </p>
 <p align="center"><sub>
-  Ranked next moves on <code>npm run demo:seed</code> (Ridgeline Books). Filmed on Cloud against this kernel.
+  Ranked next moves on <code>npm run demo:seed</code>. Filmed on Cloud against this kernel, on an earlier seed.
   The clone is headless — Cloud is a <code>/v1</code> consumer, not in the repo.
 </sub></p>
 
@@ -23,11 +23,25 @@
 
 ```bash
 git clone https://github.com/mycelhq/mycel && cd mycel
-npm i && npm test          # green. no keys, no Docker, no Postgres.
+npm i && npm run demo      # no keys, no Docker, no Postgres, one terminal
 ```
 
-That is the whole first look. The suite drives the `/v1` contract against a mock agent in-process.
-If it is red, the clone is broken — not your machine.
+Boots a kernel, seeds a real service business into it, and prints **the work it thinks you should
+do next** — ranked, with the arithmetic that put each item where it is:
+
+```
+  1   77.8  chase invoice         Invoice INV-0001                  $2,970.00
+      INV-0001 is 34 days overdue with $2,970.00 outstanding; never chased
+      money +27.8 · deadline +30 · staleness +20
+      ⏸ Not chasing INV-0001: this business has no mailbox connected, so the
+      reminder could be written but never sent and nothing would reach your client.
+```
+
+That order came from the seeded state, not from a model. You can argue with the weights — they are
+in the API. The kernel stays up afterwards, so `GET /v1/moves` returns the same list as JSON.
+
+`npm test` is the other first look: the suite drives the whole `/v1` contract against a mock agent
+in-process. If it is red, the clone is broken — not your machine.
 
 > **Pre-alpha.** The core is real and tested. APIs still move. Watch the repo; don't pin to it yet.
 > [CHANGELOG](./CHANGELOG.md).
@@ -65,7 +79,7 @@ This repository is the kernel. Apache-2.0, self-host it.
 
 | | You write a graph | A chat “employee” | Mycel |
 |---|---|---|---|
-| Loop | LangGraph, Crew, your own | OpenClaw, Kortix, a custom agent | We don't own one. We drive [OpenCode](https://opencode.ai). |
+| Loop | LangGraph, Crew, your own | An off-the-shelf agent, or your own | We don't own one. We drive [OpenCode](https://opencode.ai). |
 | What you get | Nodes and state | A conversation that can use tools | **A firm:** clients, cases, waits, deliverables, invoices, a portal contract |
 | Secrets | Your problem | Often in the box or the prompt | Nonce in the box. Host of every write comes from the connection. |
 | Outward action | DIY | Varies | Structural gate. Policy envelopes can skip-review *inside* a declared cap; widening cannot. |
@@ -77,14 +91,17 @@ If you want the kernel under a service business you actually bill, it is the rig
 ## Try it (no keys)
 
 ```bash
-npm run demo         # kernel on :4000, in-memory, mock runtime
-npm run demo:seed    # another shell — builds "Ridgeline Books"
+npm run demo         # boot + seed + the ranked moves, one terminal
 ```
+
+Iterating on the seed? `npm run demo:kernel` keeps a server up across runs and `npm run demo:seed`
+re-seeds it.
 
 Five clients, invoices in every state, engagements, a wait blocked on a bank statement, ranked
 **moves** derived from that state. There is **no UI in this repository** — Mycel is headless. The
 console at `:3000` is a separate consumer of the same contract, not part of the kernel. The GIF at
-the top, and this invoice, are that consumer on this seed:
+the top, and this invoice, are that consumer — filmed on an earlier seed, so the business and client
+names differ from what `demo:seed` builds today:
 
 <p align="center">
   <img src="design/brand/money-owed.png" alt="Invoice INV-0001 Harborline Ceramics, overdue, $1,450 still to pay." width="820">
@@ -97,9 +114,9 @@ back as the owner, with that project's id. `demo:seed` prints the same command w
 
 ```bash
 LOGIN=$(curl -s localhost:4000/v1/auth/login -H 'content-type: application/json' \
-  -d '{"email":"founder@ridgeline.example","password":"demo-ridgeline"}')
+  -d '{"email":"founder@sightlineresearch.example","password":"demo-sightline"}')
 TOKEN=$(echo "$LOGIN" | jq -r .token)
-PROJECT=$(echo "$LOGIN" | jq -r '.projects[] | select(.name=="Ridgeline Books") | .id')
+PROJECT=$(echo "$LOGIN" | jq -r '.projects[] | select(.name=="Sightline Research") | .id')
 
 curl -s localhost:4000/v1/moves \
   -H "authorization: Bearer $TOKEN" -H "x-mycel-project: $PROJECT" | jq
@@ -124,20 +141,11 @@ Or: `curl -fsSL https://mycelai.dev/init | bash` — same tree, `setup.sh` write
 
 Scaffold a product on the contract with [`npx create-mycel-app`](https://www.npmjs.com/package/create-mycel-app).
 
-### The `[mock]` trap (read this)
+### If every field says `[mock]`
 
-With `MYCEL_RUNTIME=mock`, every task **succeeds** — real schema, real contract — and every string
-field is the literal `[mock]`. That is the fake runtime stamping a placeholder. It is not a broken
-model.
-
-The other first-run failure: defaults are `opencode` + `local` sandbox. No `opencode` binary → the
-task sits on `start_opencode` for 60s, then `opencode failed to start (no log)`. There is no log
-because the process never existed.
-
-Boot prints both. `npm test` and `npm run demo` use mock on purpose.
-
-For a **real** agent: unset `MYCEL_RUNTIME`, install `opencode-ai`, put a provider key in `.env`.
-`setup.sh` walks that.
+That is the fake runtime stamping a placeholder, not a broken model — `npm test` and
+`npm run demo` use it on purpose. Switching to a real agent, and the other first-run trap, are
+in [AGENTS.md](./AGENTS.md).
 
 ---
 
@@ -154,12 +162,13 @@ For a **real** agent: unset `MYCEL_RUNTIME`, install `opencode-ai`, put a provid
 | `gtm-operator` | Outreach behind the same gate. |
 | `recruiting-desk` | Sourcing / screening as cases. |
 | `security-questionnaire` | Vendor security questionnaires. |
+| `content-desk` | Angles, a plan, and the posts — same gate before anything publishes. |
 
 `invoice-chaser`, `books-keeper`, and `contract-desk` ship a **blueprint** (wedge + connections +
 schedules in one `POST`).
 
-**Machinery** (`internal: true`, not products): `business-shaper` (description → service definition),
-`harness-operator` (the kernel on itself), `product-builder` (the founder's app).
+**Machinery** (`internal: true`, not products): `business-shaper` (description → service definition)
+and `product-builder` (the founder's app).
 
 A generated definition **cannot author away its own gate** — no `required: false` on approvals, no
 executable workflow code, no raising harness ceilings. Promotion is a human.
@@ -180,56 +189,15 @@ executable workflow code, no raising harness ceilings. Promotion is a human.
 How to write a wedge: **[docs/WEDGES.md](docs/WEDGES.md)**.
 What the kernel still cannot express: **[docs/ROADMAP.md](docs/ROADMAP.md)**.
 
-## `/v1` (server-to-server)
-
-```
-Auth   Authorization: Bearer <project key | member session>
-       POST /v1/auth/login · GET /v1/me
-Work   POST /v1/tasks · GET :id · GET :id/events (SSE) · POST :id/cancel
-       POST /v1/approvals/:id/{approve,reject}
-Who    clients · threads · cases · deliverables · invoices
-Where  connections · channels · POST /v1/channels/:id/inbound
-Wedge  GET /v1/wedges/:wedge · knowledge
-```
-
-Integration + honest security limits: **[docs/INTEGRATION.md](docs/INTEGRATION.md)**.
-Event reference: **[docs/CONTRACT.md](docs/CONTRACT.md)**.
-
-## Configure (env)
-
-| Var | Default | |
-|---|---|---|
-| `MYCEL_RUNTIME` | `opencode` | `opencode` \| `mock` |
-| `MYCEL_SANDBOX` | `local` | `local` \| `docker` \| `daytona` |
-| `MYCEL_MODEL` | `standard` tier | provider-prefixed; per-task override in input |
-| `MYCEL_API_KEY` | generated | printed on boot |
-| `MYCEL_OWNER_EMAIL` / `_PASSWORD` | generated | owner login |
-| `MYCEL_DATABASE_URL` | — | Postgres; else memory |
-| `MYCEL_PROXY_MODE` | `0` | model calls through the harness (keys never in the sandbox) |
-| `PORT` | `4000` | |
-| `MYCEL_URL` | `http://localhost:4000` | which kernel `npm run demo:seed` targets (loopback only) |
-
-`npm run dev` loads `.env` if present. Real env wins. `setup.sh` writes that file.
-
-## Running with no keys, and the `[mock]` trap
-
-The `[mock]` trap is documented under Try it, above. Defaults without an `opencode` binary hang
-for 60s on `start_opencode`. `npm test` and `npm run demo` use mock on purpose.
-
-## Develop
+## Build it, change it
 
 ```bash
-npm i
-npx tsc --noEmit
-npm test
-MYCEL_TEST_DATABASE_URL=postgres://... npm test   # durability
+npm i && npm test
 ```
 
-A handful of tests `# SKIP` with a reason naming a sibling that lives in the private monorepo and
-is not published here. They skip rather than fail so a stranger's clone is green **honestly**.
-
-Needs: Node 20+, git. Docker / Daytona / Postgres only if you choose those backends. Real runs
-need an `opencode` binary and a provider key.
+Commands, environment, repo layout, the optional outside services and the constraints worth
+knowing before you change anything: **[AGENTS.md](./AGENTS.md)** — the
+[open convention](https://agents.md) for this, so your coding agent finds it on its own.
 
 ## Principles
 
@@ -239,28 +207,6 @@ need an `opencode` binary and a provider key.
 4. **Honest signals.** Validated output, real failures, no fake successes. The `[mock]` stamp exists
    so mock cannot impersonate a model.
 5. **Contract over packages.** No `@mycel/react`. Generate UI against `/v1`.
-
-## Layout
-
-```
-harness/      /v1, orchestrator, sandbox, gate, stores
-wedges/       services as config (see table above)
-skills/       procedures the agent reads mid-run
-library/      what the kernel reads off disk while it runs:
-              blueprints (wedge + connections + schedules), packs (sandboxed
-              deterministic helpers), workflows, service-skills, design-systems,
-              craft, templates
-design/       the brand, and the vendored component library builds start from
-docker/       sandbox image
-docs/         contract, wedges, open-core, roadmap
-scripts/      one-off tooling; nothing here runs in production
-```
-
-`library/` is one directory and one `COPY` on purpose. It was seven of each, and the Dockerfile
-forgot six of them one at a time — every one of those resolvers fails soft, so the container stayed
-healthy while a feature was silently absent. `packs/` was missing for the whole life of the feature:
-production had 4,442 `workflow:*` calls and zero `pack:*`, ever, while four shipped wedges declared
-packs in their manifests.
 
 ## License
 

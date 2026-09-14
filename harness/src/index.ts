@@ -6,7 +6,7 @@ import { closeAuditStore, initAuditStore } from "./audit";
 import { closeAllPools } from "./pool";
 import { closeDomainStore, getDomainStore, initDomainStore } from "./domain";
 import { getIdentityStore, initIdentityStore } from "./identity";
-import { recoverTasks, startDeadRunReaper } from "./recovery";
+import { recoverTasks, startDeadRunReaper, type Recovered } from "./recovery";
 import { TERMINAL_STATUSES } from "./approvals";
 import { startApprovalReconciler } from "./approvals";
 import { closeKnowledgeStore, initKnowledgeStore } from "./knowledge.store";
@@ -33,7 +33,7 @@ import { createStore } from "./store";
 import { flushLogs } from "./tracing";
 import { reapStoppedSandboxes, sandboxPreflight, sandboxReachability } from "./sandbox";
 import { verifySnapshot } from "./sandbox.snapshot";
-import { runtimeAdvisories } from "./preflight";
+import { providerAdvisories, runtimeAdvisories } from "./preflight";
 import { KERNEL_VERSION } from "./version";
 // Side-effect: registers `chase_invoice` claim release BEFORE crash recovery runs. Without this,
 // `recoverTasks` would mark mid-chase kills as failed but leave `last_chased_at` stamped — the
@@ -171,7 +171,7 @@ const identity = getIdentityStore();
  *
  * Nothing between here and there depends on stuck rows being terminal.
  */
-let recovered = 0;
+let recovered: Recovered = { requeued: 0, rejoined: 0, failed: 0, total: 0 };
 const app = createServer(store);
 const cfg = loadConfig();
 const port = Number(process.env.PORT ?? 4000);
@@ -279,7 +279,7 @@ recovered = await recoverTasks(
 // should roll back; a provider's snapshot in a bad state is an outage in something else, and taking
 // our own API down for it converts somebody else's degradation into our own total failure.
 //
-// One preflight, one policy. Suna's `prompt-dedupe.ts` names the general form after being bitten by
+// One preflight, one policy. a comparable runtime's `prompt-dedupe.ts` names the general form after being bitten by
 // it: "Keep this as the ONE list" — two predicates answering one question means adding to one
 // silently opts out of the other.
 const scheduler = startScheduler(store, getDomainStore());
@@ -368,7 +368,7 @@ if (!isApiOnly) {
  * "fine", every task failed at sandbox creation, and the health check stayed green because HTTP was
  * never affected. Nothing in the system was asking.
  *
- * `kortix-ai/suna` names this class in `projects/reaping/parked-runtime-verification.ts` — nothing
+ * a comparable runtime names this class in `projects/reaping/parked-runtime-verification.ts` — nothing
  * re-verified a parked sandbox, so a dead one was advertised as resumable until "a human opened the
  * session 30 hours later", and 16,243 rows had never been re-checked. Their sweep runs both
  * directions; so does `verifySnapshot`.
@@ -403,7 +403,7 @@ if (!isApiOnly && cfg.sandboxBackend === "daytona" && process.env.MYCEL_SNAPSHOT
        *
        * `reapStoppedSandboxes` ran once from the boot preflight, so a leak in the run path had until
        * the next deploy — potentially a week — to accumulate. See the header on that function for
-       * what the same gap cost Suna: every create in the org failing on a disk quota until a human
+       * what the same gap cost a comparable runtime: every create in the org failing on a disk quota until a human
        * archived 1300 boxes by hand.
        *
        * After the snapshot check on purpose. If the snapshot is being rebuilt, the provider is
@@ -432,7 +432,17 @@ console.log(
     // Surfaced rather than silent: "inline" means this process runs every task it receives, which
     // is correct on a laptop and a scaling ceiling in production.
     `queue=${queue.mode}${worker ? "" : " worker=off"}]` +
-    (recovered ? `  recovered ${recovered} interrupted task(s)` : ""),
+    /**
+     * Three outcomes, not one word. This said "recovered N interrupted task(s)", which reads as
+     * "resumed them" and covered three different pieces of news: a queued run put back (nothing
+     * sent, nothing charged), a batch parent rejoined, and a run that actually died. Twelve failed
+     * after a restart is a signal; twelve requeued is nothing at all.
+     */
+    (recovered.total
+      ? `  interrupted: ${recovered.failed} failed` +
+        (recovered.requeued ? `, ${recovered.requeued} requeued` : "") +
+        (recovered.rejoined ? `, ${recovered.rejoined} rejoined` : "")
+      : ""),
 );
 // Say what the first run will actually do, now, instead of sixty seconds into a task that hangs.
 //
@@ -448,6 +458,16 @@ console.log(
 const advisories = runtimeAdvisories(cfg);
 if (advisories.length) {
   console.log(`\n  ⚠  ${advisories[0]}\n${advisories.slice(1).map((l) => (l ? `     ${l}` : "")).join("\n")}\n`);
+}
+/**
+ * The outside-service slots, in the same place and NOT as a warning — see `providerAdvisories`.
+ *
+ * A cold clone measured this: `/v1/gtm/availability` answers the question completely and boot, the
+ * only output a first-time user reads, never mentioned it existed.
+ */
+const slots = providerAdvisories();
+if (slots.length) {
+  console.log(`\n  ${slots[0]}\n${slots.slice(1).map((l) => (l ? `  ${l}` : "")).join("\n")}`);
 }
 if (API_KEY_GENERATED) {
   console.log(

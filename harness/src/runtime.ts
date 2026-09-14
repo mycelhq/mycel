@@ -2703,7 +2703,7 @@ const MAX_PROVIDER_RETRY_STREAK = 20;
          * must not be allowed to kill the run — but it is also not WORK, and it arrives on a cadence.
          * Counting it as ordinary activity resets STALL_MS every time, so a provider that is hard
          * down and retried every few seconds would hold a sandbox open until `max_runtime_s` with
-         * nothing to show for it. That is the shape of the bug `kortix-ai/suna` fixed one hop
+         * nothing to show for it. That is the shape of the bug a comparable runtime fixed one hop
          * downstream in their stream reader: a frame proving the daemon is alive was counted as
          * proof the RUNTIME was doing something, and at a 20s cadence it "suppressed a genuinely
          * dead opencode's probe failures roughly three quarters of the time."
@@ -2801,7 +2801,7 @@ const MAX_PROVIDER_RETRY_STREAK = 20;
            * ═══ AN IDLE AFTER A STEER IS A BOUNDARY, NOT THE END ═══
            *
            * OpenCode persists a prompt posted during a live turn and queues its execution BEHIND
-           * that turn — Suna's `session-lifecycle/store.ts`: "between the POST and the turn there is
+           * that turn — a comparable runtime's `session-lifecycle/store.ts`: "between the POST and the turn there is
            * a real interval in which the message exists, belongs to the transcript, and has not run."
            *
            * This branch used to abort and break unconditionally. So every mid-turn steer went:
@@ -2825,7 +2825,7 @@ const MAX_PROVIDER_RETRY_STREAK = 20;
             /**
              * AND A BOUND ON WAITING FOR IT, because a 204 proves nothing.
              *
-             * Suna verified directly against the daemon that `POST /session/:id/prompt_async`
+             * a comparable runtime verified directly against the daemon that `POST /session/:id/prompt_async`
              * "answers 204 for an agent it cannot run", and their delivery loop read that as success
              * while "the user's text is gone with no queue row, no transcript bubble, no error, and
              * nothing to retry" (measured, session 65216cc6, 2026-08-26).

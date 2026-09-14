@@ -258,7 +258,7 @@ export async function ensureUpkeep(
       wanted: facts.raises_invoices,
       blocked: payments.ok
         ? undefined
-        : `${payments.detail} Until then nothing here can tell an invoice that was paid from one that was not, so payments you record by hand are the only ones this business knows about.`,
+        : `${sentence(payments.detail)} Until then nothing here can tell an invoice that was paid from one that was not, so payments you record by hand are the only ones this business knows about.`,
     },
     () => ensurePaymentSyncSchedule(domain, projectId, PAYMENTS_WEDGE, now),
   );
@@ -398,11 +398,44 @@ export async function ensureUpkeep(
  * wanted-and-blocked sweep is logged with its sentence, once, at the moment the business first does
  * the thing that needed it. `GET /v1/upkeep` serves the same report on demand.
  */
+/**
+ * A clause from somewhere else, terminated so the next sentence can follow it.
+ *
+ * `payments.detail` is written as a fragment — it is used mid-sentence elsewhere — and this joined
+ * it to "Until then …" with a bare space, producing "would not show up Until then". Small, and it
+ * is in the first paragraph a founder reads about why their invoices are not being checked.
+ */
+function sentence(clause: string | undefined): string {
+  const t = (clause ?? "").trim();
+  return !t || /[.!?]$/.test(t) ? t : `${t}.`;
+}
+
+/**
+ * ONCE PER SENTENCE, NOT ONCE PER CALL.
+ *
+ * The comment above says these are logged "once, at the moment the business first does the thing
+ * that needed it", and that was never what the code did — it warned on every invocation, and the
+ * caller invokes it per invoice and per ask. Seeding the demo business printed the SAME sentence
+ * about payment providers eight times, which is how a real warning gets trained into wallpaper.
+ *
+ * Keyed on project + title rather than on the whole sentence: the blocked reason may be reworded
+ * between releases, and "the same problem, said differently" is still the same problem.
+ */
+const warned = new Set<string>();
+
+/** Test seam — a module-level Set otherwise leaks one test's warnings into the next. */
+export function _resetUpkeepWarnings(): void {
+  warned.clear();
+}
+
 export async function ensureUpkeepQuietly(domain: DomainStore, projectId: string, now: Date = new Date()): Promise<void> {
   try {
     const report = await ensureUpkeep(domain, projectId, now);
     for (const s of report.sweeps) {
       if (s.wanted && !s.running) {
+        const key = `${projectId}:${s.title}`;
+        if (warned.has(key)) continue;
+        warned.add(key);
         console.warn(`[mycel] upkeep: project ${projectId} will not "${s.title}" — ${s.blocked}`);
       }
     }

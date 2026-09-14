@@ -7,7 +7,7 @@
 // declared itself finished, which costs a whole round trip and the context that would have made
 // the fix cheap.
 //
-// Suna's `presentations` skill does the opposite and it is the thing worth taking from it: alongside
+// a comparable runtime's `presentations` skill does the opposite and it is the thing worth taking from it: alongside
 // `create_slide` and `export_pdf` it ships `validate_slide`, a Playwright check the agent runs on
 // its own output before it says done. The agent is not trusted to eyeball its work; it is handed
 // the same instrument the reviewer will use.

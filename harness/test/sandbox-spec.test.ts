@@ -123,7 +123,7 @@ test("the snapshot name is derived from the spec, so a fix cannot collide with a
 // Both were true. Only the first ever ran, so the second was unreachable in exactly the case it was
 // written for, and a provider-side snapshot state took the whole API down.
 //
-// Suna names the general form in `prompt-dedupe.ts` after being bitten by it: "Keep this as the ONE
+// a comparable runtime names the general form in `prompt-dedupe.ts` after being bitten by it: "Keep this as the ONE
 // list" — two predicates answering one question means adding to one silently opts out of the other.
 
 test("the boot path asks the sandbox question once, and answers it one way", () => {

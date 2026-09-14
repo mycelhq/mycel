@@ -13,11 +13,11 @@
 // ordinary first minute of its life as a server failure, in a document format for machines.
 //
 // ═════════════════════════════════════════════════════════════════════════════════════════════════
-// THE THREE RULES, TAKEN FROM SUNA
+// THE THREE RULES A PREVIEW PROXY HAS TO HOLD
 // ═════════════════════════════════════════════════════════════════════════════════════════════════
 //
-// `kortix-ai/suna` runs the same kind of proxy in front of the same kind of sandbox, and
-// `sandbox-proxy/preview-state-page.ts` states the reasoning we were missing:
+// Any proxy sitting in front of a sandbox meets the same three, and we were missing the reasoning
+// for all of them:
 //
 //  1. EVERY STATE NEEDS A PAGE. "A preview address is a real website address: people paste it,
 //     bookmark it, open it in a fresh tab, and send it to each other. Every state it can be in

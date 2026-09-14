@@ -44,8 +44,13 @@ const waiters = new Map<string, Waiter>();
  *
  * Env-overridable so an operator can shorten it without a deploy if the fleet ever does fill —
  * which is the failure this length trades for, and `warnIfFleetFilling` is how anyone finds out.
+ *
+ * DECLARED IN `store.ts`, because the stores stamp `expires_at` with it and had each invented their
+ * own number — five minutes and thirty — for the deadline this one names. Re-exported so the window
+ * still has a single name at every call site.
  */
-export const APPROVAL_TTL_MS = Number(process.env.MYCEL_APPROVAL_TTL_MS ?? 24 * 60 * 60 * 1000);
+import { APPROVAL_TTL_MS } from "./store";
+export { APPROVAL_TTL_MS };
 
 /**
  * How many worker slots may sit blocked on a human before we say something.
@@ -288,12 +293,24 @@ export async function awaitApproval(
     requireHuman?: boolean;
   },
 ): Promise<{ approvalId: string; decision: ApprovalDecision; edited?: Record<string, unknown> }> {
+  /*
+    ═══ THE ROW AND THE TIMER HAD TWO DIFFERENT DEADLINES, 48x APART ═══
+
+    The stores defaulted `expires_at` to thirty minutes (Postgres) and five (memory); the
+    `setTimeout` below expires the approval at `APPROVAL_TTL_MS`, twenty-four hours. So every
+    approval row in production claimed, in writing, a deadline the system does not honour and never
+    did — and anything that READS the row is wrong by two orders of magnitude in the direction that
+    throws a founder's work away.
+
+    One bound, passed explicitly. `req.ttlMs` still wins where a caller sets one, which is the only
+    case the old default was ever right for.
+  */
   const approval = await store.createApproval({
     task_id: taskId,
     action: req.action,
     risk: req.risk,
     preview: req.preview,
-    ttlMs: req.ttlMs,
+    ttlMs: req.ttlMs ?? APPROVAL_TTL_MS,
   });
 
   // POLICY FIRST: if the wedge declares an envelope this action fits inside, resolve it without a
@@ -497,7 +514,7 @@ export async function awaitApproval(
   /**
    * IS THE TASK STILL ALIVE? Read this BEFORE anything acts on the decision, not after.
    *
-   * `kortix-ai/suna`'s `projects/lib/pending-questions.ts` states the rule for the render side:
+   * a comparable runtime's `projects/lib/pending-questions.ts` states the rule for the render side:
    * a stale ask "is worse than none: it invites an answer nothing is waiting for". The same rule
    * has a sharper edge on the WRITE side, and we were on the wrong side of it.
    *

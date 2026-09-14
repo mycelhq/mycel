@@ -54,6 +54,19 @@ export interface SequenceStep {
   only_if?: string;
   /** Cadence floor: don't run this step until this many days after the previous touch. */
   wait_days?: number;
+  /**
+   * THE LAST MESSAGE. It says we are going to stop writing, and asks for a no.
+   *
+   * The highest-replying message in cold outbound and the one this engine could not send. The
+   * cold-email skill documents it, cites the published 10-15% response rate and says "if you send
+   * one, honor it" — and there was no way to mark a step as the end, so the copy for it was never
+   * written and the cadence simply went quiet.
+   *
+   * Honouring it is enforced, not trusted: `validateSteps` refuses a campaign where anything runs
+   * after the breakup's destination. A message promising silence followed by another message is
+   * worse than never sending one.
+   */
+  breakup?: boolean;
 }
 
 /**
@@ -201,6 +214,28 @@ export class CampaignError extends Error {}
 /** Validate a sequence before a human is asked to approve it. Throws with a readable reason. */
 export function validateSteps(steps: SequenceStep[]): void {
   if (!steps.length) throw new CampaignError("a campaign needs at least one step");
+
+  /**
+   * ONE BREAKUP, AND NOTHING AFTER IT.
+   *
+   * The promise a breakup makes — "you will not hear from me again" — is the entire reason it is
+   * answered more often than anything before it. A cadence that sends one and then writes again has
+   * not sent a weak breakup, it has lied, to the one person who was paying enough attention to
+   * notice. So it is a structural rule rather than a note for whoever composes the campaign.
+   */
+  const breakups = steps.filter((s) => s.breakup);
+  if (breakups.length > 1) {
+    throw new CampaignError(`a campaign has at most one breakup; found ${breakups.length}`);
+  }
+  const end = breakups[0];
+  if (end) {
+    const after = steps.find((s) => STAGES.indexOf(s.from) >= STAGES.indexOf(end.advance_to));
+    if (after) {
+      throw new CampaignError(
+        `the breakup promises nothing follows, but "${after.action}" still acts on "${after.from}"`,
+      );
+    }
+  }
   const seen = new Set<string>();
   for (const s of steps) {
     if (!STAGES.includes(s.from)) throw new CampaignError(`unknown stage "${s.from}"`);

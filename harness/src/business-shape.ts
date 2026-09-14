@@ -72,7 +72,9 @@ export async function readBusinessShape(store: Store, projectId: string): Promis
   try {
     const shaper = wedgeForRole("business_shaping");
     if (!shaper) return {};
-    const tasks = (await store.listTasks({ wedge: shaper, limit: 200 }))
+    // Scoped in the QUERY — see `/v1/tasks`. This finds the founder's OWN `draft_shape` run, so a
+    // busy neighbour filling the window means a new signup cannot find the run it is waiting on.
+    const tasks = (await store.listTasks({ wedge: shaper, project_ids: [projectId], limit: 200 }))
       .filter((t) => t.project_id === projectId && t.task_type === "draft_shape" && t.status === "succeeded")
       .sort((a, b) => b.created_at.localeCompare(a.created_at));
     if (!tasks.length) return {};

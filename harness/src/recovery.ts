@@ -1,7 +1,16 @@
-// Crash recovery. On boot, any non-terminal task in a durable store was interrupted mid-run —
-// its sandbox and OpenCode session are gone, so it can't be resumed in place. Mark it failed so
-// nothing is stuck forever and any reconnecting SSE stream closes cleanly. In-memory persists
-// nothing across restarts, so this is a no-op there.
+// Crash recovery. On boot, any non-terminal task in a durable store was interrupted — nothing is
+// driving it, so it must be made terminal or made runnable again before the SSE stream can close.
+//
+// THREE OUTCOMES, AND THEY ARE NOT THE SAME NEWS. This comment used to say "mark it failed", which
+// was true when it was written and has not been for a while:
+//
+//   · `queued`, never started       → REQUEUED. Nothing was sent and nothing was charged.
+//   · `awaiting_batch`, rejoinable  → REJOINED. The fanned-out work is collected, not thrown away.
+//   · anything mid-run              → FAILED, with the reason on the row, and its sandbox reaped.
+//
+// Only the third is a loss, and collapsing all three into one number told an operator that twelve
+// runs died when twelve runs had simply gone back in the queue. `recoverTasks` returns the
+// breakdown for that reason. In-memory persists nothing across restarts, so this is a no-op there.
 import { markCancelled } from "./cancel";
 import { emitEvent } from "./events";
 import { releaseClaimFor } from "./promises";
@@ -178,13 +187,87 @@ async function reapSandboxFor(store: Store, taskId: string): Promise<void> {
  * Injected rather than imported for the reason `onChildFinished` gives about `resume`: it keeps the
  * batch store out of this module, and lets a test exercise recovery without one.
  */
+/** What a recovery pass actually did. `total` is every task it touched. */
+export interface Recovered {
+  /** Went back in the queue: they had not started, so nothing was sent and nothing was charged. */
+  requeued: number;
+  /** Batch parents whose fanned-out work was collected rather than discarded. */
+  rejoined: number;
+  /** Died mid-run. The only one of the three that is a loss. */
+  failed: number;
+  total: number;
+}
+
+/**
+ * ═════════════════════════════════════════════════════════════════════════════════════════════════
+ * A RUN WAITING ON A PERSON IS NOT A DEAD RUN, AND WE WERE KILLING IT AFTER TEN MINUTES
+ * ═════════════════════════════════════════════════════════════════════════════════════════════════
+ *
+ * `listUnfinished()` means "non-terminal and untouched for ten minutes", and `awaiting_approval` is
+ * non-terminal. A founder who raises a draft at 12:40 and comes back from lunch at 13:20 has a run
+ * that was silent for forty minutes for the best possible reason: it is doing exactly what the
+ * product promises and waiting for them.
+ *
+ * MEASURED ON THE DEMO TENANT, 14 September. Fifteen approvals seeded as `pending`, every one of
+ * them now `expired`, every owning task `failed` with "This run went silent while awaiting_approval
+ * — nothing has driven it for over ten minutes", all fifteen closed in the same second. The
+ * showroom — the tenant the landing page embeds — shows "Nothing to approve" under the heading for
+ * the one promise this product is sold on, and it empties itself again within ten minutes of any
+ * reseed. In production the same pair reached fourteen approvals that had waited between three and
+ * eleven days.
+ *
+ * The pair is what does it: the reaper fails the task, then `reconcileOrphanedApprovals` sees a
+ * pending approval on a terminal task and expires the row. `vigil.ts` already judges this case
+ * correctly — `awaiting_approval` WITH an open approval row is "patient", and only without one is
+ * it the lost wakeup — and the reaper was not asking.
+ *
+ * ═══ WHY ONLY ON THE SWEEP ═══
+ *
+ * At BOOT the opposite is true and the old behaviour is right: the waiter and its timer live in the
+ * process's memory (`waiters`, `byTask`, the TTL `setTimeout`), so a restart leaves nobody to
+ * resume the run whatever the row says. Approving it then would be a click that does nothing, which
+ * is worse than a red row that says re-run it.
+ *
+ * On the two-minute sweep the run is usually alive in a worker the API cannot see, patiently
+ * suspended, with `orchestrator.ts` crediting the suspended time back against its deadline. Its
+ * bound is the approval's own TTL — which is what `expires_at` is for and what this honours.
+ *
+ * A store that cannot answer returns everything, so a blip can only ever make this sweep behave as
+ * it did before rather than skip a genuinely dead run for ever.
+ */
+async function withoutPatientGates(store: Store, tasks: Task[]): Promise<Task[]> {
+  const gated = tasks.filter((t) => t.status === "awaiting_approval");
+  if (!gated.length) return tasks;
+  let pending: { task_id: string; expires_at?: string | null }[];
+  try {
+    pending = await store.listApprovals("pending");
+  } catch (e) {
+    console.error("[mycel] could not read pending approvals; sweeping as before:", e);
+    return tasks;
+  }
+  const now = Date.now();
+  const patient = new Set(
+    pending
+      // An approval past its own expiry is not holding anything: the TTL is the bound, and a row
+      // whose bound has passed is exactly the case the sweep should still close.
+      .filter((a) => {
+        const until = a.expires_at ? Date.parse(a.expires_at) : NaN;
+        return Number.isNaN(until) || until > now;
+      })
+      .map((a) => a.task_id),
+  );
+  return tasks.filter((t) => !(t.status === "awaiting_approval" && patient.has(t.id)));
+}
+
 export async function recoverTasks(
   store: Store,
   requeue?: (taskId: string) => Promise<void>,
   rejoin?: (parent: Task) => Promise<boolean>,
   cause: RecoveryCause = "restart",
-): Promise<number> {
-  const stuck = await store.listUnfinished();
+): Promise<Recovered> {
+  const counts = { requeued: 0, rejoined: 0, failed: 0 };
+  const all = await store.listUnfinished();
+  const stuck = cause === "sweep" ? await withoutPatientGates(store, all) : all;
   for (const t of stuck) {
     if (rejoin && t.status === "awaiting_batch") {
       try {
@@ -197,6 +280,7 @@ export async function recoverTasks(
               "It had already handed that work off, so nothing was re-sent and nothing was re-charged — " +
               "the results were collected instead of being thrown away.",
           });
+          counts.rejoined += 1;
           continue;
         }
       } catch (e) {
@@ -223,6 +307,7 @@ export async function recoverTasks(
               ? "Requeued after a kernel restart. This run had not started — nothing was sent and nothing was charged — so it went back in the queue rather than being dropped."
               : "Requeued after sitting in the queue with nothing taking it. This run had not started — nothing was sent and nothing was charged.",
         });
+        counts.requeued += 1;
         continue;
       } catch (e) {
         // Fall through to the failed path. A requeue that cannot happen must not leave the row
@@ -266,8 +351,10 @@ export async function recoverTasks(
     const returned = await releaseClaimFor(t);
     if (returned) await emitEvent(store, t.id, "progress", { note: returned });
     await emitEvent(store, t.id, "task.finished", { status: "failed", error: reason });
+    counts.failed += 1;
   }
-  return stuck.length;
+  // `total` is derived, never counted separately — a second counter is a second thing to get wrong.
+  return { ...counts, total: stuck.length };
 }
 
 /**
@@ -313,13 +400,21 @@ export function startDeadRunReaper(
       // `rejoin` is deliberately NOT passed. Rejoining a fanned-out batch parent needs the live
       // in-process batch registry, which only the booting kernel has; from a timer there is nothing
       // to rejoin to, and offering a rejoin that always fails would just log noise every two minutes.
-      const n = await recoverTasks(store, requeue, undefined, "sweep");
-      if (n > 0) {
+      const got = await recoverTasks(store, requeue, undefined, "sweep");
+      if (got.total > 0) {
         // LOUD, for the same reason the starvation sweep is: this is our fault, not the founder's,
         // and a sweep that quietly repairs the symptom hides whatever is killing runs.
-        console.error(`[mycel] DEAD RUNS: closed ${n} run(s) that had been silent for over ten minutes.`);
+        //
+        // Broken out, because only `failed` is a dead run. A queued row that nothing picked up in
+        // ten minutes is a capacity story and goes back in the queue — reporting the two as one
+        // number is what made a busy afternoon read like an outage.
+        console.error(
+          `[mycel] DEAD RUNS: ${got.failed} run(s) silent for over ten minutes were closed` +
+            (got.requeued ? `; ${got.requeued} that had never started went back in the queue` : "") +
+            ".",
+        );
       }
-      return n;
+      return got.total;
     } catch (e) {
       // Never throws. A store blip must not take down the interval that is the only thing watching.
       console.error("[mycel] dead-run sweep failed:", e);

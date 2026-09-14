@@ -38,11 +38,47 @@
 // that code is in production against this API, and re-deriving a shape somebody has already proven
 // is how `XERO_GET_INVOICES` got into the capability table.
 
+import { resolveProvider } from "./providers";
+
 /** Serper's organic block. Only the fields we read — the payload carries a great deal more. */
 interface SerperOrganic {
   title?: string;
   link?: string;
   snippet?: string;
+}
+
+/**
+ * One provider's answer, in the one shape the rest of this file reads.
+ *
+ * Brave nests under `web.results` and calls the fields `url` and `description`; Tavily returns a
+ * flat `results` with `url` and `content`; Serper returns a flat `organic` with `link` and
+ * `snippet`. Normalising here rather than at the twenty call sites below is what keeps adding a
+ * provider to a single function.
+ */
+export function parseOrganic(provider: string, text: string): SerperOrganic[] {
+  try {
+    const j = JSON.parse(text) as Record<string, unknown>;
+    if (provider === "brave") {
+      const results = ((j.web as { results?: unknown[] } | undefined)?.results ?? []) as Array<Record<string, unknown>>;
+      return results.map((r) => ({
+        title: typeof r.title === "string" ? r.title : undefined,
+        link: typeof r.url === "string" ? r.url : undefined,
+        snippet: typeof r.description === "string" ? r.description : undefined,
+      }));
+    }
+    if (provider === "tavily") {
+      const results = (j.results ?? []) as Array<Record<string, unknown>>;
+      return results.map((r) => ({
+        title: typeof r.title === "string" ? r.title : undefined,
+        link: typeof r.url === "string" ? r.url : undefined,
+        snippet: typeof r.content === "string" ? r.content : undefined,
+      }));
+    }
+    return (j.organic as SerperOrganic[] | undefined) ?? [];
+  } catch {
+    // A body that is not JSON is not a result set. The caller already counts and reports failures.
+    return [];
+  }
 }
 
 /** A business found by sweeping the index. Not yet a person, and often never one. */
@@ -151,7 +187,8 @@ export function isFreeTierPatternRefusal(status: number, body: string): boolean 
 }
 
 export function serperConfigured(env: NodeJS.ProcessEnv = process.env): boolean {
-  return !!(env.SERPER_API_KEY ?? "").trim();
+  // Named for Serper by history; it answers "is web search configured at all", whichever provider.
+  return resolveProvider("search", env as Record<string, string | undefined>).chosen !== null;
 }
 
 export interface CheapDiscoverInput {
@@ -183,7 +220,16 @@ export interface CheapDiscoverResult {
  * and found nobody" and "we could not search".
  */
 export async function cheapDiscover(input: CheapDiscoverInput): Promise<CheapDiscoverResult> {
-  const key = (input.apiKey ?? process.env.SERPER_API_KEY ?? "").trim();
+  /**
+   * WHICHEVER SEARCH KEY IS SET. See ./providers.ts.
+   *
+   * This read `SERPER_API_KEY` directly, which made our own cost-optimised pick the only way a
+   * stranger could run discovery at all. `input.apiKey` still wins so callers and tests can pass one
+   * explicitly, and it is treated as Serper because that is what every existing caller meant.
+   */
+  const picked = input.apiKey ? null : resolveProvider("search");
+  const key = (input.apiKey ?? (picked?.chosen ? process.env[picked.chosen.env] : "") ?? "").trim();
+  const provider = input.apiKey ? "serper" : (picked?.chosen?.id ?? "");
   if (!key) {
     return { ok: false, businesses: [], queries: 0, detail: "no search key is configured, so nothing was searched" };
   }
@@ -203,8 +249,15 @@ export async function cheapDiscover(input: CheapDiscoverInput): Promise<CheapDis
   const businesses: FoundBusiness[] = [];
   let queries = 0;
   const failures: string[] = [];
-  /** True once any dork had to be re-run stripped of its operators. Reported, never hidden. */
-  let degraded = false;
+  /**
+   * Why the sweep was broader than the audience asked for, if it was. Reported, never hidden.
+   *
+   * Two different causes, and they need different sentences. A plan refusal is something the
+   * founder can fix by upgrading; a semantic provider is a property of the vendor they chose. Told
+   * "your plan does not accept exclusions" when they are on Tavily, they would go looking for a
+   * billing page that would not have changed anything.
+   */
+  let degradedWhy: "plan" | "semantic" | null = null;
 
   for (const q of dorks) {
     if (businesses.length >= limit) break;
@@ -212,15 +265,45 @@ export async function cheapDiscover(input: CheapDiscoverInput): Promise<CheapDis
     let organic: SerperOrganic[] = [];
     try {
       const ask = async (query: string) => {
-        const r = await doFetch("https://google.serper.dev/search", {
-          method: "POST",
-          headers: { "X-API-KEY": key, "Content-Type": "application/json" },
-          body: JSON.stringify({ q: query, num: 20 }),
-        });
+        // Two shapes, one normalised result. Brave is a GET with a token header; Serper is a POST
+        // with a JSON body. Everything downstream — the operator-stripping retry, the directory
+        // filter, the dedupe — is provider-agnostic and stays untouched.
+        const r =
+          provider === "brave"
+            ? await doFetch(
+                `https://api.search.brave.com/res/v1/web/search?q=${encodeURIComponent(query)}&count=20`,
+                { headers: { "X-Subscription-Token": key, Accept: "application/json" } },
+              )
+            : provider === "tavily"
+              ? await doFetch("https://api.tavily.com/search", {
+                  method: "POST",
+                  headers: { authorization: `Bearer ${key}`, "Content-Type": "application/json" },
+                  body: JSON.stringify({ query, max_results: 20, search_depth: "basic" }),
+                })
+              : await doFetch("https://google.serper.dev/search", {
+                  method: "POST",
+                  headers: { "X-API-KEY": key, "Content-Type": "application/json" },
+                  body: JSON.stringify({ q: query, num: 20 }),
+                });
         return { ok: r.ok, status: r.status, text: await r.text() };
       };
 
-      let res = await ask(q);
+      /**
+       * TAVILY DOES NOT SPEAK DORK, AND WOULD NOT HAVE SAID SO.
+       *
+       * Serper and Brave read Google syntax: `site:`, quoted phrases, `-jobs` all narrow the result
+       * set. Tavily is a semantic search API — it takes the query as meaning, so an operator is not
+       * refused, it is absorbed as ordinary words. `"bakery" Bristol -jobs -careers` becomes a
+       * request for pages about bakeries in Bristol AND about jobs and careers: the exact opposite
+       * of what the dork asked for, returned at 200 with a full result set and nothing to warn on.
+       *
+       * So the operators come off BEFORE the request rather than after a refusal, and `degraded` is
+       * set for the same reason the retry path sets it — the founder is getting a broader sweep than
+       * the audience described, and this codebase's rule is that a widened search says so.
+       */
+      const askable = provider === "tavily" ? withoutOperators(q) : q;
+      if (askable !== q) degradedWhy = "semantic";
+      let res = await ask(askable);
 
       /**
        * The plan refuses our syntax, not our request. Search again without it rather than returning
@@ -228,9 +311,9 @@ export async function cheapDiscover(input: CheapDiscoverInput): Promise<CheapDis
        * vendor bills for it and `queries` is what this cost.
        */
       if (!res.ok && isFreeTierPatternRefusal(res.status, res.text)) {
-        const plain = withoutOperators(q);
-        if (plain && plain !== q) {
-          degraded = true;
+        const plain = withoutOperators(askable);
+        if (plain && plain !== askable) {
+          degradedWhy = "plan";
           queries += 1;
           res = await ask(plain);
         }
@@ -249,7 +332,7 @@ export async function cheapDiscover(input: CheapDiscoverInput): Promise<CheapDis
         failures.push(why);
         continue;
       }
-      organic = (JSON.parse(res.text) as { organic?: SerperOrganic[] }).organic ?? [];
+      organic = parseOrganic(provider, res.text);
     } catch (e) {
       failures.push(String((e as Error)?.message ?? e));
       continue;
@@ -267,6 +350,19 @@ export async function cheapDiscover(input: CheapDiscoverInput): Promise<CheapDis
     }
   }
 
+  /**
+   * A broadened search that FOUND people is still a success, and the founder still has to be told:
+   * a name from a widened sweep is a weaker match than the same name from an exact one. Saying so
+   * is what makes the next question ("why is this plumber in my law-firm list?") answerable without
+   * reading the code — and it is said on the EMPTY result too, where it explains the most.
+   */
+  const degradedNote =
+    degradedWhy === "plan"
+      ? "the search plan does not accept quoted phrases or exclusions, so the audience was searched as plain keywords — these matches are broader than the audience describes"
+      : degradedWhy === "semantic"
+        ? "this provider searches by meaning rather than by operators, so the audience was sent as plain keywords without the exclusions — these matches are broader than the audience describes"
+        : null;
+
   if (!businesses.length) {
     return {
       ok: failures.length === 0,
@@ -274,19 +370,14 @@ export async function cheapDiscover(input: CheapDiscoverInput): Promise<CheapDis
       queries,
       detail: failures.length
         ? `the search could not run: ${failures[0]}`
-        : `searched ${queries} ${queries === 1 ? "query" : "queries"} and found no businesses that were not directories`,
+        : [
+            `searched ${queries} ${queries === 1 ? "query" : "queries"} and found no businesses that were not directories`,
+            ...(degradedNote ? [degradedNote] : []),
+          ].join("; "),
     };
   }
-  /**
-   * A degraded search that FOUND people is still a success, and the founder still has to be told —
-   * the results are broader than the audience asked for, so a name in this list is a weaker match
-   * than the same name from an un-degraded run. Saying so is what makes the next question ("why is
-   * this plumber in my law-firm list?") answerable without reading the code.
-   */
   const notes = [
-    ...(degraded
-      ? ["the search plan does not accept quoted phrases or exclusions, so the audience was searched as plain keywords — these matches are broader than the audience describes"]
-      : []),
+    ...(degradedNote ? [degradedNote] : []),
     ...(failures.length ? [`${failures.length} of ${queries} queries failed: ${failures[0]}`] : []),
   ];
   return { ok: true, businesses, queries, ...(notes.length ? { detail: notes.join("; ") } : {}) };

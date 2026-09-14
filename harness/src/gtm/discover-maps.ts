@@ -5,6 +5,8 @@
 // named is there. Harvest (tiles, the 40-credit budget, promote) stays in growth. Do not copy it.
 
 import { geocodeAddress, searchPoi, type AzurePoi } from "@mycel/sourcing/azure-maps";
+import { searchPlacesText } from "@mycel/sourcing/google-places";
+import { resolveProvider } from "./providers";
 import { ownDomain } from "@mycel/sourcing/identity";
 import type { DomainStore } from "../domain";
 import { COMPANY_COLLECTION, PEOPLE_COLLECTION } from "../linkedin/graph";
@@ -20,7 +22,8 @@ export interface MapsShop {
 }
 
 export function mapsConfigured(env: NodeJS.ProcessEnv = process.env): boolean {
-  return !!(env.AZURE_MAPS_KEY ?? "").trim();
+  // "Is a map configured at all", whichever provider — not "is Azure configured".
+  return resolveProvider("places", env as Record<string, string | undefined>).chosen !== null;
 }
 
 /** Digits we will key a shop on when there is no own-domain. Not a dial string. */
@@ -62,7 +65,16 @@ function poiQueries(input: MapsDiscoverInput): string[] {
  * so this uses `/search/poi` with a query. One point, 30km — not a country-wide tile walk.
  */
 export async function mapsDiscover(input: MapsDiscoverInput): Promise<MapsDiscoverResult> {
-  const key = (input.apiKey ?? process.env.AZURE_MAPS_KEY ?? "").trim();
+  /**
+   * WHICHEVER MAPS KEY IS SET. See ./providers.ts.
+   *
+   * This read `AZURE_MAPS_KEY` directly, so the map half of discovery was reachable only by
+   * somebody who had already chosen the vendor we chose for cost. `input.apiKey` still wins and is
+   * treated as Azure, because that is what every existing caller means by it.
+   */
+  const picked = input.apiKey ? null : resolveProvider("places");
+  const key = (input.apiKey ?? (picked?.chosen ? process.env[picked.chosen.env] : "") ?? "").trim();
+  const provider = input.apiKey ? "azure" : (picked?.chosen?.id ?? "");
   if (!key) {
     return { ok: false, pois: [], queries: 0, detail: "no maps key is configured, so nothing was searched" };
   }
@@ -82,21 +94,28 @@ export async function mapsDiscover(input: MapsDiscoverInput): Promise<MapsDiscov
 
   const doFetch = input.fetchImpl ?? fetch;
   let queries = 0;
-  let pin: { lat: number; lon: number };
-  try {
-    queries += 1;
-    const geo = await geocodeAddress(where, key, doFetch);
-    if (!geo) {
-      return { ok: false, pois: [], queries, detail: `the map could not place "${where}"` };
+  /**
+   * GOOGLE IS ONE HOP. Text Search takes "bakery in Bristol" and needs no pin, so there is no
+   * geocode call and no second failure mode where the map cannot place the town. It also halves the
+   * request count, which is the unit both vendors bill.
+   */
+  let pin: { lat: number; lon: number } = { lat: 0, lon: 0 };
+  if (provider !== "google") {
+    try {
+      queries += 1;
+      const geo = await geocodeAddress(where, key, doFetch);
+      if (!geo) {
+        return { ok: false, pois: [], queries, detail: `the map could not place "${where}"` };
+      }
+      pin = geo;
+    } catch (e) {
+      return {
+        ok: false,
+        pois: [],
+        queries,
+        detail: `the map could not geocode: ${String((e as Error)?.message ?? e)}`,
+      };
     }
-    pin = geo;
-  } catch (e) {
-    return {
-      ok: false,
-      pois: [],
-      queries,
-      detail: `the map could not geocode: ${String((e as Error)?.message ?? e)}`,
-    };
   }
 
   const limit = Math.max(1, Math.min(input.limit ?? 25, 100));
@@ -108,7 +127,22 @@ export async function mapsDiscover(input: MapsDiscoverInput): Promise<MapsDiscov
     if (pois.length >= limit) break;
     queries += 1;
     try {
-      const page = await searchPoi({ query: term, lat: pin.lat, lon: pin.lon, limit }, key, doFetch);
+      // Two providers, one POI shape. Everything below — the domain read, the phone, the dedupe —
+      // is provider-agnostic and cannot tell them apart.
+      const page =
+        provider === "google"
+          ? await searchPlacesText({ query: `${term} in ${where}`, limit }, key, doFetch)
+          : await searchPoi({ query: term, lat: pin.lat, lon: pin.lon, limit }, key, doFetch);
+      /**
+       * A REFUSAL IS NOT AN EMPTY MARKET.
+       *
+       * The Azure helper THROWS on a bad response and the catch below records it. The Google helper
+       * returns `{ results: [], detail }` instead, so without this a 403 for a key with the Places
+       * API switched off arrived as "found nobody" — the one confusion this whole file is written
+       * to prevent, and the one a founder reads once before they stop running discovery.
+       */
+      const refusal = (page as { detail?: string }).detail;
+      if (refusal && page.results.length === 0) failures.push(refusal);
       for (const p of page.results) {
         if (pois.length >= limit) break;
         const d = ownDomain(p.website);

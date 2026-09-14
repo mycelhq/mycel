@@ -2626,7 +2626,7 @@ export function createServer(store: Store): Hono {
      * for a `chase_invoice` a second email to somebody's client. The caller cannot detect it,
      * because their retry succeeded.
      *
-     * `kortix-ai/suna` state the principle in `session-lifecycle/requeue-policy.ts`: "retryability
+     * a comparable runtime state the principle in `session-lifecycle/requeue-policy.ts`: "retryability
      * is a property of WHO OWNS THE OUTCOME, not of the error", and describe the same outcome when
      * both owners act — "Two billed sandboxes execute the baked initial_prompt."
      *
@@ -2755,8 +2755,31 @@ export function createServer(store: Store): Hono {
     const clientId = c.req.query("client_id") || undefined;
     const limit = c.req.query("limit") ? Number(c.req.query("limit")) : undefined;
     const set = accessible(c);
-    const tasks = await store.listTasks({ status, wedge, client_id: clientId, limit: (limit ?? 100) * 4 });
-    return c.json(tasks.filter((t) => inScope(set, t.project_id)).slice(0, limit ?? 100));
+    /*
+      ═══ SCOPED IN THE QUERY. THE `* 4` WAS A HOPE, AND IT LOST ═══
+
+      This fetched `limit * 4` of the newest rows ACROSS EVERY TENANT and filtered afterwards. The
+      multiplier is a guess at how much over-fetch is enough, and it fails exactly when the
+      installation is busiest — which is also when it matters.
+
+      Measured on production, 14 September: of the 100 most recent tasks installation-wide, `default`
+      owned 75 and `Northstar Creative` 24. The showroom — 1,987 tasks of its own — got **zero**, so
+      Home rendered "Nothing has run yet" directly beneath its own "1,740 jobs run". Every tenant we
+      add makes every other tenant's Home emptier.
+
+      `listTasks` has taken `project_ids` for a while and its own comment names this bug: "a busy
+      neighbour fills the window and a small customer's own rows never appear in it —
+      `countTasksSince` carries the same warning about the same bug, fixed there and not here." The
+      parameter existed, the remedy was written down, and this route never used it.
+    */
+    const tasks = await store.listTasks({
+      status,
+      wedge,
+      client_id: clientId,
+      project_ids: [...set],
+      limit: limit ?? 100,
+    });
+    return c.json(tasks);
   });
 
   // GET /v1/approvals — the approvals queue (?status=pending), scoped to the caller's projects.
@@ -2937,7 +2960,9 @@ export function createServer(store: Store): Hono {
     if (!projectId) return c.json({ error: "specify a project (X-Mycel-Project header)" }, 400);
     if (!accessible(c).has(projectId)) return c.json({ error: "not found" }, 404);
 
-    const tasks = (await store.listTasks({ limit: 500 })).filter((t) => t.project_id === projectId);
+    // Scoped in the QUERY — see `/v1/tasks` for the production measurement of what happens when
+    // a busy neighbour fills the window.
+    const tasks = await store.listTasks({ project_ids: [projectId], limit: 500 });
     /**
      * THINGS THE FOUNDER DID, not things the machine did.
      *
@@ -3019,7 +3044,8 @@ export function createServer(store: Store): Hono {
       domain.listClients().then((xs) => xs.filter((x) => x.project_id === projectId)),
       // Bounded. This is an admin read over the biggest table in the product, and an unbounded scan
       // on a page somebody opens to find out why things are slow is a page that makes them slower.
-      store.listTasks({ limit: 2000 }),
+      // Scoped in the QUERY — see `/v1/tasks`.
+      store.listTasks({ project_ids: [projectId], limit: 2000 }),
       getBillingStore().listInvoices({ project_id: projectId }).catch(() => [] as Invoice[]),
       store.listApprovals().catch(() => []),
     ]);
@@ -3808,12 +3834,12 @@ export function createServer(store: Store): Hono {
     /**
      * THROUGH THE QUEUE, NOT STRAIGHT AT THE DAEMON.
      *
-     * This called `oc.startPrompt` directly — the `/prompt_async` route that Suna's
+     * This called `oc.startPrompt` directly — the `/prompt_async` route that a comparable runtime's
      * `session-lifecycle/inbox-admission.ts` says "interleaves inputs posted during a live turn".
      * Two messages typed quickly both posted concurrently and arrived in whichever order the network
      * settled, so a founder correcting themselves could have the correction land first.
      *
-     * It also answered a busy daemon by giving up. Suna's `deliverWithRetry` exists because "a
+     * It also answered a busy daemon by giving up. a comparable runtime's `deliverWithRetry` exists because "a
      * just-woken sandbox is flaky for a beat" and their old path "bounced on the FIRST such hiccup
      * ... and dropped their message even though the session was up". Ours did the same thing with a
      * 409 and no retry. See `steer-queue.ts`.
@@ -4672,9 +4698,8 @@ export function createServer(store: Store): Hono {
       const SEEN_TAIL_MAX = 20;
       const poll = setInterval(async () => {
         try {
-          const tasks = (await store.listTasks({ limit: 80 })).filter((t) =>
-            inScope(scope, t.project_id),
-          );
+          // Scoped in the QUERY — see `/v1/tasks`.
+          const tasks = await store.listTasks({ project_ids: [...scope], limit: 80 });
           for (const t of tasks) {
             // Only tasks that can still say something. A terminal task already emitted its last
             // event, and either the bus or an earlier poll has it.
@@ -4781,7 +4806,7 @@ export function createServer(store: Store): Hono {
       /**
        * The job this was gating is over. Nothing is waiting for this answer.
        *
-       * Suna's `pending-questions.ts`: a stale ask "is worse than none: it invites an answer nothing
+       * a comparable runtime's `pending-questions.ts`: a stale ask "is worse than none: it invites an answer nothing
        * is waiting for". Approving here used to be half-effective in the worst direction — the
        * status flip and the event were correctly suppressed downstream, but the side effects that
        * ran on the way there were not. Refuse at the door instead, and say which state it ended in
@@ -6434,7 +6459,7 @@ export function createServer(store: Store): Hono {
    * and the only caller was a LinkedIn internal. Every credential a business ever attached was
    * permanent as far as the product was concerned.
    *
-   * Suna hit the same shape in `lib/session-rescope.ts` and named it exactly: their per-session
+   * a comparable runtime hit the same shape in `lib/session-rescope.ts` and named it exactly: their per-session
    * secret allowlist was create-only, justified by an argument about BOOT — that a narrowed list
    * "could leave the session unbootable" — and "it silently became a refusal to change anything at
    * all." Ours had no argument at all; the route was simply never written.
@@ -9392,7 +9417,9 @@ export function createServer(store: Store): Hono {
    */
   async function readDraftedQuestions(projectId: string): Promise<DraftedQuestion[]> {
     try {
-      const tasks = (await store.listTasks({ wedge: SHAPER_WEDGE_SLUG, limit: 200 }))
+      // Scoped in the QUERY — see `/v1/tasks`. This is onboarding: it looks for the founder's OWN
+      // shaping run, so a busy neighbour means a new signup cannot find what it is waiting on.
+      const tasks = (await store.listTasks({ wedge: SHAPER_WEDGE_SLUG, project_ids: [projectId], limit: 200 }))
         .filter(
           (t) =>
             t.project_id === projectId &&
@@ -10207,7 +10234,7 @@ export function createServer(store: Store): Hono {
    * Save a playbook, refusing to clobber a concurrent write.
    *
    * `metadata` is stored as a WHOLE OBJECT and `playbookSaveMeta` is read-modify-write, so two
-   * writers holding the same snapshot silently lose one of them. Suna named this exact shape in
+   * writers holding the same snapshot silently lose one of them. a comparable runtime named this exact shape in
    * `lib/metadata-merge.ts`: "a concurrent writer holding a STALE snapshot silently reverted the pin
    * (a classic read-modify-write lost update)."
    *

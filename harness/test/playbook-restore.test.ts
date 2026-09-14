@@ -122,7 +122,7 @@ test("garbage in the metadata is skipped, never coerced into a version", () => {
 // ═════════════════════════════════════════════════════════════════════════════════════════════════
 //
 // `metadata` is stored as a WHOLE OBJECT and `playbookSaveMeta` is read-modify-write: read the row,
-// mutate the parsed jsonb in JS, write it all back. Suna named this exact shape in
+// mutate the parsed jsonb in JS, write it all back. a comparable runtime named this exact shape in
 // `lib/metadata-merge.ts`: "a concurrent writer holding a STALE snapshot silently reverted the pin
 // (a classic read-modify-write lost update)."
 //

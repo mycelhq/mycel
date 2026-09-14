@@ -7,7 +7,8 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { TIER_MODELS } from "../src/models";
-import { runtimeAdvisories } from "../src/preflight";
+import { providerAdvisories, runtimeAdvisories } from "../src/preflight";
+import { PROVIDERS, shortestPath } from "../src/gtm/providers";
 import { KERNEL_VERSION } from "../src/version";
 import type { MycelConfig } from "../src/config";
 
@@ -15,6 +16,7 @@ const read = (rel: string): string => readFileSync(fileURLToPath(new URL(rel, im
 const INDEX = read("../src/index.ts");
 const SETUP = read("../../setup.sh");
 const README = read("../../README.md");
+const AGENTS = read("../../AGENTS.md");
 const PKG = JSON.parse(read("../../package.json")) as { version: string; scripts: Record<string, string>; dependencies: Record<string, string> };
 const SEED = read("../scripts/seed-demo.ts");
 
@@ -26,7 +28,9 @@ test("B1 stranger-install: runtimeAdvisories is actually CALLED at boot, not jus
   // boot", and was referenced from nowhere. A dev boot printed no advisory; the first task then hung
   // 60s and died with `opencode failed to start (no log)`. A silent failure, which is a stated
   // non-negotiable for this project.
-  assert.match(INDEX, /import \{ runtimeAdvisories \} from "\.\/preflight"/);
+  // Matched on the SYMBOL rather than the whole import line: adding a second export from preflight
+  // broke this assertion while the thing it guards was still perfectly wired.
+  assert.match(INDEX, /import \{[^}]*\bruntimeAdvisories\b[^}]*\} from "\.\/preflight"/);
   assert.match(INDEX, /runtimeAdvisories\(cfg\)/, "index.ts must call runtimeAdvisories at boot");
 
   // And it must not exit the way sandboxPreflight does: `npm run demo` is the one README path that
@@ -119,8 +123,24 @@ test("B6 stranger-install: the README's showcase curl uses a credential that can
   // {"moves":[]}, and the README elsewhere pre-frames [] as "nothing seeded", so the only available
   // conclusion was that the seed had failed. Tenant isolation was right; the doc was wrong.
   const showcase = README.slice(README.indexOf("### A business to look at"), README.indexOf("## What Mycel provides"));
-  assert.match(showcase, /founder@ridgeline\.example/);
-  assert.match(showcase, /demo-ridgeline/);
+
+  /**
+   * DERIVED FROM THE SEED, because this test pinned the credential rather than checking it.
+   *
+   * It asserted the literals `founder@ridgeline.example` and `demo-ridgeline`, which is a test that
+   * only ever fails when the README changes — never when the SEED does. The seed was renamed from a
+   * British bookkeeper to Sightline Research, the README kept the old login, and this guard stayed
+   * green over a documented command that answers `{"error":"invalid credentials"}`. Found by
+   * running it: it is the first interactive thing in the README.
+   */
+  const seedEmail = /MYCEL_OWNER_EMAIL=(\S+)/.exec(PKG.scripts["demo:seed"])?.[1];
+  const seedPassword = /MYCEL_OWNER_PASSWORD=(\S+)/.exec(PKG.scripts["demo:seed"])?.[1];
+  const seedBusiness = /const BUSINESS_NAME = "([^"]+)"/.exec(SEED)?.[1];
+  assert.ok(seedEmail && seedPassword && seedBusiness, "could not read the seed's own identity");
+  assert.ok(showcase.includes(seedEmail!), `the README logs in as somebody the seed does not create (${seedEmail})`);
+  assert.ok(showcase.includes(seedPassword!), "the README's password is not the one the seed is booted with");
+  assert.ok(showcase.includes(seedBusiness!), `the README selects a project the seed does not build (${seedBusiness})`);
+  assert.ok(!/ridgeline/i.test(README), "the old seed's names must not come back anywhere in the README");
   assert.match(showcase, /auth\/login/);
   assert.match(showcase, /x-mycel-project/i, "project scope is required and never defaulted");
   assert.ok(
@@ -141,10 +161,79 @@ test("B6 stranger-install: the README's showcase curl uses a credential that can
   assert.match(report, /auth\/login/);
 });
 
-test("B7 stranger-install: PORT and MYCEL_URL are in the README's env table", () => {
+test("B7 stranger-install: PORT and MYCEL_URL are documented, and reachable from the README", () => {
   // Both were load-bearing and undocumented: MYCEL_URL is the only way to point demo:seed at a
   // kernel that is not on 4000, and it was discoverable only by reading seed-demo.ts.
-  const table = README.slice(README.indexOf("## Configure (env)"), README.indexOf("## Running with no keys"));
+  //
+  // The table moved to AGENTS.md when the README was cut back to what a human reads first. That is
+  // a move, not a deletion, so this asserts what it always meant — DISCOVERABLE — rather than the
+  // heading it used to sit under. Both halves are load-bearing: documented somewhere nobody is
+  // pointed to is the same as undocumented.
+  const table = AGENTS.slice(AGENTS.indexOf("## Environment"), AGENTS.indexOf("## Layout"));
   assert.match(table, /\| `PORT` \|/);
   assert.match(table, /\| `MYCEL_URL` \|/);
+  assert.match(README, /\(\.\/AGENTS\.md\)/, "the README must link to it, or it is not discoverable");
+});
+
+
+test("B1 stranger-install: the provider slots are said at boot, not only at an endpoint", () => {
+  /**
+   * The same shape of bug as the one above, found the same way — by cloning the published tree and
+   * booting it. `GET /v1/gtm/availability` answers "what is on, and what turns the rest on"
+   * completely, and it sits behind a bearer token at a path nobody guesses, in a product whose
+   * first five minutes are in a terminal. Boot said nothing about it existing.
+   */
+  assert.match(INDEX, /import \{[^}]*\bproviderAdvisories\b[^}]*\} from "\.\/preflight"/);
+  assert.match(INDEX, /providerAdvisories\(\)/, "index.ts must call providerAdvisories at boot");
+
+  // And it is NOT a warning. Every ⚠ on this screen is something that will go wrong; a capability
+  // that is off is not, because the whole GTM path runs on a LinkedIn session with no key at all.
+  // Marking it would teach a new user that a correct install is broken.
+  //
+  // Asserted on the OUTPUT, not on a slice of the source. The first version of this took 300
+  // characters after the call site, which ran straight into the next block's ⚠ and failed on a file
+  // that was entirely correct — the same brittle-window mistake this repo has made before.
+  const said = providerAdvisories({}).join("\n");
+  assert.ok(said.length > 0, "with no keys at all there is something to say");
+  assert.ok(!said.includes("⚠"), "an optional capability being off is not a warning");
+  assert.match(said, /need no key at all/, "the reassurance is the point, not the list");
+  assert.match(said, /\/v1\/gtm\/availability/, "and it points at the place with the full answer");
+});
+
+test("B1 stranger-install: a fully configured boot says nothing about providers", () => {
+  // An operator who has set their keys does not need them recited on every restart, and a banner
+  // that prints the same paragraph forever is one people stop reading — which would cost the
+  // advisories above their audience too.
+  const allOn = Object.fromEntries(
+    Object.values(PROVIDERS).map((opts) => [shortestPath(opts)!.env, "k"]),
+  );
+  assert.deepEqual(providerAdvisories(allOn), []);
+});
+
+
+test("B7 stranger-install: the seed does not promise a UI this repo does not contain", () => {
+  /**
+   * "There is **no UI in this repository** — Mycel is headless" is in the README, and `demo:seed`
+   * closed by printing seven links into `http://localhost:3000` plus "Sign in at
+   * http://localhost:3000". On a fresh clone every one of those refuses the connection, and the
+   * available conclusion is that the seed failed.
+   *
+   * Same shape as the `mycel_demo_key` bug this file already guards, in a new place: the seed
+   * worked and its own closing report was the thing saying otherwise.
+   */
+  assert.match(SEED, /async function consoleIsUp\(\)/, "the seed must ask before it links");
+  assert.match(SEED, /await consoleIsUp\(\)/, "and the report must actually branch on the answer");
+
+  const report = SEED.slice(SEED.indexOf("✓ Seeded"));
+  assert.ok(
+    !/Sign in at http:\/\/localhost:3000/.test(report),
+    "a hardcoded console URL in the report is the unconditional promise this guards against",
+  );
+  assert.match(report, /THERE IS NO UI IN THIS REPO/, "the no-console branch has to say so plainly");
+  assert.match(report, /github\.com\/mycelhq\/console/, "and point at where the console actually is");
+
+  // The probe must not be able to take the seed down after the work is committed.
+  const probe = SEED.slice(SEED.indexOf("async function consoleIsUp()"), SEED.indexOf("async function consoleIsUp()") + 400);
+  assert.match(probe, /try \{/, "a diagnostic must not throw");
+  assert.match(probe, /AbortSignal\.timeout/, "and must not hang waiting for a port nobody is on");
 });

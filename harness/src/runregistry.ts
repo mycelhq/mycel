@@ -52,7 +52,7 @@ export interface RunHandle {
   /**
    * The founder's messages to this run, serialised.
    *
-   * NOT `oc.startPrompt` directly, which is what `/v1/tasks/:id/steer` used to call. Suna runs the
+   * NOT `oc.startPrompt` directly, which is what `/v1/tasks/:id/steer` used to call. a comparable runtime runs the
    * same OpenCode daemon and documents why in `session-lifecycle/inbox-admission.ts`: the
    * `/prompt_async` route interleaves inputs posted during a live turn, so two messages typed
    * quickly arrive in whichever order the network settled. See `steer-queue.ts` for what transfers

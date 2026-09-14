@@ -1114,7 +1114,20 @@ export async function runTask(store: Store, taskId: string): Promise<void> {
         }
 
         if (fate.fate !== "deliver") {
-          await emit("progress", { note: `not delivered — ${fate.reason}` });
+          /*
+            `delivered: false` beside the prose, and the prose is unchanged.
+
+            "not delivered — …" is emitted from three places here and read by a console that had no
+            way to know it. A run that discovers a missing input, writes down what it needs and parks
+            the engagement has SUCCEEDED — it did everything available to it — so the task status is
+            right and the header pill said DONE, next to a timeline saying nothing went out. Both
+            true, and together they read as a finished job.
+
+            A flag rather than the console matching `not delivered — `: a prefix in free prose is a
+            contract nobody declared, and the next person to reword the sentence would silently turn
+            the signal off.
+          */
+          await emit("progress", { note: `not delivered — ${fate.reason}`, delivered: false });
           if (fate.fate === "ask") await openMaterialRequests(task, fate.needs ?? []);
         } else if (fate.needs?.length) {
           /**
@@ -1142,6 +1155,7 @@ export async function runTask(store: Store, taskId: string): Promise<void> {
         if (pageFaults.length) {
           await emit("progress", {
             note: `not delivered — this is not a page a client would publish (${pageFaults[0]})`,
+            delivered: false,
           });
         }
         const clientBody = fate.body ?? "";
@@ -1159,7 +1173,7 @@ export async function runTask(store: Store, taskId: string): Promise<void> {
           // `deliver` and then silence was the worst outcome this path could produce — see the
           // `onSkip` note in deliverables.wrap.ts. The founder gets the reason on the timeline.
           onSkip: async (reason) => {
-            await emit("progress", { note: `not delivered — ${reason}` });
+            await emit("progress", { note: `not delivered — ${reason}`, delivered: false });
           },
           /**
            * The independent read, injected on the path that actually delivers. Same function the
@@ -1819,7 +1833,14 @@ export async function handOffWorkspace(args: {
         // Not narrowed by wedge: `handOffWorkspace` takes a deliberately minimal task shape and does
         // not carry one. Scoped to the project, which is the boundary that actually matters — the
         // question is whether THIS business's earlier sites look like this one.
-        const recent = (await store.listTasks({ limit: 60 }))
+        // Scoped in the QUERY — see `/v1/tasks`. Sixty rows installation-wide is a handful of
+        // minutes on a busy box, and this run then sees none of its own project's history.
+        const recent = (await store.listTasks({
+          // Only when the task HAS a project. An unscoped run is a platform job and has no
+          // neighbours to be crowded out by; passing `[undefined]` would match nothing at all.
+          ...(task.project_id ? { project_ids: [task.project_id] } : {}),
+          limit: 60,
+        }))
           .filter((t) => t.project_id === task.project_id && t.id !== taskId && t.status === "succeeded")
           .sort((a, b) => b.created_at.localeCompare(a.created_at))
           .slice(0, 15);

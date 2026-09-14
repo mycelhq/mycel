@@ -4,7 +4,7 @@
 // WHERE THIS CAME FROM, AND WHY IT IS THE ONE RECOVERY MOVE THAT IS SAFE
 // ═════════════════════════════════════════════════════════════════════════════════════════════════
 //
-// Taken from `kortix-ai/suna`'s `turn-auto-resume.ts` — the single best idea we found reading their
+// Taken from a comparable runtime's `turn-auto-resume.ts` — the single best idea we found reading their
 // repo. Every engineering decision below is theirs; each one is a mistake we would otherwise have
 // made once first, in production, on somebody's client.
 //

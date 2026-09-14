@@ -2,7 +2,7 @@
  * ═══ THE RUN READS ITS OWN WORK WITH THE REVIEWER'S INSTRUMENT ═══
  *
  * `mycel-check` exists so a deliverable is refused BEFORE the run says it is finished, rather than
- * after — Suna's `validate_slide` pattern, where the artifact skill ships the checker alongside the
+ * after — a comparable runtime's `validate_slide` pattern, where the artifact skill ships the checker alongside the
  * generator and the agent is handed the same instrument the reviewer will use.
  *
  * The whole value of it rests on one property: it must agree with the submit gate. A self-check

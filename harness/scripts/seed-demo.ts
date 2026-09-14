@@ -192,6 +192,31 @@ const ROSTER: Roster = JSON.parse(
 const APP_URL = (env.MYCEL_APP_URL ?? "http://localhost:3000").replace(/\/+$/, "");
 
 /**
+ * ═════════════════════════════════════════════════════════════════════════════════════════════════
+ * IS ANYTHING ACTUALLY LISTENING THERE
+ * ═════════════════════════════════════════════════════════════════════════════════════════════════
+ *
+ * THERE IS NO UI IN THIS REPOSITORY. The console is a separate consumer of `/v1`, in its own repo,
+ * which the README states plainly — and this script did not. It closed by printing seven links into
+ * `APP_URL` and the line "Sign in at http://localhost:3000", so a stranger's first run ended in a
+ * list of addresses that answer nothing, and the available conclusion is that the seed failed.
+ *
+ * That is exactly the failure the comment at the bottom of this file was written about, in a new
+ * place: the seed worked, and its own closing report was the thing saying otherwise.
+ *
+ * So ask. A link is printed when something answers and replaced with the truth when nothing does.
+ * One request, short deadline, never throws — a diagnostic must not be able to take down the thing
+ * it diagnoses, least of all after the work is already committed.
+ */
+async function consoleIsUp(): Promise<boolean> {
+  try {
+    return (await fetch(APP_URL, { signal: AbortSignal.timeout(1500) })).status > 0;
+  } catch {
+    return false;
+  }
+}
+
+/**
  * The one message a human wrote.
  *
  * The composer labels this field "First message, for everyone" and it is a HUMAN-authored field by
@@ -1029,7 +1054,13 @@ async function main(): Promise<void> {
           `    → ${portalLink}\n` +
           `      (the CLIENT'S view of the same work. Open it in a private window — it is a different session.)\n`
         : `\n    ! No deliverable was seeded, so /deliverables and the portal are empty.\n`) +
-      `\n    Sign in at http://localhost:3000 as ${OWNER_EMAIL}\n` +
+      (await consoleIsUp()
+        ? `\n    Sign in at ${APP_URL} as ${OWNER_EMAIL}\n`
+        : `\n    Nothing is answering at ${APP_URL}, which is expected: THERE IS NO UI IN THIS REPO.\n` +
+          `    The kernel is headless; the console is a separate consumer of /v1 —\n` +
+          `    https://github.com/mycelhq/console, or build your own against the contract.\n` +
+          `    The links above are where those pages WOULD be. The curl below works right now.\n` +
+          `    (Set MYCEL_APP_URL if your console is somewhere other than :3000.)\n`) +
       `    Reset: restart the kernel. The store is in memory. Overdue invoice id: ${overdueInvoice}\n` +
       // READ IT OVER THE API, WITH THE CREDENTIAL THAT ACTUALLY WORKS.
       //

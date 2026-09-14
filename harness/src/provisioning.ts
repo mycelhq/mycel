@@ -22,11 +22,10 @@
 // a capacity blip on somebody else's side.
 //
 // ═════════════════════════════════════════════════════════════════════════════════════════════════
-// THE TAXONOMY IS SUNA'S
+// THE TAXONOMY IS BY RETRY CLASS
 // ═════════════════════════════════════════════════════════════════════════════════════════════════
 //
-// `session-lifecycle/types.ts` splits a hand-off's outcome by RETRY CLASS, and names the bug that
-// forced it:
+// A hand-off's outcome splits by RETRY CLASS, and the bug that forces it is this:
 //
 //     "`unreachable` exists because everything that produced `failed` on this path was in fact a
 //      down runtime, and the drain treated it as terminal: a queued prompt delivered while the box

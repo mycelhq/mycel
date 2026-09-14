@@ -8,7 +8,7 @@
 // profiles reports that market as EMPTY, which is a much worse answer than an expensive one.
 import test from "node:test";
 import assert from "node:assert/strict";
-import { businessName, cheapDiscover, dorksFor } from "../src/gtm/discover-cheap";
+import { businessName, cheapDiscover, dorksFor, parseOrganic } from "../src/gtm/discover-cheap";
 
 /** A Serper `/search` response, in the shape `growth/lib/sourcing/serper.ts` proves in production. */
 const serperStub = (organic: { title: string; link: string; snippet?: string }[], status = 200) => {
@@ -136,4 +136,99 @@ test("the limit is a spend cap, and it is honoured", async () => {
   assert.equal(r.businesses.length, 5);
   // Stopped sweeping once it had enough — the queries are what cost money.
   assert.equal(r.queries, 1);
+});
+
+// ── Two search providers, one normalised result ─────────────────────────────
+
+test("search: a Brave key sends the request to Brave, not to Serper", async () => {
+  const seen: string[] = [];
+  const fetchImpl = (async (url: string) => {
+    seen.push(String(url));
+    return { ok: true, status: 200, text: async () => JSON.stringify({ web: { results: [
+      { title: "Hart's Bakery — Bristol", url: "https://hartsbakery.co.uk", description: "A bakery." },
+    ] } }) };
+  }) as unknown as typeof fetch;
+
+  const prev = process.env.BRAVE_API_KEY;
+  process.env.BRAVE_API_KEY = "k";
+  try {
+    const r = await cheapDiscover({ industries: ["bakery"], location: "Bristol", fetchImpl, limit: 5 });
+    assert.ok(seen.some((u) => u.includes("api.search.brave.com")), `hit: ${seen[0]}`);
+    assert.ok(!seen.some((u) => u.includes("serper.dev")));
+    assert.equal(r.businesses[0]?.domain, "hartsbakery.co.uk", "Brave's shape must normalise");
+  } finally {
+    if (prev === undefined) delete process.env.BRAVE_API_KEY;
+    else process.env.BRAVE_API_KEY = prev;
+  }
+});
+
+test("search: every provider shape normalises onto the same result", () => {
+  const want = [{ title: "T", link: "https://x.com", snippet: "D" }];
+  assert.deepEqual(
+    parseOrganic("brave", JSON.stringify({ web: { results: [{ title: "T", url: "https://x.com", description: "D" }] } })),
+    want,
+  );
+  assert.deepEqual(parseOrganic("serper", JSON.stringify({ organic: want })), want);
+  assert.deepEqual(
+    parseOrganic("tavily", JSON.stringify({ results: [{ title: "T", url: "https://x.com", content: "D", score: 0.9 }] })),
+    want,
+    "downstream code must not be able to tell them apart",
+  );
+});
+
+test("search: a Tavily key sends the request to Tavily, with the key as a bearer", async () => {
+  const seen: Array<{ url: string; init?: RequestInit }> = [];
+  const fetchImpl = (async (url: string, init?: RequestInit) => {
+    seen.push({ url: String(url), init });
+    return {
+      ok: true,
+      status: 200,
+      text: async () =>
+        JSON.stringify({ results: [{ title: "Hart's Bakery — Bristol", url: "https://hartsbakery.co.uk", content: "A bakery." }] }),
+    };
+  }) as unknown as typeof fetch;
+
+  const prev = process.env.TAVILY_API_KEY;
+  process.env.TAVILY_API_KEY = "tvly-k";
+  try {
+    const r = await cheapDiscover({ industries: ["bakery"], location: "Bristol", fetchImpl, limit: 5 });
+    assert.ok(seen.some((c) => c.url.includes("api.tavily.com")), `hit: ${seen[0]?.url}`);
+    assert.ok(!seen.some((c) => c.url.includes("serper.dev") || c.url.includes("brave.com")));
+    assert.equal((seen[0]!.init?.headers as Record<string, string>).authorization, "Bearer tvly-k");
+    assert.equal(r.businesses[0]?.domain, "hartsbakery.co.uk", "Tavily's shape must normalise");
+  } finally {
+    if (prev === undefined) delete process.env.TAVILY_API_KEY;
+    else process.env.TAVILY_API_KEY = prev;
+  }
+});
+
+test("search: Tavily is asked in plain words, because it reads operators as meaning", async () => {
+  /**
+   * The failure this pins is silent and returns 200. Tavily is semantic: it does not refuse
+   * `-jobs -careers`, it absorbs them, so a dork that means "bakeries, NOT job pages" becomes a
+   * request for bakeries AND job pages — with a full result set and nothing to warn on.
+   */
+  const asked: string[] = [];
+  const fetchImpl = (async (_url: string, init?: RequestInit) => {
+    asked.push((JSON.parse(String(init?.body)) as { query: string }).query);
+    return { ok: true, status: 200, text: async () => JSON.stringify({ results: [] }) };
+  }) as unknown as typeof fetch;
+
+  const prev = process.env.TAVILY_API_KEY;
+  process.env.TAVILY_API_KEY = "k";
+  try {
+    const r = await cheapDiscover({ industries: ["bakery"], location: "Bristol", fetchImpl, limit: 5 });
+    assert.ok(asked.length > 0, "a query must actually have been sent");
+    for (const q of asked) {
+      assert.ok(!/-\w+|\bOR\b|["()]/.test(q), `an operator survived into a semantic query: ${q}`);
+    }
+    assert.match(r.detail ?? "", /broader|degraded|without/i, "a widened sweep must say so");
+  } finally {
+    if (prev === undefined) delete process.env.TAVILY_API_KEY;
+    else process.env.TAVILY_API_KEY = prev;
+  }
+});
+
+test("search: a body that is not JSON is no results, not a crash", () => {
+  assert.deepEqual(parseOrganic("brave", "<html>rate limited</html>"), []);
 });

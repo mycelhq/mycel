@@ -10,8 +10,8 @@
 ```jsonc
 {
   "id": "uuid",
-  "wedge": "uk-property-sourcing",     // which wedge config this task runs under
-  "task_type": "source_properties",    // wedge-defined verb
+  "wedge": "invoice-chaser",           // which wedge config this task runs under
+  "task_type": "chase_invoice",        // wedge-defined verb
   "actor": { "kind": "user|business|system", "id": "..." },
   "input": { /* wedge-defined */ },
   "constraints": {
@@ -108,16 +108,25 @@ yet enforce.
 
 ```jsonc
 {
-  "wedge": "uk-property-sourcing",
-  "agent": { "model": "opus", "skills": ["source", "qualify"], "tools": ["web_search"] },
-  "memory": { "entities": ["property", "lead"], "policy": "read-write" },
-  "approvals": [ { "action": "send_message", "risk": "medium", "required": true } ],
-  "channels": ["web", "email"],
+  "wedge": "invoice-chaser",
+  "title": "Invoice chasing",
+  "skills": ["chase-politely", "why-it-is-unpaid"],   // procedures, from wedges/<slug>/skills/
+  "knowledge": [ /* ... */ ],                          // grounding; grows at runtime
+  "tools": [],
+  "capabilities": [ /* ... */ ],                       // what the agent may ask the harness to do
+  "approvals": [ { "action": "charge", "risk": "high", "required": true } ],
   "task_types": {
-    "source_properties": { "input_schema": { /* ... */ }, "output_schema": { /* ... */ } }
-  }
+    "chase_invoice": { "input_schema": { /* ... */ }, "output_schema": { /* ... */ } }
+  },
+  "policy": { /* ... */ }
 }
 ```
+
+This example was `uk-property-sourcing`, a wedge that does not exist, with an `agent` block, a
+`memory` block and a `channels` list — none of which a real manifest has had for a long time.
+`wedges/invoice-chaser/wedge.json` is the shape, in full and current; prefer reading it to trusting
+the sketch above. [`WEDGES.md`](./WEDGES.md) is the guide.
+
 The harness loads this per task. Everything else (runtime, sandbox, streaming, approvals,
 memory, cost limits) is Mycel's job.
 

@@ -104,7 +104,8 @@ test("kill mid-chase: recoverTasks fails the run, unlocks the claim, does not re
   await store.createTask(task);
 
   const n = await recoverTasks(store);
-  assert.equal(n, 1);
+  assert.equal(n.total, 1);
+  assert.equal(n.failed, 1, "a run that was mid-flight is a loss, not a requeue");
 
   const row = await store.getTask(task.id);
   assert.equal(row?.status, "failed");
@@ -127,6 +128,6 @@ test("kill mid-chase: recoverTasks fails the run, unlocks the claim, does not re
   );
 
   // A second recovery must not invent a second release / second email path.
-  assert.equal(await recoverTasks(store), 0);
+  assert.deepEqual(await recoverTasks(store), { requeued: 0, rejoined: 0, failed: 0, total: 0 });
   assert.equal(await releaseChaseClaim(task), undefined, "already released; a second unlock is a no-op");
 });

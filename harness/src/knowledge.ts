@@ -893,10 +893,48 @@ const DAY_MS = 86_400_000;
 export function ruleApplies(r: Rule, ctx: RetrievalContext): boolean {
   if (!ctx.project_id || r.project_id !== ctx.project_id) return false;
   if (r.status !== "active") return false;
-  if (r.wedge !== ctx.wedge) return false;
+  if (!crossesTo(r, ctx.wedge)) return false;
   if (!ruleMayApply(r, ctx.client_id)) return false;
   if (r.task_types.length > 0 && !r.task_types.includes(ctx.task_type)) return false;
   return true;
+}
+
+/**
+ * ═════════════════════════════════════════════════════════════════════════════════════════════════
+ * A FACT ABOUT A CLIENT BELONGS TO THE BUSINESS, NOT TO THE WEDGE THAT HAPPENED TO LEARN IT
+ * ═════════════════════════════════════════════════════════════════════════════════════════════════
+ *
+ * This was `r.wedge !== ctx.wedge → false`, full stop, and it made three silos out of one company.
+ * A service business runs go-to-market, fulfilment and the back office against the same customers;
+ * the kernel modelled them as strangers.
+ *
+ * The failure is concrete. `distillFromAnswer` fires when a run hits a gap and a HUMAN answers it:
+ * "What VAT scheme are they on? — flat rate, 14.5%". "Who signs these off? — Dana in finance."
+ * "When is their month end? — the 25th." Learned during a monthly close, those are facts about the
+ * CUSTOMER, and every one is equally true when the invoice chaser writes to them or when a contract
+ * goes out for signature. Siloed, the business asks Dana the same question three times and looks to
+ * its own client like three suppliers who do not talk to each other.
+ *
+ * ═══ FACTS CROSS. INSTRUCTIONS DO NOT. ═══
+ *
+ * The line is `kind`, which is structural rather than a reading of the prose.
+ *
+ *   `fact`                        a statement about the world, from `distillFromAnswer` — the agent
+ *                                 asked and a person answered. True whoever is asking.
+ *   `never` / `always` / `prefer` craft. How to word a chase is not how to word a close, and this
+ *                                 module already says a rule leaking between TASK TYPES "is noise at
+ *                                 best" — across wedges it would be worse.
+ *
+ * ═══ AND ONLY FOR THE CLIENT IT IS ABOUT ═══
+ *
+ * A crossing fact must name a client. A house-wide fact learned in one wedge is a generalisation
+ * nobody made — it was true of the job it came from, and carrying it into outreach is the same leak
+ * `ruleMayApply` exists to prevent, one level up. `ruleMayApply` still runs after this and still
+ * refuses to show one client's fact to another.
+ */
+function crossesTo(r: Rule, wedge: string): boolean {
+  if (r.wedge === wedge) return true;
+  return r.kind === "fact" && !!r.client_id;
 }
 
 /**
@@ -965,7 +1003,20 @@ export function ruleMayApply(r: Pick<Rule, "sensitivity" | "client_id">, clientI
 export function scoreRule(r: Rule, ctx: RetrievalContext): number {
   const now = Date.parse(ctx.now ?? new Date().toISOString());
   const ageDays = Math.max(0, (now - Date.parse(r.updated_at)) / DAY_MS);
+  /*
+    A FACT THAT CAME FROM ANOTHER WEDGE YIELDS FIRST (−30).
+
+    It crosses because it is true, not because it is the most relevant thing in the room. A fact
+    learned in bookkeeping is worth having in a chase and must never take the last slot from
+    something the chaser learned on a chase.
+
+    Sized against the terms it competes on. It loses to task scoping (25 vs 8, a gap −30 swallows),
+    and it survives the client term (+40), so a borrowed fact about THIS client still outranks a
+    same-wedge fact about nobody in particular — which is the case it exists for.
+  */
+  const borrowed = r.wedge !== ctx.wedge ? -30 : 0;
   return (
+    borrowed +
     (r.client_id ? 40 : 0) +
     (r.task_types.length ? 25 : 8) +
     STRENGTH[r.kind] * 10 +

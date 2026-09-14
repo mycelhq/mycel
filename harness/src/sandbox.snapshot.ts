@@ -419,7 +419,7 @@ export async function ensureSnapshot(opts: EnsureSnapshotOptions = {}): Promise<
  * On 2026-08-29 a snapshot entered `error` state hours after a boot that had verified it. The memo
  * still answered "fine", every task failed at sandbox creation with the provider's own opaque error,
  * and the health check stayed green because HTTP was never affected. The truth surfaced when a human
- * noticed. `kortix-ai/suna` has the same class written up in
+ * noticed. a comparable runtime has the same class written up in
  * `projects/reaping/parked-runtime-verification.ts`: nothing ever re-verified a stopped sandbox, so
  * "the truth only surfaced when a human opened the session 30 hours later" — and when they measured,
  * 16,243 rows had never been re-checked and 16 were already dead.

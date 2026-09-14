@@ -56,6 +56,76 @@ The second reader did not run on the delivering path, the fulfilment gate covere
 product, and the only thing ever asked how good a deliverable was, was the thing that wrote it. A
 disqualifying verdict now returns to the agent once before a human sees it.
 
+**The first run, measured instead of assumed** (`ffef8b04`, `7d9c7718`, `df03d855`, `49c7cb8f`).
+Every defect below was invisible from inside the monorepo and obvious within ninety seconds of
+staging the published tree and running it the way a stranger would. That is the method, and it is
+worth more than the fixes.
+
+`npm run demo` is one command now. It boots, seeds a service business, and prints the ranked work
+with the arithmetic that put each item where it is. It used to be a blocking server; seeing anything
+meant a second terminal, `npm run demo:seed`, a wall of text telling you to curl, a login-token
+dance with `jq`, and raw JSON. The split was a trap as well as a chore — the two halves had to agree
+on an owner email and password declared separately, so booting the kernel by hand gave you a seed
+that could not log in. `demo:kernel` keeps the old server for contributors iterating on the seed.
+
+The README's first interactive command had returned `{"error":"invalid credentials"}` for eight
+months. The demo business was renamed from a British bookkeeper to Sightline Research and the README
+was never updated. The guard on that block asserted the old email as a literal, so it could only
+fail when the README changed, never when the seed did.
+
+And `demo:seed` closed by printing seven links into a UI **this repository does not contain** —
+the console is a separate consumer of `/v1`, which the README states plainly and the seed did not.
+On a fresh clone every link refused the connection, and the available conclusion was that the seed
+had failed.
+
+**Documentation that fails in CI instead of silently** (`96a8b73d`, `fd230f02`, `2d18c165`,
+`6d561201`, `058090d0`). Docs rot without a stack trace: there is just a person who runs the first
+command, gets an error, and closes the tab. Ten checks now resolve what the docs CLAIM against the
+repo — every `npm run`, every wedge and task type in an example request, every link, image and
+source path, every `/v1` endpoint against the 383 the harness registers, and every environment
+variable the kernel names in an instruction. They cover `setup.sh` too, which is documentation that
+executes: the README advertises `curl … | bash`.
+
+What that found: the contract reference documented `uk-property-sourcing`, a wedge that has never
+existed here, with `agent`, `memory` and `channels` blocks real manifests dropped long ago — so a
+first wedge written from that spec produces a file the kernel does not read. `harness-operator` was
+deleted deliberately and two docs went on listing it. `content-desk` shipped and the README's table
+never learned about it. Preflight told operators to set `MYCEL_LITELLM_URL` and
+`MYCEL_LITELLM_MASTER_KEY`, and neither appeared in any doc or in `.env.example`.
+
+**Whichever key you set is the provider you get** (`d6e67fcf`, `f026ae83`, `b5e34871`, `69b3a6e7`).
+Four capabilities reached one hardcoded vendor each — our cost-optimised picks, which are a reason
+that belongs to us and to nobody cloning this. All nine options are implemented now: Google Places
+beside Azure Maps, Jina Reader beside Firecrawl, Tavily beside Serper and Brave, Hunter beside
+FullEnrich. Two questions collapse into one, because the second — *which provider?* — is the one
+people answer wrong in a way that fails at runtime rather than at boot.
+
+Tavily needed care rather than a third branch: it reads a Google dork as MEANING, so `-jobs
+-careers` is absorbed rather than refused and the query inverts at 200 with a full result set and
+nothing to warn on. And the suggestion a newcomer is given is no longer the first in list order —
+that ranks by quality and was sending people to a sales form. Boot prints which capabilities are on
+and the one variable that turns each of the rest on, because `GET /v1/gtm/availability` answered all
+of this perfectly from behind a bearer token at a path nobody guesses.
+
+**A fact belongs to the business, not to the wedge that learned it** (`49181dc9`, `2b6a984d`).
+Retrieval ended at `r.wedge !== ctx.wedge`, which made three silos of one company: the VAT scheme a
+human typed during a monthly close was unreachable when the invoice chaser wrote to that same
+customer, so the business asked Dana in finance the same question three times. Facts cross; craft
+does not. A crossing fact is ranked to yield, and one client's fact still never reaches another.
+
+**Interrupted runs, told apart** (`efb0aa3b`). "recovered 12 interrupted task(s)" covered three
+different pieces of news — a queued run put back with nothing sent and nothing charged, a batch
+parent rejoined, and a run that actually died. Twelve failed after a restart is a signal; twelve
+requeued is nothing. The honest-limitations doc said all three were marked `failed`, which was true
+when it was written.
+
+**Contributor hygiene** (`ac6d60df`, `c49f17da`, `0b84cd0d`, `676571d4`). The public repo's CI ran
+every contributor's PR twice and cancelled nothing. `engines` was advisory, so on an old Node the
+README's promise failed as a stack trace rather than a version message. CONTRIBUTING valued things
+that all begin "understand the architecture first" and offered nothing a person could do on the
+evening they cloned it — adding a provider is that, and it is real rather than invented for the
+occasion. Plus the files GitHub's community profile looks for and this repo did not have.
+
 **Tests against a real Postgres** (`91cb8aae`, `ed5ad3c3`, `72dc747a`, `1351f012`). The live tier
 could not be trusted, so nobody ran it; every version submitted on Postgres had been failing to
 prepare. Every SQL builder is now handed to Postgres and asked whether it is legal.

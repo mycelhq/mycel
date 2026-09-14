@@ -49,7 +49,8 @@ test("a QUEUED task goes back in the queue and is NOT marked failed", async () =
 
   assert.deepEqual(requeued, ["t1"]);
   assert.deepEqual(setStatus, [], "a run that is going to happen must not leave a permanent red row");
-  assert.equal(n, 1);
+  assert.equal(n.total, 1);
+  assert.equal(n.requeued, 1, "a queued run goes back, and the count must say so");
 });
 
 test("a RUNNING task stays failed — re-sending a client's invoice chase is worse than a button", async () => {
@@ -84,7 +85,9 @@ test("a mixed batch: the safe ones are rescued, the rest are reported", async ()
   const n = await recoverTasks(store, async (id) => { requeued.push(id); });
   assert.deepEqual(requeued, ["a", "c"]);
   assert.deepEqual(setStatus.map((s) => s.id), ["b", "d"]);
-  assert.equal(n, 4, "the count is what was interrupted, not what was buried");
+  assert.equal(n.total, 4, "the count is what was interrupted, not what was buried");
+  assert.equal(n.requeued, 2, "the two that had never started went back in the queue");
+  assert.equal(n.failed, 2, "and only the two that were mid-run are a loss");
 });
 
 // ── a parked fan-out parent ──────────────────────────────────────────────────────────────────────
@@ -105,7 +108,8 @@ test("a PARKED parent whose children finished during the outage is advanced, not
   assert.deepEqual(setStatus, [], "the parent was failed even though its work was collectable");
   // `recoverTasks` returns how many interrupted tasks it HANDLED, not how many it failed — the
   // requeue path counts too. Whether the row was buried is `setStatus`, which is what matters here.
-  assert.equal(n, 1);
+  assert.equal(n.total, 1);
+  assert.equal(n.rejoined, 1, "a rejoined parent is neither failed nor requeued");
   assert.match(
     events.find((e) => e.type === "progress")?.note ?? "",
     /nothing was re-sent/,
@@ -118,7 +122,8 @@ test("a PARKED parent with a child still running is left alone to be triggered l
   // Not advanced yet, but a pending child will call onChildFinished when it lands.
   const n = await recoverTasks(store, undefined, async () => true);
   assert.deepEqual(setStatus, [], "a parent with work still in flight was failed");
-  assert.equal(n, 1, "it was handled, just not buried");
+  assert.equal(n.total, 1, "it was handled, just not buried");
+  assert.equal(n.rejoined, 1);
 });
 
 test("a PARKED parent nothing can ever advance is still failed — no new stall", async () => {
@@ -132,7 +137,8 @@ test("a PARKED parent nothing can ever advance is still failed — no new stall"
 
   assert.equal(setStatus.length, 1, "it was left parked with nothing able to advance it");
   assert.equal(setStatus[0].status, "failed");
-  assert.equal(n, 1);
+  assert.equal(n.total, 1);
+  assert.equal(n.failed, 1, "nothing could advance it, so it is a loss and is counted as one");
 });
 
 test("a rejoin that throws fails the row rather than leaving it non-terminal", async () => {
@@ -144,7 +150,8 @@ test("a rejoin that throws fails the row rather than leaving it non-terminal", a
   });
   assert.equal(setStatus.length, 1);
   assert.equal(setStatus[0].status, "failed");
-  assert.equal(n, 1);
+  assert.equal(n.total, 1);
+  assert.equal(n.failed, 1, "a rejoin that throws must land in the failed count, not vanish");
 });
 
 test("none of this loosens the rule that mid-flight work stays failed", async () => {
@@ -167,5 +174,6 @@ test("with no rejoin injected, behaviour is exactly what it was", async () => {
   const n = await recoverTasks(store);
   assert.equal(setStatus.length, 1);
   assert.equal(setStatus[0].status, "failed");
-  assert.equal(n, 1);
+  assert.equal(n.total, 1);
+  assert.equal(n.failed, 1);
 });

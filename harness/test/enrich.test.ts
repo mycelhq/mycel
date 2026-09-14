@@ -28,6 +28,7 @@ import {
   FULLENRICH_RATE_ENV,
   FULLENRICH_RESOLVER,
 } from "../src/gtm/enrich";
+import { PROVIDERS, shortestPath } from "../src/gtm/providers";
 import { PEOPLE_COLLECTION, VOYAGER_RESOLVER } from "../src/linkedin/graph";
 import { gtmWedge } from "../src/gtm/stages";
 
@@ -78,7 +79,10 @@ test("with no key the resolver is cleanly ABSENT — no error, no row, and above
     const r = await enrichEmails(domain(), { project_id: "p-unset" }, [{ key: "dana-okafor", name: "Dana Okafor" }]);
     assert.equal(r.ok, false);
     assert.equal(r.written, 0);
-    assert.match(r.reason!, /FULLENRICH_API_KEY/, "the founder must be told the variable, not just that it failed");
+    // The VARIABLE, and specifically one they can act on today. This asserted FULLENRICH_API_KEY,
+    // which named the one provider whose key arrives via a sales conversation.
+    assert.match(r.reason!, new RegExp(shortestPath(PROVIDERS.enrich)!.env), "tell them the variable, not just that it failed");
+    assert.match(r.reason!, new RegExp(shortestPath(PROVIDERS.crawl)!.env), "and the free hop that runs before it");
 
     // THE ASSERTION THIS FILE EXISTS FOR. The row is untouched: no `email`, and no `provenance.email`
     // entry claiming a vendor was tried. The waterfall honestly shows the one hop that happened.
@@ -305,7 +309,7 @@ test("gtm: an unavailable enrichment path says so instead of returning an empty 
     // Not merely empty — refused, with the variable named.
     assert.equal(r.ok, false, "an unavailable path must never report success");
     assert.ok(r.reason, "an empty result with no reason is the silent failure this repo keeps paying for");
-    assert.match(r.reason!, new RegExp(FULLENRICH_KEY_ENV), "name the thing a founder can actually set");
+    assert.match(r.reason!, new RegExp(shortestPath(PROVIDERS.enrich)!.env), "name the thing a founder can actually set");
     assert.equal(r.written, 0);
     assert.equal(r.found, 0);
 
@@ -419,4 +423,81 @@ test("parseRichProfile surfaces the portrait alongside role and company", () => 
   assert.equal(rich.photo_url, "https://media.licdn.com/dms/image/rich.jpg");
   assert.equal(rich.title, "CFO");
   assert.equal(rich.company_name, "Acme");
+});
+
+// ── The paid hop can be either vendor ───────────────────────────────────────
+//
+// FullEnrich was the only paid resolver, and `fullEnrichConfigured()` read its key directly — so one
+// company's account was the definition of whether paid enrichment existed. These pin the second one
+// end to end, because a provider that resolves and is never called is the bug this repo keeps
+// finding: the capability exists and nothing can reach it.
+
+test("a Hunter key reaches Hunter, and the hop on the founder's screen says so", async () => {
+  await withKey(
+    { HUNTER_API_KEY: "hunter-key", FULLENRICH_API_KEY: undefined, FIRECRAWL_API_KEY: undefined, JINA_API_KEY: undefined },
+    async () => {
+      await person("p-hunter", "rui-silva", { name: "Rui Silva", company_domain: "brightlane.io" });
+
+      const seen: string[] = [];
+      const realFetch = globalThis.fetch;
+      globalThis.fetch = (async (url: string | URL) => {
+        const u = String(url);
+        seen.push(u);
+        assert.ok(!u.includes("fullenrich"), "FullEnrich is unkeyed here and must not be called");
+        return new Response(
+          JSON.stringify({ data: { email: "rui@brightlane.io", score: 97, verification: { status: "valid" } } }),
+          { status: 200, headers: { "content-type": "application/json" } },
+        );
+      }) as typeof fetch;
+
+      try {
+        const targets = await enrichableFromGraph(domain(), "p-hunter", ["rui-silva"]);
+        const r = await enrichEmails(domain(), { project_id: "p-hunter" }, targets);
+
+        assert.ok(seen.some((u) => u.includes("api.hunter.io")), `never called Hunter: ${seen.join(", ")}`);
+        assert.equal(r.ok, true);
+        assert.equal(r.found, 1);
+
+        const rows = await domain().queryRecords({ project_id: "p-hunter", wedge: gtmWedge(), collection: PEOPLE_COLLECTION });
+        const rui = rows.find((x) => x.key === "rui-silva")!.data as Record<string, unknown>;
+        assert.equal(rui.email, "rui@brightlane.io");
+        assert.equal(rui.email_status, "VALID", "Hunter's own verdict, not a boolean we flattened it into");
+
+        const hops = (rui.provenance as { email?: { by?: string; attempts?: Array<{ by?: string; credits?: number }> } }).email;
+        assert.equal(hops?.by, "hunter", "the hop must name the vendor that actually ran");
+        const paidHop = hops?.attempts?.find((a) => a.by === "hunter");
+        assert.ok(paidHop, `no hunter hop in ${JSON.stringify(hops?.attempts)}`);
+        assert.equal(paidHop!.credits, undefined, "Hunter bills searches and reports no per-call cost — absent, never 0");
+        assert.ok(
+          !hops?.attempts?.some((a) => a.by === FULLENRICH_RESOLVER),
+          "a hop for a vendor that was never called is a claim about a request that never left the building",
+        );
+      } finally {
+        globalThis.fetch = realFetch;
+      }
+    },
+  );
+});
+
+test("an exhausted Hunter key says so, rather than reading as a market with nobody in it", async () => {
+  await withKey(
+    { HUNTER_API_KEY: "hunter-key", FULLENRICH_API_KEY: undefined, FIRECRAWL_API_KEY: undefined, JINA_API_KEY: undefined },
+    async () => {
+      await person("p-hunter-dry", "rui-silva", { name: "Rui Silva", company_domain: "brightlane.io" });
+      const realFetch = globalThis.fetch;
+      globalThis.fetch = (async () =>
+        new Response(JSON.stringify({ errors: [{ id: "usage_exceeded", code: 429, details: "You have reached your usage limit." }] }), {
+          status: 429,
+          headers: { "content-type": "application/json" },
+        })) as typeof fetch;
+      try {
+        const targets = await enrichableFromGraph(domain(), "p-hunter-dry", ["rui-silva"]);
+        const r = await enrichEmails(domain(), { project_id: "p-hunter-dry" }, targets);
+        assert.equal(r.ok, false);
+        assert.match(r.reason!, /usage limit/, "'found 0' and 'could not look' are different facts");
+      } finally {
+        globalThis.fetch = realFetch;
+      }
+    },
+  );
 });

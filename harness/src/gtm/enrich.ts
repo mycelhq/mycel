@@ -54,13 +54,15 @@ import type { DomainStore } from "../domain";
 import { PEOPLE_COLLECTION, VOYAGER_RESOLVER, VOYAGER_COST_USD } from "../linkedin/graph";
 import { gtmWedge } from "./stages";
 import {
-  FIRECRAWL_KEY_ENV,
   FIRECRAWL_RESOLVER,
-  firecrawlConfigured,
+  crawlConfigured,
+  crawlKeyEnv,
   firecrawlPerson,
   type FirecrawlHop,
 } from "./firecrawl";
 import { patternHop, PATTERN_RESOLVER, type PatternHop } from "./pattern";
+import { hunterFind, type HunterHop } from "./hunter";
+import { resolveProvider, shortestPath } from "./providers";
 
 /**
  * The environment variable a founder sets to turn this on. Nothing else is needed.
@@ -93,12 +95,24 @@ const POLL_ATTEMPTS = Number(process.env.FULLENRICH_POLL_ATTEMPTS ?? 20);
 
 /** Is the resolver present? False is a normal, supported state — see the header. */
 export function fullEnrichConfigured(): boolean {
-  return !!(process.env[FULLENRICH_KEY_ENV] ?? "").trim();
+  return paidVendor() === "fullenrich";
 }
 
-/** Either hop can enrich. Both off is the only "not configured". */
+/**
+ * WHICH PAID RESOLVER IS IN PLAY — `fullenrich` | `hunter` | undefined.
+ *
+ * This used to be `is FULLENRICH_API_KEY set`, which made one vendor's account the definition of
+ * whether paid enrichment exists at all. `providers.ts` owns the question now. The two vendors do
+ * not share a call path — FullEnrich submits a batch and polls, Hunter answers one person per GET —
+ * only a result, so everything downstream of the join is untouched.
+ */
+export function paidVendor(): string | undefined {
+  return resolveProvider("enrich").chosen?.id;
+}
+
+/** Any hop can enrich. All off is the only "not configured". */
 export function enrichmentConfigured(): boolean {
-  return fullEnrichConfigured() || firecrawlConfigured();
+  return paidVendor() !== undefined || crawlConfigured();
 }
 
 /** Dollars per credit, or undefined when the founder has not told us. Never guessed. */
@@ -149,9 +163,21 @@ export interface EnrichResult {
   reason?: string;
 }
 
-const NOT_CONFIGURED =
-  `lead enrichment is not configured — set ${FIRECRAWL_KEY_ENV} to crawl public company pages, ` +
-  `or ${FULLENRICH_KEY_ENV} for the paid email waterfall`;
+/**
+ * Read at call time, not captured at import.
+ *
+ * It names the key for the provider actually resolved, and a module-level const froze that answer
+ * at whatever the environment happened to be when the file was first imported.
+ */
+const notConfigured = (): string =>
+  `lead enrichment is not configured — set ${crawlKeyEnv()} to crawl public company pages, ` +
+  `or ${paidKeyEnv()} for the paid email waterfall`;
+
+/** The paid key to name when telling somebody how to turn the waterfall on. */
+function paidKeyEnv(): string {
+  const r = resolveProvider("enrich");
+  return r.chosen?.env ?? shortestPath(r.options)!.env;
+}
 
 /** Which paid fields to ask for. Phones cost ~10 credits — off unless FULLENRICH_INCLUDE_PHONES=1. */
 export function enrichFieldsRequested(): string[] {
@@ -318,9 +344,9 @@ export function emailProvenance(
   at: string,
   found: boolean,
   credits?: number,
-  fire?: Pick<FirecrawlHop, "ok" | "credits" | "reason">,
+  fire?: Pick<FirecrawlHop, "ok" | "credits" | "reason" | "by">,
   pattern?: Pick<PatternHop, "ok" | "guess" | "note">,
-  opts: { paid?: boolean } = {},
+  opts: { paid?: boolean; by?: string } = {},
 ): Record<string, unknown> {
   const rate = usdPerCredit();
   const paidCost = credits !== undefined && rate !== undefined ? { cost_usd: Number((credits * rate).toFixed(4)) } : {};
@@ -340,7 +366,9 @@ export function emailProvenance(
   }
   if (fire) {
     attempts.push({
-      by: FIRECRAWL_RESOLVER,
+      // The vendor that actually crawled. Defaulted to Firecrawl only for a hop recorded before
+      // `by` existed — a fresh one always carries it, because a second provider can do this now.
+      by: fire.by ?? FIRECRAWL_RESOLVER,
       ok: fire.ok,
       found: fire.ok,
       ...(fire.credits !== undefined ? { credits: fire.credits } : {}),
@@ -348,18 +376,21 @@ export function emailProvenance(
       note: fire.ok ? "address appeared on a public company page" : (fire.reason ?? "no address on the public pages"),
     });
   }
+  const paidBy = opts.by ?? FULLENRICH_RESOLVER;
   const includePaid = opts.paid !== false && (credits !== undefined || found || !fire);
   if (includePaid) {
     attempts.push({
-      by: FULLENRICH_RESOLVER,
+      by: paidBy,
       ok: found,
       found,
+      // Hunter bills searches, not credits, and reports no per-call cost. `enrich.ts`'s rule holds:
+      // absent, never 0, because a 0 is summed into what the founder reads as enrichment spend.
       ...(credits !== undefined ? { credits } : {}),
       ...paidCost,
       at,
     });
   }
-  const by = found ? FULLENRICH_RESOLVER : fire?.ok ? FIRECRAWL_RESOLVER : undefined;
+  const by = found ? paidBy : fire?.ok ? (fire.by ?? FIRECRAWL_RESOLVER) : undefined;
   return {
     email: {
       by,
@@ -454,7 +485,7 @@ export async function enrichEmails(
   }
   // Paid FullEnrich needs a vendor. The free half (pattern + scrape) runs even when that key is
   // empty — same policy as growth/lib/enrich/waterfall.ts: spend nothing until the cheap hops miss.
-  if (paid && !enrichmentConfigured()) return { ...empty, reason: NOT_CONFIGURED };
+  if (paid && !enrichmentConfigured()) return { ...empty, reason: notConfigured() };
 
   const wanted = targets.filter((t) => t?.key).slice(0, ENRICH_BATCH);
   if (!wanted.length) {
@@ -467,8 +498,8 @@ export async function enrichEmails(
     if (hop) patternByKey.set(t.key, hop);
   }
 
-  const fireOn = firecrawlConfigured();
-  const fullOn = fullEnrichConfigured();
+  const fireOn = crawlConfigured();
+  const vendor = paidVendor();
   const fireByKey = new Map<string, FirecrawlHop>();
   if (fireOn) {
     for (const t of wanted) {
@@ -477,12 +508,32 @@ export async function enrichEmails(
   }
 
   const stillNeed =
-    paid && fullOn ? wanted.filter((t) => !fireByKey.get(t.key)?.email) : [];
+    paid && vendor ? wanted.filter((t) => !fireByKey.get(t.key)?.email) : [];
+
+  /**
+   * HUNTER IS ONE CALL PER PERSON, AND THAT IS THE WHOLE INTEGRATION.
+   *
+   * FullEnrich takes a batch, returns an id and is polled; Hunter answers a GET. They join on the
+   * same per-key map and nothing below this branch knows which one ran. Hunter carries no profile
+   * fields — no photo, no LinkedIn URL, no logo — so `parseRichProfile` stays FullEnrich-only and
+   * those columns are simply absent rather than filled with something invented.
+   */
+  const hunterByKey = new Map<string, HunterHop>();
+  if (vendor === "hunter") {
+    for (const t of stillNeed) hunterByKey.set(t.key, await hunterFind(t));
+    const anyEmail = [...hunterByKey.values()].some((h) => h.email);
+    const firstDetail = [...hunterByKey.values()].find((h) => h.detail && !h.email)?.detail;
+    // A whole batch that resolved nothing AND reported a reason is a configuration problem — a dead
+    // key, an exhausted quota — not a run where nobody happened to be findable. Say the reason.
+    if (stillNeed.length && !anyEmail && firstDetail && !fireByKey.size) {
+      return { ...empty, reason: firstDetail };
+    }
+  }
 
   const fields = enrichFieldsRequested();
   let credits = 0;
   let body: { status?: unknown; data?: unknown; cost?: { credits?: unknown } } | undefined;
-  if (stillNeed.length) {
+  if (vendor === "fullenrich" && stillNeed.length) {
     const submit = await call("/contact/enrich/bulk", {
       method: "POST",
       body: JSON.stringify({
@@ -545,14 +596,19 @@ export async function enrichEmails(
   const people: EnrichedPerson[] = [];
   let written = 0;
   let found = 0;
-  const fireCredits = [...fireByKey.values()].reduce((s, h) => s + h.credits, 0);
+  const fireCredits = [...fireByKey.values()].reduce((s, h) => s + (h.credits ?? 0), 0);
 
   for (const t of wanted) {
     const raw = fullByKey.get(t.key);
     const fire = fireByKey.get(t.key);
+    const hunt = hunterByKey.get(t.key);
     const emails = raw
       ? contactEmailsFromRow(raw)
-      : { work: fire?.email ? { email: fire.email, status: "ON_PAGE" } : undefined, personal: undefined, phone: fire?.phone };
+      : hunt?.email
+        // Hunter's verdict, kept verbatim. `ACCEPT_ALL` is a domain that says yes to everything, so
+        // flattening it to "valid" would hand the sender a bounce it had been warned about.
+        ? { work: { email: hunt.email, status: hunt.status ?? "UNKNOWN" }, personal: undefined, phone: fire?.phone }
+        : { work: fire?.email ? { email: fire.email, status: "ON_PAGE" } : undefined, personal: undefined, phone: fire?.phone };
     const rich = raw ? parseRichProfile(raw) : {};
     if (emails.work) found++;
 
@@ -572,9 +628,19 @@ export async function enrichEmails(
     };
     people.push(person);
 
-    if (!emails.work && !fire && !patternByKey.get(t.key) && !raw) continue;
+    if (!emails.work && !fire && !patternByKey.get(t.key) && !raw && !hunt) continue;
 
-    const fullShare = stillNeed.length && raw !== undefined ? credits / stillNeed.length : stillNeed.length ? 0 : undefined;
+    /**
+     * FullEnrich bills the BATCH, so each face carries its share — and a face that was in the batch
+     * and resolved nothing carries 0, because the search was still paid for.
+     *
+     * Guarded on the vendor, not just on `stillNeed`. Hunter also populates `stillNeed` and reports
+     * no per-call cost at all, so without this every Hunter hop was stamped `credits: 0` — a number
+     * `readProvenance` sums into what the founder reads as enrichment spend, which is the precise
+     * under-reporting this module's header forbids. Absent, never zero.
+     */
+    const fullShare =
+      vendor !== "fullenrich" || !stillNeed.length ? undefined : raw !== undefined ? credits / stillNeed.length : 0;
     try {
       const data: Record<string, unknown> = {
         ...(emails.work ? { email: emails.work.email, email_status: emails.work.status } : {}),
@@ -591,7 +657,17 @@ export async function enrichEmails(
         ...(rich.company_domain ? { company_domain: rich.company_domain, company_key: rich.company_domain } : {}),
         provenance: {
           ...(existing.get(t.key) ?? {}),
-          ...emailProvenance(at, !!raw && !!emails.work, fullShare, fire, patternByKey.get(t.key), { paid }),
+          ...emailProvenance(
+            at,
+            // "the paid hop found it" — true for either vendor, and false when the address came off
+            // a public page instead. Writing `found` for a crawl hit would credit a spend that
+            // never happened.
+            (!!raw || !!hunt?.email) && !!emails.work,
+            fullShare,
+            fire,
+            patternByKey.get(t.key),
+            { paid, ...(vendor ? { by: vendor } : {}) },
+          ),
           ...(raw ? profileEnrichProvenance(at, !!rich.linkedin_url) : {}),
         },
       };

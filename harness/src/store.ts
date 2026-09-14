@@ -206,6 +206,27 @@ const TERMINAL = new Set<TaskStatus>([
  */
 export const STALE_TASK_MS = Number(process.env.MYCEL_STALE_TASK_MS ?? 10 * 60 * 1000);
 
+/**
+ * How long an approval row says it has, and it must be the SAME number the timer honours.
+ *
+ * ═══ THREE DEADLINES FOR ONE BOUND ═══
+ *
+ * This lived in `approvals.ts` as 24 hours, and each store invented its own default for the row:
+ * five minutes in memory, thirty in Postgres. So every approval in production carried, in writing,
+ * a deadline forty-eight times shorter than the one the system actually honoured — and anything
+ * READING the row (a countdown on a card, the dead-run sweep asking whether a gate is still live)
+ * was wrong in the direction that throws a founder's draft away.
+ *
+ * HERE for the same reason `STALE_TASK_MS` is here: the memory store cannot import from
+ * `store.pg.ts` without dragging in the `pg` driver, and a constant each store re-declares is a
+ * constant they will eventually disagree about. `approvals.ts` re-exports it, so the window still
+ * has one name at every call site.
+ *
+ * The measurement behind twenty-four hours is in `approvals.ts`, at the timer: 25 of 26 real
+ * decisions arrived inside a day and only 2 inside thirty minutes.
+ */
+export const APPROVAL_TTL_MS = Number(process.env.MYCEL_APPROVAL_TTL_MS ?? 24 * 60 * 60 * 1000);
+
 export class InMemoryStore implements Store {
   private tasks = new Map<string, Task>();
   private events = new Map<string, TaskEvent[]>();
@@ -354,7 +375,7 @@ export class InMemoryStore implements Store {
       preview: a.preview,
       status: "pending",
       created_at: new Date().toISOString(),
-      expires_at: new Date(Date.now() + (a.ttlMs ?? 300000)).toISOString(),
+      expires_at: new Date(Date.now() + (a.ttlMs ?? APPROVAL_TTL_MS)).toISOString(),
     };
     this.approvals.set(approval.approval_id, approval);
     return approval;

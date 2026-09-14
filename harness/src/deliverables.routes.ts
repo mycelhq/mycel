@@ -1305,7 +1305,8 @@ export function mountDeliverableRoutes(app: Hono, deps: DeliverableRouteDeps): v
     const kase = await ownedCase(pid, d.case_id);
     if (!kase) return c.json({ error: "this engagement no longer exists" }, 404);
     if (kase.status === "closed") return c.json({ error: "this engagement is closed — reopen it before regenerating" }, 409);
-    const recent = await store.listTasks({ client_id: d.client_id, limit: 50 });
+    // Scoped in the QUERY — see `/v1/tasks`.
+    const recent = await store.listTasks({ client_id: d.client_id, project_ids: [pid], limit: 50 });
     const live = recent.filter(
       (t) =>
         t.project_id === pid &&

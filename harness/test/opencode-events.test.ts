@@ -484,11 +484,9 @@ test("opencode: a build without prompt_async falls back to /message without dead
 // failed task (`maxAttempts: 1`) or a resume prompt posted into a session that was already going to
 // continue the same turn by itself. One intent, two runs of it.
 //
-// `kortix-ai/suna` hit the same event on their deadline path and wrote the rule down in
-// `apps/api/src/projects/sandbox-deadline-policy.ts:295`. These fixtures are shaped from the wire
-// contract their sandbox agent server normalizes in
-// `apps/kortix-sandbox-agent-server/src/opencode-events.ts:208` — `{ name, data: { message,
-// statusCode, isRetryable, providerID } }`.
+// A comparable runtime hits the same event on its deadline path, and the rule is the same wherever
+// it is written down. These fixtures are shaped from the wire contract a sandbox agent server
+// normalises: `{ name, data: { message, statusCode, isRetryable, providerID } }`.
 
 function sessionError(data: Record<string, unknown>): OpenCodeEvent {
   return { type: "session.error", properties: { sessionID: SID, error: { name: "APIError", data } } } as OpenCodeEvent;
@@ -525,7 +523,7 @@ test("mapper: an error with NO retry flag is terminal, not a reprieve", () => {
   const m = new OpenCodeEventMapper(SID);
   const out = m.map(sessionError({ message: "something broke" }));
 
-  // Suna's reasoning, and the reason `=== true` is the test rather than a truthiness check: an
+  // a comparable runtime's reasoning, and the reason `=== true` is the test rather than a truthiness check: an
   // error carrying no retry flag is an error. Defaulting the unknown case to "still running" hands
   // out an unbounded reprieve to every error shape we have not seen yet.
   assert.ok(out.error, "an unflagged error must not be mistaken for a retry");

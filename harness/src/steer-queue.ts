@@ -1,10 +1,10 @@
 // SAYING SOMETHING TO A RUNNING BUILD — one message on the wire at a time, oldest first.
 //
 // ═════════════════════════════════════════════════════════════════════════════════════════════════
-// WHAT THIS TAKES FROM SUNA, AND WHAT IT DELIBERATELY DOES NOT
+// WHAT THIS TAKES FROM PRIOR ART, AND WHAT IT DELIBERATELY DOES NOT
 // ═════════════════════════════════════════════════════════════════════════════════════════════════
 //
-// `kortix-ai/suna` runs the same OpenCode daemon we do, and their
+// a comparable runtime runs the same OpenCode daemon we do, and their
 // `session-lifecycle/inbox-admission.ts` says the thing worth knowing outright:
 //
 //     "OpenCode's legacy `/prompt_async` route interleaves inputs posted during a live turn. The
@@ -27,7 +27,7 @@
 //   1. ONE ON THE WIRE AT A TIME. Two steers typed quickly both called `startPrompt` concurrently
 //      and arrived in whichever order the network settled. A founder correcting themselves — "use
 //      the blue" then "no, the dark blue" — could have the correction land first.
-//   2. A TRANSIENT FAILURE IS NOT A REFUSAL. Suna's `deliverWithRetry` exists because "a just-woken
+//   2. A TRANSIENT FAILURE IS NOT A REFUSAL. a comparable runtime's `deliverWithRetry` exists because "a just-woken
 //      sandbox is flaky for a beat" and their old path "bounced on the FIRST such hiccup, which told
 //      the user 'still waking… send that again' and dropped their message even though the session
 //      was up". Ours answered the same way, in the same situation, with a 409 and no retry.
@@ -41,7 +41,7 @@
 // said. A failure after the retries is reported as a failure — the one outcome that must never
 // happen is the message vanishing while the caller is told `ok`.
 
-/** How long to keep trying one message. Suna uses 45s for a waking box; a live run needs far less. */
+/** How long to keep trying one message. a comparable runtime uses 45s for a waking box; a live run needs far less. */
 export const DELIVER_DEADLINE_MS = 20_000;
 
 /**
@@ -58,7 +58,7 @@ export const MAX_STEER_TURNS = 4;
 /**
  * How long a steered turn has to START before the run stops waiting for it.
  *
- * A 204 from `prompt_async` is not proof that anything will run. Suna verified against the daemon
+ * A 204 from `prompt_async` is not proof that anything will run. a comparable runtime verified against the daemon
  * that it "answers 204 for an agent it cannot run", and their delivery loop read that as success
  * while the user's text vanished with "no queue row, no transcript bubble, no error, and nothing to
  * retry".
@@ -81,7 +81,7 @@ interface Pending {
 /**
  * WHICH FAILURES MAY BE RETRIED — and the reason this is a narrow list rather than "5xx".
  *
- * `kortix-ai/suna`'s `sandbox-proxy/prompt-dedupe.ts` states the constraint we are under:
+ * a comparable runtime's `sandbox-proxy/prompt-dedupe.ts` states the constraint we are under:
  *
  *     "Prompt delivery is the one MUTATING call on the sandbox proxy: POSTing the same body twice to
  *      opencode enqueues the user's message twice (the 3x-queued bug). opencode has no idempotency
@@ -158,7 +158,7 @@ export class SteerQueue {
    * ═══ THE REASON THIS COUNTER EXISTS, WHICH IS THE STEER BUG ITSELF ═══
    *
    * OpenCode persists a prompt posted during a live turn and QUEUES ITS EXECUTION behind that turn.
-   * Suna states it plainly in `session-lifecycle/store.ts`: "between the POST and the turn there is
+   * a comparable runtime states it plainly in `session-lifecycle/store.ts`: "between the POST and the turn there is
    * a real interval in which the message exists, belongs to the transcript, and has not run."
    *
    * A Mycel run ends on `session.idle`, and `runtime.ts` answers that by calling `oc.abort()` and
@@ -238,7 +238,7 @@ export class SteerQueue {
     }
   }
 
-  /** Suna's `deliverWithRetry`, shorter: keep trying through the flaky beat, then say so. */
+  /** a comparable runtime's `deliverWithRetry`, shorter: keep trying through the flaky beat, then say so. */
   private async deliver(text: string): Promise<{ delivered: true } | { delivered: false; why: string }> {
     const now = this.deps.now ?? Date.now;
     const sleep = this.deps.sleep ?? wait;

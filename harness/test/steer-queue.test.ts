@@ -1,6 +1,6 @@
 // STEERING — one message on the wire at a time, oldest first.
 //
-// Ported from kortix-ai/suna's `session-lifecycle/inbox-admission.ts` and `deliver.ts`. They run the
+// Ported from a comparable runtime's `session-lifecycle/inbox-admission.ts` and `deliver.ts`. They run the
 // same OpenCode daemon and say the thing outright: "`/prompt_async` interleaves inputs posted during
 // a live turn... one prompt of a session on the wire at a time, oldest first, so the user's own
 // messages reach OpenCode in the order they were typed."
@@ -60,7 +60,7 @@ test("only one is on the wire at a time", async () => {
 });
 
 test("a busy daemon is retried, not refused", async () => {
-  // Suna's reason, verbatim: "a just-woken sandbox is flaky for a beat" and the old path "bounced on
+  // a comparable runtime's reason, verbatim: "a just-woken sandbox is flaky for a beat" and the old path "bounced on
   // the FIRST such hiccup, which told the user 'still waking… send that again' and dropped their
   // message even though the session was up". Ours answered 409 in exactly that situation.
   const d = daemon({ refuseFirst: 3 });
@@ -93,7 +93,7 @@ test("but not forever — a deadline ends with a sentence, never a hang", async 
 // retry loop. A 502 from a still-booting daemon was reported to the founder as a refusal, which is
 // the exact behaviour the retry was added to prevent.
 //
-// The fix is not "retry throws". Suna's `prompt-dedupe.ts`: "opencode has no idempotency of its own,
+// The fix is not "retry throws". a comparable runtime's `prompt-dedupe.ts`: "opencode has no idempotency of its own,
 // so the proxy must never re-send a prompt body it may already have delivered." One submit of theirs
 // became four identical user messages because an endpoint was retried on an ambiguous timeout.
 
@@ -236,7 +236,7 @@ test("the queue reports how many are waiting rather than guessing", async () => 
 // ═════════════════════════════════════════════════════════════════════════════════════════════════
 //
 // OpenCode persists a prompt posted during a live turn and QUEUES its execution behind that turn.
-// Suna's `session-lifecycle/store.ts`: "between the POST and the turn there is a real interval in
+// a comparable runtime's `session-lifecycle/store.ts`: "between the POST and the turn there is a real interval in
 // which the message exists, belongs to the transcript, and has not run."
 //
 // A Mycel run ends on `session.idle`, and the runtime answered that by aborting the session and
@@ -286,7 +286,7 @@ test("the extension is bounded", () => {
 });
 
 test("the wait for a steered turn is bounded, and bounded on a START not a duration", () => {
-  // A 204 from `prompt_async` is not proof anything will run — Suna verified the daemon "answers 204
+  // A 204 from `prompt_async` is not proof anything will run — a comparable runtime verified the daemon "answers 204
   // for an agent it cannot run", and their loop read it as success while the user's text vanished
   // with "no queue row, no transcript bubble, no error, and nothing to retry".
   //

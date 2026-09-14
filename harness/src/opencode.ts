@@ -847,7 +847,7 @@ export class OpenCodeEventMapper {
    * `APIError.data.isRetryable`. We were throwing that answer away and keeping only `name` and
    * `data.message`.
    *
-   * `kortix-ai/suna` drive the same daemon and hit this on the deadline path
+   * a comparable runtime drive the same daemon and hit this on the deadline path
    * (`projects/sandbox-deadline-policy.ts:295`): treating a retryable error as a turn end "shortened
    * the box to the 15-minute idle tail WHILE THE TURN WAS STILL RUNNING, so a backoff longer than 15
    * minutes killed the box mid-work."
@@ -868,7 +868,7 @@ export class OpenCodeEventMapper {
    * case), and the emission feeds the stall watchdog so the backoff does not count against a clock
    * that would kill the run recovering from it.
    *
-   * `isRetryable` absent counts as TERMINAL, matching Suna's reasoning: "an error carrying no retry
+   * `isRetryable` absent counts as TERMINAL, matching a comparable runtime's reasoning: "an error carrying no retry
    * flag is an error, and defaulting the unknown case to 'still running' would restore the unbounded
    * reprieve this whole change deletes." Only a literal `true` earns the reprieve.
    *

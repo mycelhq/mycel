@@ -66,7 +66,8 @@ test("a run reclaimed on boot says why on the row, not only in the event log", a
   await store.createTask(chase("t_running", "running"));
 
   const n = await recoverTasks(store);
-  assert.equal(n, 1);
+  assert.equal(n.total, 1);
+  assert.equal(n.failed, 1);
 
   const row = await store.getTask("t_running");
   assert.equal(row?.status, "failed");
@@ -110,7 +111,7 @@ test("a terminal run is never reclaimed a second time", async () => {
   await store.createTask(chase("t_done", "succeeded"));
   await store.setStatus("t_done", "failed", "opencode Anthropic: overloaded_error");
 
-  assert.equal(await recoverTasks(store), 0);
+  assert.deepEqual(await recoverTasks(store), { requeued: 0, rejoined: 0, failed: 0, total: 0 });
   assert.equal((await store.getTask("t_done"))?.error, "opencode Anthropic: overloaded_error");
 });
 

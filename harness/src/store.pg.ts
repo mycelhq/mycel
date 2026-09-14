@@ -22,7 +22,7 @@ const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/
 // driver. Re-exported here because that is the name every existing caller uses — and because the two
 // implementations disagreeing about what "stale" means is precisely the bug this move fixes.
 export { STALE_TASK_MS } from "./store";
-import { STALE_TASK_MS } from "./store";
+import { APPROVAL_TTL_MS, STALE_TASK_MS } from "./store";
 import type {
   Approval,
   Artifact,
@@ -417,7 +417,7 @@ export class PostgresStore implements Store {
       preview: a.preview,
       status: "pending",
       created_at: new Date().toISOString(),
-      expires_at: new Date(Date.now() + (a.ttlMs ?? 30 * 60_000)).toISOString(),
+      expires_at: new Date(Date.now() + (a.ttlMs ?? APPROVAL_TTL_MS)).toISOString(),
     };
     await this.pool.query(
       `INSERT INTO approvals (approval_id, task_id, action, risk, preview, status, expires_at)

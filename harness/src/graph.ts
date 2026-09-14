@@ -640,8 +640,12 @@ async function tasksForClient(
   clientId: string | undefined,
 ): Promise<import("./contract").Task[]> {
   if (!stores.tasks || !clientId || !ownerAllowed(auth, clientId)) return [];
-  const rows = await stores.tasks.listTasks({ client_id: clientId, limit: MAX_TASK_SCAN });
-  return rows.filter((t) => t.project_id === auth.project_id);
+  // Scoped in the QUERY — see `/v1/tasks`.
+  return await stores.tasks.listTasks({
+    client_id: clientId,
+    project_ids: [auth.project_id],
+    limit: MAX_TASK_SCAN,
+  });
 }
 
 const MAX_TASK_SCAN = 100;

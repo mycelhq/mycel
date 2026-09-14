@@ -8,6 +8,7 @@
 //
 // This is NOT a send-time step. It writes ONE default opener the founder edits — the same job the
 // composer's "First message, for everyone" box does by hand — never a per-recipient improvisation.
+import { BREAKUP_BRIEF, lint } from "@mycel/gtm-math";
 import { chatComplete } from "../litellm";
 import { getDomainStore } from "../domain";
 import { listLibrarySkills } from "../skill-library";
@@ -81,6 +82,14 @@ export async function draftFirstMessage(args: {
   sells_to?: string;
   /** The business / practice name, from its shape. */
   name?: string;
+  /**
+   * Write the LAST message instead of the first: it says we are going to stop, and asks for a no.
+   *
+   * A different message, not a softer one. Everything else in a cadence asks for a yes and treats a
+   * no as failure; this names the no as the easy answer and means it. The brief is shared with
+   * growth/ through @mycel/gtm-math so both sides send the same shape of ending.
+   */
+  breakup?: boolean;
   complete?: typeof chatComplete;
 }): Promise<string | undefined> {
   if (!args.orgId) return undefined;   // no org → no budgeted key → no call
@@ -102,9 +111,12 @@ export async function draftFirstMessage(args: {
   // The opener is written the way the GTM skill library says to — the curated (and self-refining)
   // outreach procedure, not just a fixed prompt. Absent library ⇒ the base rules still stand.
   const guidance = await gtmGuidance();
+  // LAST, so it is the closest instruction to the generation and overrides the opener rules above
+  // it — every one of which is written for a message that wants a yes.
+  const closing = args.breakup ? `\n\n${BREAKUP_BRIEF.join("\n")}` : "";
   const system = guidance
-    ? `${SYSTEM}\n\nFollow this outreach playbook — it is how the best messages here are written:\n\n${guidance}`
-    : SYSTEM;
+    ? `${SYSTEM}\n\nFollow this outreach playbook — it is how the best messages here are written:\n\n${guidance}${closing}`
+    : `${SYSTEM}${closing}`;
 
   const raw = await complete({
     orgId: args.orgId,
@@ -116,7 +128,34 @@ export async function draftFirstMessage(args: {
   if (!raw) return undefined;
 
   const message = clip(unwrap(raw), MAX_FIRST_MESSAGE);
-  return message || undefined;
+  if (!message) return undefined;
+
+  /**
+   * ═══ THE GATE THE CUSTOMER'S MESSAGES NEVER HAD ═══
+   *
+   * `growth/` has refused drafts on these rules since August and in one week rejected 263 against
+   * 200 sent — em dashes, banned phrases, two asks in one note, a link that is not ours, the
+   * message that opens by talking about us. This path drafts the same kind of cold message for a
+   * paying customer and had no check at all, so everything the GTM skill library knows was advice
+   * nothing could enforce.
+   *
+   * Shared rather than copied: `@mycel/gtm-math` now owns the rules, and growth re-exports from the
+   * same file. Two copies would drift, and this session has already found a claim query disagreeing
+   * with its own TypeScript twin and a signal detector sharing no vocabulary with its scorer.
+   *
+   * REFUSING IS THE RIGHT OUTCOME. A caller that gets `undefined` here already handles it — that is
+   * the same answer it gets when there is nothing to ground on — and an unsent message costs a
+   * touch, while a bad one costs the prospect. The violations are logged so the refusal is legible
+   * rather than a mysterious blank.
+   */
+  const violations = lint(message);
+  if (violations.length > 0) {
+    console.warn(
+      `[gtm] first message refused by the copy gate: ${violations.map((v) => `${v.rule} (${v.detail})`).join("; ")}`,
+    );
+    return undefined;
+  }
+  return message;
 }
 
 /** One prospect, as much of their world as the search/enrichment left on the row. */

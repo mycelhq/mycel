@@ -6,7 +6,7 @@
 // preview has never worked"; it was working, and reporting its ordinary first minute as a server
 // failure, in a document format for machines.
 //
-// The rules are from kortix-ai/suna's `sandbox-proxy/preview-state-page.ts`, which had already paid
+// The rules are from a comparable runtime's `sandbox-proxy/preview-state-page.ts`, which had already paid
 // for them.
 
 import { test } from "node:test";
@@ -16,7 +16,7 @@ import { PREVIEW_STATE_HEADER, previewPage, previewStatus, type PreviewPageState
 const ALL: PreviewPageState[] = ["unknown", "finished", "starting", "installing", "booting", "unreachable", "failed"];
 
 test("a transient state answers 200, because intermediaries swap 5xx for their own page", () => {
-  // Suna proved this rather than assumed it: their proxy-hop header was MISSING from what arrived,
+  // a comparable runtime proved this rather than assumed it: their proxy-hop header was MISSING from what arrived,
   // so Cloudflare had replaced the origin's careful page. A 503 here means the founder sees a
   // gateway's guess instead of what is actually happening.
   for (const s of ["starting", "installing", "booting", "unreachable"] as const) {

@@ -590,7 +590,7 @@ export interface DomainStore {
    * ═══ WHY THIS OPTION EXISTS ═══
    *
    * `metadata` is written as a WHOLE OBJECT, and its callers are read-modify-write: read the row,
-   * mutate the parsed jsonb in JS, write it all back. Suna hit the same shape in `projects.metadata`
+   * mutate the parsed jsonb in JS, write it all back. a comparable runtime hit the same shape in `projects.metadata`
    * and named it exactly (`lib/metadata-merge.ts`, FIX-J): "a concurrent writer holding a STALE
    * snapshot silently reverted the pin (a classic read-modify-write lost update)."
    *

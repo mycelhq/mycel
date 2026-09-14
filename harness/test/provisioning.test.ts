@@ -8,7 +8,7 @@
 // eight orphaned sandboxes from interrupted deploys had reached the organisation cap. Nothing about
 // that job was wrong.
 //
-// The taxonomy is Suna's (`session-lifecycle/types.ts`): "`unreachable` exists because everything
+// The taxonomy is a comparable runtime's (`session-lifecycle/types.ts`): "`unreachable` exists because everything
 // that produced `failed` on this path was in fact a down runtime, and the drain treated it as
 // terminal: a queued prompt ... went `dead_lettered` on its FIRST attempt and was never re-tried
 // when the box came back minutes later."

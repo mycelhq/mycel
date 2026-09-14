@@ -1,6 +1,6 @@
 // A DECISION ON A JOB THAT IS ALREADY OVER.
 //
-// `kortix-ai/suna`'s `projects/lib/pending-questions.ts` puts the rule this way: a stale ask "is
+// a comparable runtime's `projects/lib/pending-questions.ts` puts the rule this way: a stale ask "is
 // worse than none: it invites an answer nothing is waiting for." We were on the wrong side of it in
 // both directions.
 //

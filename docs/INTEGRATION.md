@@ -318,7 +318,13 @@ What the kernel enforces today, and what it doesn't yet — so you deploy it kno
 - **Durability is opt-in via `MYCEL_DATABASE_URL`.** With it set, everything is Postgres-backed
   (tasks, events, connections, clients, threads, knowledge, and tenants) and survives restarts —
   covered by a restart test in CI. Without it, the in-memory default loses state on restart.
-- **No durable mid-run resume.** On restart, interrupted tasks are marked `failed` (not resumed).
+- **No durable mid-run resume.** A run that was *executing* cannot be picked up where it stopped —
+  its sandbox and OpenCode session are gone — so it is marked `failed`, with the reason on the row,
+  and the box it was holding is deleted. What is NOT lost: a task still `queued` had not started, so
+  it goes back in the queue (nothing was sent, nothing was charged), and a parent waiting on
+  fanned-out work rejoins it rather than throwing the results away. Boot reports the three
+  separately, because "12 failed" and "12 requeued" are not the same news. A sweep does the same for
+  runs that go silent for ten minutes without a restart.
 
 ## The frontend is generated, not imported
 

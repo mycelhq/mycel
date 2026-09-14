@@ -1,6 +1,6 @@
 // THE ARSENAL THE SHAPER COMPOSES FROM — library skills, trade bundles, allowlisted skill sources.
 //
-// Kortix's marketplace is job-shaped runbooks (dunning-escalation, month-end-close), not vertical
+// a comparable runtime's marketplace is job-shaped runbooks (dunning-escalation, month-end-close), not vertical
 // HTML. The meta-agent searches that shelf and copies; it does not invent a taxonomy from two
 // sentences. We already seed `kernel/service-skills/<domain>/*.md` into the library. This module is
 // the missing wire: `draft_service` is handed the index, the matching bodies, and the bundles, so
@@ -567,7 +567,7 @@ export function withDraftServiceArsenal(input: unknown, research?: unknown): Rec
   return next;
 }
 
-/** A job skill needs a human ceiling — Kortix's Always/Never. `Never` as a heading or a list rule. */
+/** A job skill needs a human ceiling — a comparable runtime's Always/Never. `Never` as a heading or a list rule. */
 export function skillHasNever(content: string): boolean {
   const t = String(content ?? "");
   if (/^#{1,3}\s+Never\b/im.test(t)) return true;
@@ -608,7 +608,13 @@ export const RESEARCH_SERVICE_TASK_TYPE = "research_service";
 export const DRAFT_SERVICE_TASK_TYPE = "draft_service";
 
 export interface ArsenalDeps {
-  listTasks(a: { limit: number }): Promise<Array<{ project_id?: string; task_type: string; status: string }>>;
+  /*
+    `project_ids` is part of the contract, not an extra. Scoping in the QUERY is what stops a busy
+    neighbour filling the window — see `/v1/tasks` for the production measurement.
+  */
+  listTasks(a: { limit: number; project_ids?: readonly string[] }): Promise<
+    Array<{ project_id?: string; task_type: string; status: string }>
+  >;
   spawnTask(a: {
     project_id: string;
     wedge: string;
@@ -660,7 +666,8 @@ export async function spawnDraftAfterResearch(args: {
    * business, and the review card (which shows the newest draft) flickering between them. Anything
    * already drafted or drafting wins; the founder rejects it and asks again if they want another.
    */
-  const mine = (await deps.listTasks({ limit: 200 }).catch(() => []))
+  // Scoped in the QUERY — see `/v1/tasks`.
+  const mine = (await deps.listTasks({ project_ids: [task.project_id], limit: 200 }).catch(() => []))
     .filter((t) => t.project_id === task.project_id && t.task_type === DRAFT_SERVICE_TASK_TYPE);
   if (mine.some((t) => t.status === "queued" || t.status === "running" || t.status === "succeeded")) return undefined;
 
@@ -721,7 +728,8 @@ export async function spawnLearningResearch(args: {
    * that hung for thirty-nine minutes must not be retried automatically by a founder pressing the
    * same button again, which is how one bad run becomes six.
    */
-  const already = (await deps.listTasks({ limit: 200 }).catch(() => []))
+  // Scoped in the QUERY — see `/v1/tasks`.
+  const already = (await deps.listTasks({ project_ids: [task.project_id], limit: 200 }).catch(() => []))
     .some((t) => t.project_id === task.project_id && t.task_type === RESEARCH_SERVICE_TASK_TYPE);
   if (already) return undefined;
 

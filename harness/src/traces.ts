@@ -55,6 +55,24 @@ export interface TraceTotals {
   errors: number;
 }
 
+/**
+ * One paid step, kept rather than summed away.
+ *
+ * `reason` is the load-bearing field. `"model"` means the provider priced the call itself and the
+ * number passed through; `"model_estimated"` means it reported no price — which is what proxy mode
+ * does, where the provider is a custom openai-compatible entry with no pricing table — and the
+ * kernel fell back to its own. Both reach the same dollar total and the same spend ceiling, so a
+ * panel that prints one figure implies a precision this system does not have.
+ */
+export interface Charge {
+  ts: string;
+  cost_usd: number;
+  reason: string;
+  model?: string;
+  tier?: string;
+  tokens?: { input?: number; output?: number; reasoning?: number; cache_read?: number; cache_write?: number };
+}
+
 export interface Trace {
   task_id: string;
   /** The whole run. Opened by the first event, closed by `task.finished`. */
@@ -62,6 +80,23 @@ export interface Trace {
   totals: TraceTotals;
   /** Events the fold ignored (`progress`, `feedback.recorded`, …). Surfaced so a UI can say so. */
   event_count: number;
+  /**
+   * Every paid step, in order. The console renders the breakdown from this; before it existed the
+   * run page said "no breakdown yet — the details haven't loaded yet" on every run, permanently.
+   */
+  charges: Charge[];
+  /**
+   * `false` when the run explicitly decided NOT to hand anything to a client, with the reason.
+   *
+   * A run that discovers a missing input, writes down what it needs and parks the engagement has
+   * SUCCEEDED — it did everything available to it — so `task.status` is right and the run page's
+   * header pill said DONE, beside a timeline saying nothing went out. Both statements true, and
+   * together they read as a finished job.
+   *
+   * Undefined means the run never made that decision, which is the ordinary case and is NOT the same
+   * as "it delivered". Only a run that reached the client-facing verdict and declined sets this.
+   */
+  not_delivered?: { reason: string };
 }
 
 /** Clamped: events can be written by different replicas, and skewed clocks must not print -12ms. */
@@ -93,6 +128,8 @@ export function buildTrace(events: TaskEvent[]): Trace {
   const startTs = ordered[0]?.ts ?? new Date(0).toISOString();
 
   const root: Span = { name: "task", type: "step", start_ts: startTs, status: "running", children: [] };
+  const charges: Charge[] = [];
+  let notDelivered: { reason: string } | undefined;
   const totals: TraceTotals = {
     duration_ms: 0,
     tool_ms: {},
@@ -250,6 +287,49 @@ export function buildTrace(events: TaskEvent[]): Trace {
       case "cost.charged": {
         const usd = Number(d.cost_usd);
         if (Number.isFinite(usd)) totals.cost_usd += usd;
+        /*
+          ═══ AND THE CHARGE ITSELF, WHICH THIS USED TO THROW AWAY ═══
+
+          The sum went into `totals.cost_usd` and the individual charge was dropped. The console's
+          own type recorded the consequence — `charges?: Charge[]`, "only on a locally folded trace:
+          `/trace` sums the dollars and drops the charges" — and the run page fetches exactly that
+          endpoint. So its Cost panel read, on every run this product has ever produced:
+
+              $0.0095 spent, no breakdown yet
+              This job has a cost, but the details haven't loaded yet.
+
+          Nothing was loading. "Yet" was permanent, on a panel sitting directly above a full log
+          showing `cost.charged +$0.0001 · model_estimated` twice over.
+
+          `reason` is the field that makes the panel worth having at all: `"model"` means the provider
+          priced the call and we passed the number through, `"model_estimated"` means it reported no
+          price and the kernel guessed from its own table. Both land in the same dollar total, and the
+          person reading it is the one who will have to defend it on an invoice.
+        */
+        if (Number.isFinite(usd)) {
+          charges.push({
+            ts: ev.ts,
+            cost_usd: usd,
+            reason: str(d.reason, "model"),
+            ...(typeof d.model === "string" ? { model: d.model } : {}),
+            ...(typeof d.tier === "string" ? { tier: d.tier } : {}),
+            ...(d.tokens && typeof d.tokens === "object" ? { tokens: d.tokens as Charge["tokens"] } : {}),
+          });
+        }
+        break;
+      }
+
+      /*
+        `progress` carries no span of its own — see the note further down about where these belong.
+        The fold reads one field off it: the structured half of "not delivered — …", emitted by
+        `orchestrator.ts` at the three points a run declines to hand anything over. LAST ONE WINS: a
+        run can decline, be steered, and deliver, and the final verdict is the one that happened.
+      */
+      case "progress": {
+        if (d.delivered === false) {
+          const note = str(d.note, "");
+          notDelivered = { reason: note.replace(/^not delivered\s*—\s*/, "") || "the run did not say why" };
+        }
         break;
       }
 
@@ -276,5 +356,12 @@ export function buildTrace(events: TaskEvent[]): Trace {
   const lastTs = ordered[ordered.length - 1]?.ts;
   totals.duration_ms = root.duration_ms ?? (lastTs ? elapsed(startTs, lastTs) : 0);
 
-  return { task_id: taskId, root, totals, event_count: ordered.length };
+  return {
+    task_id: taskId,
+    root,
+    totals,
+    event_count: ordered.length,
+    charges,
+    ...(notDelivered ? { not_delivered: notDelivered } : {}),
+  };
 }

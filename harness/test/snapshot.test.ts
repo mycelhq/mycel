@@ -234,7 +234,7 @@ test("snapshot: a name that never frees raises the original error, not a hang", 
 // verified it, the memo kept answering "fine", every task failed at sandbox creation, and the health
 // check stayed green because HTTP was never affected. Nothing was asking.
 //
-// `kortix-ai/suna` names the class in `projects/reaping/parked-runtime-verification.ts` — 16,243
+// a comparable runtime names the class in `projects/reaping/parked-runtime-verification.ts` — 16,243
 // parked rows never re-verified, 16 already dead, the truth surfacing only when a human tripped over
 // it 30 hours later.
 

@@ -4,6 +4,7 @@ import { readFileSync } from "node:fs";
 import { APPROVAL_TTL_MS } from "../src/approvals";
 
 const src = readFileSync(new URL("../src/approvals.ts", import.meta.url), "utf8");
+const store = readFileSync(new URL("../src/store.ts", import.meta.url), "utf8");
 
 /**
  * ═════════════════════════════════════════════════════════════════════════════════════════════════
@@ -70,5 +71,40 @@ test("a suspended run holding a worker slot is instrumented, not assumed away", 
 
 test("an operator can shorten it without a deploy", () => {
   // The failure this length trades for is fleet contention, and that arrives faster than a deploy.
-  assert.match(src, /MYCEL_APPROVAL_TTL_MS/, "the window cannot be shortened without shipping code");
+  // Read where it is DECLARED — `approvals.ts` re-exports it now, and a test anchored to the
+  // re-export would pass on a constant that had quietly stopped reading the environment.
+  assert.match(store, /MYCEL_APPROVAL_TTL_MS/, "the window cannot be shortened without shipping code");
+  assert.match(src, /export \{ APPROVAL_TTL_MS \}/, "the window lost its name at the call sites");
+});
+
+test("THE ROW AND THE TIMER SAY THE SAME DEADLINE", () => {
+  /*
+    ═══ THREE DEADLINES FOR ONE BOUND ═══
+
+    The window above is twenty-four hours. Each store invented its own default for the `expires_at`
+    it stamps on the row — FIVE MINUTES in memory, THIRTY in Postgres — so every approval in
+    production carried, in writing, a deadline forty-eight times shorter than the one the system
+    honoured. Nothing read it, until the dead-run sweep started asking whether a gate was still live
+    in order to stop killing runs out from under a founder at lunch. A reader arriving at a number
+    nobody had checked is how this class of bug is always found, and it is found by the reader
+    getting it wrong.
+
+    Asserted on the VALUE, not the source text: both stores stamp from the same exported constant,
+    so there is no second number left to drift.
+  */
+  const memory = readFileSync(new URL("../src/store.ts", import.meta.url), "utf8");
+  const pg = readFileSync(new URL("../src/store.pg.ts", import.meta.url), "utf8");
+  for (const [name, text] of [["memory", memory], ["postgres", pg]] as const) {
+    assert.match(
+      text,
+      /expires_at: new Date\(Date\.now\(\) \+ \(a\.ttlMs \?\? APPROVAL_TTL_MS\)\)/,
+      `the ${name} store stamps its own deadline on the row instead of the one the timer honours`,
+    );
+  }
+  // And the gate passes it explicitly, so the row cannot fall back to a default at all.
+  assert.match(
+    src,
+    /ttlMs: req\.ttlMs \?\? APPROVAL_TTL_MS,/,
+    "awaitApproval leaves the row's deadline to whatever the store happens to default to",
+  );
 });

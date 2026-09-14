@@ -5,7 +5,7 @@
 // caller was a LinkedIn internal. Every credential a business ever connected was permanent as far as
 // the product was concerned.
 //
-// Suna hit the same shape in `lib/session-rescope.ts`: a create-only allowlist, justified by an
+// a comparable runtime hit the same shape in `lib/session-rescope.ts`: a create-only allowlist, justified by an
 // argument about BOOT — that a narrowed list "could leave the session unbootable" — which "silently
 // became a refusal to change anything at all." Ours had no argument; the route was never written.
 
@@ -46,7 +46,7 @@ test("a founder can revoke a connection", async () => {
 });
 
 test("the answer tells the truth about what revoking does NOT undo", async () => {
-  // The contract Suna states, and the reason it belongs in the RESPONSE rather than in a console's
+  // The contract a comparable runtime states, and the reason it belongs in the RESPONSE rather than in a console's
   // copy: "A UI that says 'revoked' where the truth is 'revoked for anything started from here' is
   // the kind of false assurance that gets a credential left in place."
   const { app, token, H, conn } = await scene();
@@ -86,7 +86,7 @@ test("revoking twice is a 404, not a 500", async () => {
 test("an in-flight run cannot act through a revoked connection", async () => {
   // OURS IS STRONGER THAN THEIRS, and this is what proves it. The action proxy re-reads
   // `listConnections()` on every action and intersects it with the run's grant, so deleting the row
-  // stops a run ALREADY IN FLIGHT rather than only the next one. Suna's re-scope takes effect on the
+  // stops a run ALREADY IN FLIGHT rather than only the next one. a comparable runtime's re-scope takes effect on the
   // next prompt, because their delivery re-resolves secrets per prompt rather than per action.
   const { domain, projectId, conn } = await scene();
   const grantedIds = [conn.id]; // what a live run's action grant already names

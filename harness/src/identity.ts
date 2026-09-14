@@ -288,7 +288,7 @@ export const PLAN_STATUSES: PlanStatus[] = ["active", "trialing", "past_due", "c
  * Measured on 7 September, on production: nine orgs, ONE with a billing_ref, and that one
  * `cancelled`. Four of the other eight were `active` and had a weekly digest sent that morning —
  * to `founder@mycel.local` (a TLD that cannot exist, hard bounce), `demo@mycelai.dev`,
- * `yc@yc.com`, and `marko@kortix.ai`, who is a real person at a real company.
+ * `yc@yc.com`, and one address belonging to a real person at a real company.
  *
  * Two costs. Bounces and delays from addresses that were never real damage the sending domain every
  * customer's mail goes out on. And the same weak check gates a dedicated ISP lease, so a trial or a

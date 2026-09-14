@@ -45,6 +45,13 @@ import { env, exit, argv } from "node:process";
 import { randomUUID, createHash } from "node:crypto";
 import pg from "pg";
 import { FILES, SUMMARY, seedVersions } from "./lib/revisions";
+/*
+  THE SAME WINDOW THE PRODUCT HONOURS, imported rather than retyped. A seeded gate whose row claims
+  a different deadline from a real one is the exact defect `store.ts` documents at this constant —
+  and the dead-run sweep reads `expires_at` to decide whether a gate is still worth protecting, so
+  a wrong number here would have the demo empty itself again for a new reason.
+*/
+import { APPROVAL_TTL_MS } from "../src/store";
 
 const arg = (flag: string): string | undefined => {
   const i = argv.indexOf(flag);
@@ -53,6 +60,32 @@ const arg = (flag: string): string | undefined => {
 const WANT_ORG = arg("--org-id") ?? "";
 const PROJECT = arg("--project-id") ?? "";
 const WIPE = argv.includes("--wipe");
+/**
+ * ═══════════════════════════════════════════════════════════════════════════════════════════════
+ * `--only gates` — GIVE THE SHOWROOM SOMETHING WAITING ON A HUMAN
+ * ═══════════════════════════════════════════════════════════════════════════════════════════════
+ *
+ * MEASURED ON THE DEMO TENANT, 14 September: fifteen approvals seeded `pending`, every one of them
+ * `expired`, every owning task `failed` with "This run went silent while awaiting_approval", all
+ * fifteen closed in the same second. The dead-run sweep reclaims anything non-terminal untouched
+ * for ten minutes, `awaiting_approval` is non-terminal, and a seeded row is stale the moment it is
+ * written. So the queue emptied itself within ten minutes of every seed this script has ever run,
+ * and nobody saw it because nobody looks at a demo ten minutes after seeding it.
+ *
+ * What a visitor was left with, on the tenant the landing page embeds, under the heading for the
+ * one promise this product is sold on: "Nothing to approve. Connect a mailbox so it can draft
+ * something that needs you." A setup nag in the shop window.
+ *
+ * The sweep is fixed (`recovery.ts`: a run waiting on a person with an open approval is patient,
+ * not dead). This is the other half — the queue those fifteen were supposed to be. It is separate
+ * from the history build because it is the one part that must be RE-RUNNABLE: history is fabricated
+ * once and then true, and a queue is a thing that gets emptied by anyone clicking through the demo.
+ *
+ *   --only gates [--gates 3]   ensure N pending approvals exist. Counts first, tops up, never
+ *                              duplicates, and touches nothing else.
+ */
+const ONLY = arg("--only") ?? "all";
+const WANT_GATES = Math.max(1, Number(arg("--gates") ?? 3));
 const URL = env.MYCEL_SEED_DB_URL ?? env.DATABASE_URL ?? "";
 
 const DAY = 86_400_000;
@@ -242,6 +275,106 @@ function meetingSlot(slug: string): string {
   return at.toISOString();
 }
 
+/**
+ * Ensure the demo has work genuinely waiting on a person, and never more than it asked for.
+ *
+ * ═══ WHY IT COUNTS BEFORE IT WRITES ═══
+ *
+ * The history build is fabricated once and then true. A queue is not: anyone clicking through the
+ * demo can empty it, and this is the one part of the seed meant to be run again next week. Counting
+ * the live gates first is what makes "run it again" safe — the alternative is a shop window with
+ * thirty drafts waiting, which reads as neglect rather than as a business mid-flight.
+ *
+ * ═══ WHAT COUNTS AS LIVE ═══
+ *
+ * A pending approval on a NON-TERMINAL task. `GET /v1/approvals` refuses to show a pending approval
+ * whose task has gone terminal — correctly, since nothing will ever come back to ask — so counting
+ * the approvals table alone would see a queue the product does not.
+ *
+ * ═══ RECENT, AND ONLY A FEW ═══
+ *
+ * Dated across the last thirty hours rather than spread over the ten weeks the history covers. A
+ * card reading "waiting 63 days" is not a gate a founder is about to answer, it is evidence nobody
+ * is minding the business, and it is the first thing a visitor reads on the screen we sell on.
+ *
+ * `expires_at` is stamped with the approval's real window (`APPROVAL_TTL_MS`, imported), so a
+ * seeded gate is as live as a real one and the sweep leaves it alone for exactly as long.
+ */
+async function ensureGates(db: pg.Client): Promise<void> {
+  const live = await db.query<{ n: number }>(
+    `SELECT count(*)::int AS n
+       FROM public.approvals a
+       JOIN public.tasks t ON t.id = a.task_id
+      WHERE t.project_id = $1
+        AND a.status = 'pending'
+        AND t.status NOT IN ('succeeded','failed','rejected','expired','cancelled')`,
+    [PROJECT],
+  );
+  const have = live.rows[0]?.n ?? 0;
+  if (have >= WANT_GATES) {
+    console.log(`  ${have} approval(s) already waiting on a human — nothing to do`);
+    return;
+  }
+
+  const clients = await db.query<{ id: string; display_name: string }>(
+    `SELECT id, display_name FROM public.clients WHERE project_id = $1 ORDER BY created_at`,
+    [PROJECT],
+  );
+  if (clients.rows.length === 0) throw new Error("no clients on this project — run seed-tenant.ts --only book first");
+  const cases = await db.query<{ id: string; client_id: string }>(
+    `SELECT id, client_id FROM public.cases WHERE project_id = $1 ORDER BY created_at`,
+    [PROJECT],
+  );
+
+  const WEDGE_FOR: Record<string, { wedge: string; type: string }> = {
+    send_email: { wedge: "geo-visibility", type: "visibility_report" },
+    send_invoice: { wedge: "invoice-chaser", type: "raise_invoice" },
+    chase_overdue: { wedge: "invoice-chaser", type: "chase_overdue" },
+  };
+
+  for (let i = have; i < WANT_GATES; i++) {
+    const seed = `${PROJECT}:gate:${i}`;
+    const draft = APPROVAL_DRAFTS[Math.floor(rnd(`d:${seed}`) * APPROVAL_DRAFTS.length)]!;
+    const work = WEDGE_FOR[draft.action] ?? WEDGE_FOR.send_email!;
+    const client = clients.rows[Math.floor(rnd(`c:${seed}`) * clients.rows.length)]!;
+    const kase = cases.rows.find((k) => k.client_id === client.id) ?? null;
+    /*
+      Across this morning, newest first, so the queue reads as a day's work — and so every one of
+      them is comfortably inside its own 24-hour window. A gate seeded 30 hours ago is already
+      expired on arrival, which would have reproduced the bug this mode exists to undo.
+    */
+    const created = new Date(now - Math.round((0.5 + i * 3 + rnd(`h:${seed}`) * 2) * 3_600_000));
+    const taskId = randomUUID();
+    await db.query(
+      `INSERT INTO public.tasks
+         (id, project_id, case_id, wedge, task_type, actor, input, constraints, tools, status,
+          cost_usd, event_seq, created_at, updated_at, client_id, source)
+       VALUES ($1,$2,$3,$4,$5,'{"kind":"schedule"}'::jsonb,'{}'::jsonb,'{}'::jsonb,'[]'::jsonb,
+               'awaiting_approval',$6,0,$7,$7,$8,'demo-history')`,
+      [taskId, PROJECT, kase?.id ?? null, work.wedge, work.type, (0.05 + rnd(`$:${seed}`) * 0.3).toFixed(4), created, client.id],
+    );
+    await db.query(
+      `INSERT INTO public.approvals (approval_id, task_id, action, risk, preview, status, created_at, expires_at)
+       VALUES ($1,$2,$3,'medium',$4::jsonb,'pending',$5,$6)`,
+      [
+        randomUUID(), taskId, draft.action,
+        JSON.stringify({
+          to: draft.to,
+          subject: draft.subject,
+          body: draft.body,
+          preview: `${draft.action.replace(/_/g, " ")} to ${draft.to}`,
+          client: client.display_name,
+          connection: "Zoho — hello@ridgelinestudio.com",
+        }),
+        created,
+        new Date(created.getTime() + APPROVAL_TTL_MS),
+      ],
+    );
+    console.log(`  + ${draft.action} for ${client.display_name} — "${draft.subject}"`);
+  }
+  console.log(`\n  ${WANT_GATES} approval(s) now waiting on a human`);
+}
+
 async function main() {
   if (!URL) throw new Error("MYCEL_SEED_DB_URL (or DATABASE_URL) is required");
   if (!WANT_ORG || !PROJECT) throw new Error("--org-id and --project-id are both required");
@@ -266,6 +399,12 @@ async function main() {
     exit(1);
   }
   console.log(`seeding history into "${owner.rows[0]!.name}" (${PROJECT})\n`);
+
+  if (ONLY === "gates") {
+    await ensureGates(db);
+    await db.end();
+    return;
+  }
 
   if (WIPE) {
     /**

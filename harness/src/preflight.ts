@@ -36,6 +36,7 @@ import { existsSync } from "node:fs";
 import { delimiter, join } from "node:path";
 import type { MycelConfig } from "./config";
 import { providerEnvVar, splitModel } from "./opencode";
+import { PROVIDERS, resolveAll, shortestPath, type Capability } from "./gtm/providers";
 
 /**
  * `command -v`, without a shell. PATHEXT is honoured so this is not silently Unix-only.
@@ -112,4 +113,67 @@ export function runtimeAdvisories(cfg: MycelConfig, env: NodeJS.ProcessEnv = pro
     `  · MYCEL_SANDBOX=docker  run the agent in a container instead of on this machine`,
     `  · install OpenCode (https://opencode.ai) and export ${keyVar}=…   ← real work`,
   ];
+}
+
+/**
+ * ═════════════════════════════════════════════════════════════════════════════════════════════════
+ * WHAT THE OUTSIDE-SERVICE SLOTS ARE SET TO, PRINTED WHERE SOMEBODY WILL SEE IT
+ * ═════════════════════════════════════════════════════════════════════════════════════════════════
+ *
+ * `GET /v1/gtm/availability` already answers this well: which capability is on, which vendor is
+ * running it, and the one variable that would turn on each one that is off. It is also behind a
+ * bearer token, at a path nobody guesses, in a product whose first five minutes happen in a
+ * terminal. Measured on a cold clone: the endpoint gives a stranger everything, and boot — the only
+ * thing they actually read — said nothing about it at all.
+ *
+ * So the same facts, four lines, at the moment the question occurs.
+ *
+ * ═══ IT IS NOT A WARNING, AND MUST NOT LOOK LIKE ONE ═══
+ *
+ * Every other block on this screen is a `⚠` about something that will go wrong. NONE of these is a
+ * problem: the entire GTM path runs on a connected LinkedIn account with no key at all, and these
+ * providers only widen the top of the funnel. Dressing "off" as a warning would teach a new user
+ * that a correct install is broken, which is the specific misreading `works_without_keys` exists to
+ * prevent on the endpoint.
+ *
+ * ═══ AND IT IS SILENT WHEN THERE IS NOTHING TO SAY ═══
+ *
+ * An operator who has configured their providers does not need them recited on every restart, and a
+ * boot banner that prints the same paragraph forever is one people stop reading — which would cost
+ * the advisories above their audience too. All on, nothing printed.
+ */
+export function providerAdvisories(env: NodeJS.ProcessEnv = process.env): string[] {
+  const all = resolveAll(env as Record<string, string | undefined>);
+  const off = all.filter((r) => !r.chosen && !r.problem);
+  const broken = all.filter((r) => r.problem);
+  if (!off.length && !broken.length) return [];
+
+  const label = (c: Capability): string =>
+    ({ search: "Web search", places: "Places", crawl: "Page crawling", enrich: "Email lookup" })[c];
+
+  const lines: string[] = [
+    `Outside services: ${all.length - off.length - broken.length}/${all.length} on. These widen the top of the funnel;`,
+    `finding people, inviting, messaging and replies need no key at all.`,
+    ``,
+  ];
+  for (const r of all) {
+    if (r.problem) {
+      lines.push(`  ✗ ${label(r.capability).padEnd(14)} ${r.problem}`);
+      continue;
+    }
+    if (r.chosen) {
+      lines.push(`  ✓ ${label(r.capability).padEnd(14)} ${r.chosen.label}`);
+      continue;
+    }
+    // The shortest path only. A list of three vendors reads as three things to do, and the honest
+    // answer to "how do I turn this on" is one of them.
+    const first = shortestPath(PROVIDERS[r.capability])!;
+    const rest = PROVIDERS[r.capability].filter((o) => o.implemented && o.id !== first.id).length;
+    lines.push(
+      `  · ${label(r.capability).padEnd(14)} off — set ${first.env} (${first.signup})` +
+        (rest ? `, or ${rest} other${rest > 1 ? "s" : ""}` : ""),
+    );
+  }
+  lines.push(``, `  Full detail, read live from this process: GET /v1/gtm/availability`);
+  return lines;
 }

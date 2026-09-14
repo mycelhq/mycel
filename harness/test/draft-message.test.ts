@@ -17,9 +17,12 @@ const args = {
 };
 
 test("a valid short message is returned and trimmed", async () => {
-  const complete = async () => "  Saw you run finance at an agency — we take the invoice chasing off your desk.  ";
+  // The em dash this fixture used to carry is now refused by the shared copy gate (see
+  // @mycel/gtm-math: "em/en dashes read as machine-written"). The point of THIS test is the
+  // trimming, so the fixture drops the tell; the refusal has its own test below.
+  const complete = async () => "  Saw you run finance at an agency. We take the invoice chasing off your desk.  ";
   const msg = await draftFirstMessage({ ...args, complete });
-  assert.equal(msg, "Saw you run finance at an agency — we take the invoice chasing off your desk.");
+  assert.equal(msg, "Saw you run finance at an agency. We take the invoice chasing off your desk.");
 });
 
 test("over-long output is clipped to the cap", async () => {
@@ -145,4 +148,27 @@ test("no org, or nothing to ground on, yields an empty list without calling the 
     "no sells and no goal is nothing to ground on",
   );
   assert.equal(called, false);
+});
+
+// ── The gate the customer's messages never had ──────────────────────────────
+//
+// growth/ has refused drafts on these rules since August — 263 rejected against 200 sent in one
+// week — while this path, drafting the same kind of cold message for a paying customer, had no
+// check at all. The rules now live in @mycel/gtm-math and both sides import the same file.
+
+test("a message carrying a machine tell is refused, not sent", async () => {
+  // An em dash is the most reliable tell there is in a short cold message.
+  const msg = await draftFirstMessage({
+    ...args,
+    complete: async () => "Saw you run finance at an agency \u2014 we take the invoice chasing off your desk.",
+  });
+  assert.equal(msg, undefined, "an unsent message costs a touch; a bad one costs the prospect");
+});
+
+test("a clean message still goes out, so the gate is not a blanket refusal", async () => {
+  const msg = await draftFirstMessage({
+    ...args,
+    complete: async () => "Saw you run finance at an agency. Want me to take the invoice chasing off your desk?",
+  });
+  assert.ok(msg, "the gate must not refuse ordinary, clean copy");
 });

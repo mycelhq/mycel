@@ -1,14 +1,22 @@
 // Public-page enrichment hop — crawl a company site, keep only emails that are ON the page.
 //
-// Firecrawl is already keyed (`mycel/firecrawl-api-key`). FullEnrich is the paid waterfall. This
-// hop is the one that can run when that key is empty, and the one that must never invent an
-// address: we scrape markdown and regex the literals. An LLM extract that "guesses" a role@domain
-// is how a sending domain gets burned.
+// FullEnrich is the paid waterfall. This hop is the one that can run when that key is empty, and
+// the one that must never invent an address: we scrape markdown and regex the literals. An LLM
+// extract that "guesses" a role@domain is how a sending domain gets burned.
 //
-// Cost is Firecrawl credits, recorded when the API reports them. We never write cost_usd: 0.
+// ── THE VENDOR IS A CHOICE, THE HOP IS NOT ───────────────────────────────────────────────────────
+// The file is still named for Firecrawl because that is what we run and what the provenance hop has
+// said for its whole life. It no longer MEANS Firecrawl. `providers.ts` picks the renderer from
+// whichever key is set — Firecrawl or Jina Reader — and `crawlConfigured` asks that question rather
+// than reading one vendor's variable. The free half of enrichment used to require a Firecrawl
+// account to exist at all, which is a strange thing for the free half to require.
+//
+// Cost is recorded only where a vendor reports it in countable units. We never write cost_usd: 0.
 
 import { fetchWithDeadline } from "../http";
 import { normalisedHost, parsePublicHttps } from "../public-url";
+import { jinaScrape } from "./jina";
+import { PROVIDERS, resolveProvider, shortestPath } from "./providers";
 
 export const FIRECRAWL_KEY_ENV = "FIRECRAWL_API_KEY";
 export const FIRECRAWL_RESOLVER = "firecrawl";
@@ -18,8 +26,30 @@ const EMAIL = /[a-zA-Z0-9._%+\-]+@[a-zA-Z0-9.\-]+\.[a-zA-Z]{2,}/g;
 const JUNK_LOCAL = /^(?:noreply|no-reply|donotreply|do-not-reply|mailer-daemon|notifications?|bounce|postmaster)\b/i;
 const JUNK_DOMAIN = /@(?:example\.com|domain\.com|email\.com|sentry\.io|wixpress\.com|yourdomain|placeholder)$/i;
 
-export function firecrawlConfigured(): boolean {
-  return !!(process.env[FIRECRAWL_KEY_ENV] ?? "").trim();
+/**
+ * IS THERE A CRAWL PROVIDER AT ALL — not "is Firecrawl keyed".
+ *
+ * This read `FIRECRAWL_API_KEY` directly, which made one vendor's account the definition of whether
+ * the free half of enrichment exists. `providers.ts` owns that question now, so setting
+ * `JINA_API_KEY` instead turns the same hop on. See `crawlVendor` for who actually runs it.
+ */
+export function crawlConfigured(): boolean {
+  return resolveProvider("crawl").chosen !== null;
+}
+
+/** The provider id doing the crawling right now (`firecrawl` | `jina`), or undefined when off. */
+export function crawlVendor(): string | undefined {
+  return resolveProvider("crawl").chosen?.id;
+}
+
+/**
+ * The variable to name when telling somebody how to turn crawling on.
+ *
+ * The chosen one when there is one, so a message about a live capability names the key in play;
+ * otherwise the first option with an implementation, which is the shortest path from off to on.
+ */
+export function crawlKeyEnv(): string {
+  return resolveProvider("crawl").chosen?.env ?? shortestPath(PROVIDERS.crawl)!.env;
 }
 
 /** Public https host we are willing to fetch. Same SSRF shapes as meeting join URLs. */
@@ -66,9 +96,24 @@ export interface FirecrawlHop {
   ok: boolean;
   email?: string;
   phone?: string;
-  credits: number;
+  /**
+   * ABSENT, NOT ZERO, when the provider does not bill in countable units.
+   *
+   * Firecrawl reports credits. Jina bills tokens and reports nothing per request. `enrich.ts` makes
+   * the argument in full: a 0 here is summed into the figure a founder reads as what enrichment has
+   * spent, so writing one for an unmetered vendor under-reports real money.
+   */
+  credits?: number;
   pages: number;
   reason?: string;
+  /**
+   * WHICH VENDOR ACTUALLY RAN, for the provenance hop.
+   *
+   * This used to be hardcoded to `firecrawl` at the write site. Once a second provider could do the
+   * work, that was a claim on the founder's screen that nothing had checked — and the entire point
+   * of the provenance UI, per `enrich.ts`, is that its claims are checkable.
+   */
+  by?: string;
 }
 
 /**
@@ -102,7 +147,17 @@ async function plainRead(url: string): Promise<string> {
   }
 }
 
-async function scrape(url: string): Promise<{ markdown: string; credits: number; detail?: string }> {
+/**
+ * The rendered read, from whichever provider is configured.
+ *
+ * Both return `{ markdown, credits?, detail? }` so the caller does not branch on vendor. `credits`
+ * is absent for a provider that does not report it — see `FirecrawlHop.credits`.
+ */
+async function scrape(url: string): Promise<{ markdown: string; credits?: number; detail?: string }> {
+  return crawlVendor() === "jina" ? jinaScrape(url) : firecrawlScrape(url);
+}
+
+async function firecrawlScrape(url: string): Promise<{ markdown: string; credits?: number; detail?: string }> {
   const key = (process.env[FIRECRAWL_KEY_ENV] ?? "").trim();
   const base = (process.env.FIRECRAWL_BASE_URL ?? "https://api.firecrawl.dev/v1").replace(/\/$/, "");
   try {
@@ -152,14 +207,15 @@ export async function firecrawlPerson(input: {
   company_domain?: string;
   company?: string;
 }): Promise<FirecrawlHop> {
-  if (!firecrawlConfigured()) {
-    return { ok: false, credits: 0, pages: 0, reason: `set ${FIRECRAWL_KEY_ENV} to crawl public pages` };
+  const by = crawlVendor();
+  if (!by) {
+    return { ok: false, pages: 0, reason: `set ${crawlKeyEnv()} to crawl public pages` };
   }
   const urls = urlsToCrawl(input);
   if (!urls.length) {
-    return { ok: false, credits: 0, pages: 0, reason: "no public company site to crawl" };
+    return { ok: false, pages: 0, by, reason: "no public company site to crawl" };
   }
-  let credits = 0;
+  let credits: number | undefined;
   let pages = 0;
   let lastDetail: string | undefined;
   const found: string[] = [];
@@ -188,9 +244,11 @@ export async function firecrawlPerson(input: {
       continue;
     }
 
-    console.log(JSON.stringify({ evt: "firecrawl.escalated", app: "kernel", url }));
+    console.log(JSON.stringify({ evt: "crawl.escalated", app: "kernel", url, by }));
     const got = await scrape(url);
-    credits += got.credits;
+    // Only a reported number accumulates. `undefined + n` is NaN, and a NaN credit count renders as
+    // a cost the founder cannot account for — worse than the absence it came from.
+    if (got.credits !== undefined) credits = (credits ?? 0) + got.credits;
     pages += 1;
     if (got.detail) lastDetail = got.detail;
     if (!got.markdown.trim()) continue;
@@ -201,7 +259,7 @@ export async function firecrawlPerson(input: {
     if (found.length) break;
   }
   if (!found.length) {
-    return { ok: false, credits, pages, phone, reason: lastDetail ?? "crawled public pages, no address on them" };
+    return { ok: false, credits, pages, phone, by, reason: lastDetail ?? "crawled public pages, no address on them" };
   }
-  return { ok: true, email: found[0], phone, credits, pages };
+  return { ok: true, email: found[0], phone, credits, pages, by };
 }

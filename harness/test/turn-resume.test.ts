@@ -6,7 +6,7 @@
 // tool calls and the same approval history, so nothing is replayed — it is the one recovery move
 // that constraint permits, which is exactly why the classifier has to be careful.
 //
-// Taken from kortix-ai/suna's `turn-auto-resume.ts` — the single best idea we found reading their
+// Taken from a comparable runtime's `turn-auto-resume.ts` — the single best idea we found reading their
 // repo. Every decision below is theirs.
 
 import { test } from "node:test";

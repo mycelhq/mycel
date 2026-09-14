@@ -1,0 +1,28 @@
+# Dependency updates, kept quiet enough to be read.
+#
+# Grouped and capped on purpose. An ungrouped weekly run on a repo this size opens a dozen PRs that
+# nobody reviews, and a wall of ignored PRs is worse than no automation — it teaches everyone that
+# the dependency alerts are noise, which is exactly the habit you do not want on the day one of them
+# is a real advisory.
+version: 2
+updates:
+  - package-ecosystem: npm
+    directory: /
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 5
+    groups:
+      # Patch and minor bumps arrive as one PR. A major gets its own, because it is the only kind
+      # that needs somebody to read a changelog.
+      minor-and-patch:
+        update-types: ["minor", "patch"]
+
+  # The workflow actions. Low volume, and the one place a stale pin quietly stops receiving security
+  # fixes while CI stays green.
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: monthly
+    groups:
+      actions:
+        patterns: ["*"]

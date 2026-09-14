@@ -1,13 +1,13 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import {
+  crawlConfigured,
   emailsInText,
-  firecrawlConfigured,
   firecrawlPerson,
   publicHttpsUrl,
   urlsToCrawl,
-  FIRECRAWL_KEY_ENV,
 } from "../src/gtm/firecrawl";
+import { PROVIDERS } from "../src/gtm/providers";
 
 test("Firecrawl never treats an internal URL as a public company page", () => {
   assert.equal(publicHttpsUrl("https://169.254.169.254/latest"), undefined);
@@ -33,16 +33,21 @@ test("emails are literals on the page — never invented at a domain", () => {
   assert.deepEqual(emailsInText("No address here, but acme.com is the domain."), []);
 });
 
-test("an empty Firecrawl hop is a miss, not a successful enrich", async () => {
-  const prev = process.env[FIRECRAWL_KEY_ENV];
-  delete process.env[FIRECRAWL_KEY_ENV];
+test("with no crawl provider at all, the hop is a miss and says which key turns it on", async () => {
+  // Every crawl key, not just Firecrawl's: the capability is off when NO vendor is keyed, and a
+  // test that cleared one of two would pass or fail depending on the machine it ran on.
+  const prev = PROVIDERS.crawl.map((o) => [o.env, process.env[o.env]] as const);
+  for (const [env] of prev) delete process.env[env];
   try {
-    assert.equal(firecrawlConfigured(), false);
+    assert.equal(crawlConfigured(), false);
     const r = await firecrawlPerson({ company_domain: "acme.com" });
     assert.equal(r.ok, false);
-    assert.match(r.reason!, /FIRECRAWL_API_KEY/);
+    assert.match(r.reason!, /FIRECRAWL_API_KEY/, "names the shortest path from off to on");
+    assert.equal(r.by, undefined, "nothing ran, so no vendor may be named as having run");
   } finally {
-    if (prev === undefined) delete process.env[FIRECRAWL_KEY_ENV];
-    else process.env[FIRECRAWL_KEY_ENV] = prev;
+    for (const [env, was] of prev) {
+      if (was === undefined) delete process.env[env];
+      else process.env[env] = was;
+    }
   }
 });
