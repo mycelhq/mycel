@@ -16,7 +16,8 @@ test("workflows: only declared names run, args and output are validated", async 
   // undeclared name
   const undeclared = await runWorkflow("books-keeper", "not_declared", {});
   assert.equal(undeclared.ok, false);
-  assert.match(undeclared.error!, /does not declare/);
+  // "ships no step called …" — the founder-facing wording. See `a-founder-never-reads-our-words`.
+  assert.match(undeclared.error!, /ships no step called "not_declared"/);
 
   // declared, but args fail the input schema
   const badArgs = await runWorkflow("books-keeper", "reconcile", { bank_transactions: [] }); // ledger missing

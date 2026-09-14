@@ -1,6 +1,6 @@
 // OpenCode integration — the REST/SSE surface OpenCode 1.17.6 actually exposes.
 //
-// Every path and payload below was checked against `@opencode-ai/sdk@1.17.6`, which is generated
+// Every path and payload below was checked against `@opencode-ai/sdk@1.18.30`, which is generated
 // from the same OpenAPI document the server serves at GET /doc. Where this file used to describe
 // something else, the old description is kept as a comment: the drift is the interesting part.
 //
@@ -14,6 +14,19 @@
 import type { EventType } from "./contract";
 import type { HarnessProfile } from "./harness";
 import { SHAPE_DEFAULTS } from "./harness";
+import { RUN_OUTPUT } from "./deliverables.wrap";
+import { SANDBOX_HOME } from "./sandbox";
+
+/**
+ * The sandbox's own root, which is not part of any file's name.
+ *
+ * A founder does not have a /root. The most common progress note in the entire system was
+ * "edited /root/output/result.txt" — 1,028 of them — and the next nine were the same shape.
+ * `file` keeps the absolute path; it is structured data and consumers resolve against it.
+ */
+function sayPath(file: string): string {
+  return file.replace(new RegExp(`^${SANDBOX_HOME}/(app/)?`), "");
+}
 
 // ---- Model + provider config (model + provider-env mapping) ----
 
@@ -650,7 +663,11 @@ const IGNORED = new Set([
   "file.watcher.updated",
   "vcs.branch.updated",
   "installation.updated",
+  // BOTH SPELLINGS. 1.18.30 renamed this to `installation.update-available`; a self-hoster pinned to
+  // an older build still emits the dotted one, and an ignore list that drops it would start
+  // warn-logging a non-event on their console for ever.
   "installation.update.available",
+  "installation.update-available",
   "lsp.client.diagnostics",
   "lsp.updated",
   "tui.prompt.append",
@@ -795,9 +812,18 @@ export class OpenCodeEventMapper {
       }
       case "file.edited": {
         const file = (ev.properties as any)?.file;
-        return typeof file === "string"
-          ? { emissions: [{ type: "progress", data: { note: `edited ${file}`, file } }] }
-          : NOTHING;
+        // Non-EMPTY, which the `typeof` check alone does not give: an empty string is a string,
+        // and it produced the note "edited " with nothing after it. Found by the test below.
+        if (typeof file !== "string" || !file) return NOTHING;
+        /*
+          THE RUN WRITING ITS OWN OUTPUT OBJECT IS NOT A STEP. `deliverables.wrap.ts` keeps the
+          same pattern under RUN_OUTPUT and says of it: result.txt "is how runtime.ts records what
+          the agent returned. It is the input to a rendered document and to the client-ready check;
+          it is not a thing a customer opens." It is not a thing a FOUNDER opens either, and at
+          1,028 notes it was the single most-repeated line the product has ever said.
+        */
+        if (RUN_OUTPUT.test(file.split("/").pop() ?? "")) return NOTHING;
+        return { emissions: [{ type: "progress", data: { note: `edited ${sayPath(file)}`, file } }] };
       }
       default:
         if (IGNORED.has(ev.type)) return NOTHING;

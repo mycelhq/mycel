@@ -75,8 +75,31 @@
 // does today, blocked and honest about it. Turning it on is a deliberate act with a bill attached,
 // and that is the right shape for a decision somebody else has to make.
 
-/** The rotating residential gateway. Not `isp.decodo.com`, which is the sticky LinkedIn product. */
-export const RESIDENTIAL_HOST_DEFAULT = "residential.decodo.io";
+/**
+ * The rotating residential gateway. Not `isp.decodo.com`, which is the sticky LinkedIn product.
+ *
+ * ═══ THIS WAS `residential.decodo.io`, A HOSTNAME THAT DOES NOT EXIST ═══
+ *
+ * Checked with DNS, on 13 September, against the vendor's live names:
+ *
+ *     residential.decodo.io    NO DNS
+ *     isp.decodo.com           185.111.111.44   (= isp.smartproxy.com, the rebrand)
+ *     gate.decodo.com          136.243.201.65   (= gate.smartproxy.com)
+ *
+ * A `.io` sitting next to a `.com` that works, in the same file, two lines apart. The cost of the
+ * typo was hidden by the feature being OFF: flipping `MYCEL_OPERATE_EGRESS` to `residential` — the
+ * exact step the infra comment tells the next person to take — would have failed to connect at all,
+ * and the symptom (a probe that returns nothing) is indistinguishable from the blocking this module
+ * exists to get past. We would have bought a residential plan and measured no improvement.
+ *
+ * WHAT IS VERIFIED HERE AND WHAT IS NOT. The hostname resolves and is the same gateway IP as
+ * Smartproxy's documented residential gate. The PORT is not verified, because the production
+ * credentials are an ISP plan — `isp.smartproxy.com:10000` answers with them and every residential
+ * gateway refuses — so there is no residential seat to test a port against. Anyone turning this on
+ * should expect to confirm the port against whatever plan they buy; `MYCEL_OPERATE_PROXY_PORT`
+ * overrides it without a deploy.
+ */
+export const RESIDENTIAL_HOST_DEFAULT = "gate.decodo.com";
 export const RESIDENTIAL_PORT_DEFAULT = "10000";
 
 /** The sticky dedicated-ISP host — the LinkedIn product, borrowable only where no seat is leased. */
@@ -190,7 +213,7 @@ export function operateEgress(
    */
   if (allowed.length && !allowed.includes(want)) return undefined;
 
-  const username = `user-${user.replace(/^user-/, "")}-country-${want}`;
+  const username = proxyUsername(user, want);
 
   if (mode === "isp") {
     // Borrowing a seat somebody's LinkedIn session lives on would risk an account that cannot be
@@ -203,6 +226,36 @@ export function operateEgress(
   const host = clean(env.MYCEL_OPERATE_PROXY_HOST) || RESIDENTIAL_HOST_DEFAULT;
   const port = clean(env.MYCEL_OPERATE_PROXY_PORT) || RESIDENTIAL_PORT_DEFAULT;
   return { server: `http://${host}:${port}`, username, password: pass, country: want, via: "residential" };
+}
+
+/**
+ * ═════════════════════════════════════════════════════════════════════════════════════════════════
+ * THE COUNTRY GOES IN THE USERNAME, AND EVERY PROVIDER SPELLS THE USERNAME DIFFERENTLY
+ * ═════════════════════════════════════════════════════════════════════════════════════════════════
+ *
+ * This was `user-${user.replace(/^user-/, "")}-country-${want}`, which is Decodo's convention
+ * hardcoded — and the rest of this module is deliberately provider-agnostic (host, port, username,
+ * password, four plain fields). The one line that was not agnostic is the one that decides whether
+ * any other provider works at all.
+ *
+ * Bright Data's residential username is `brd-customer-<id>-zone-<zone>`. Forcing Decodo's prefix
+ * onto it produces `user-brd-customer-…-zone-…-country-fr`, which authenticates as nobody: a 407 on
+ * every request, and a 407 reaching the agent looks EXACTLY like the captcha wall this whole module
+ * exists to get past. We would have configured residential egress, paid for it, and measured
+ * nothing, with the symptom unchanged — which is the failure the header of this file already warns
+ * about for credentials-in-the-URL.
+ *
+ * So: a username that already carries a provider's own prefix is left alone, and only a bare Decodo
+ * name gets `user-`. The country suffix is appended for both, because both providers take it there.
+ * A username that already names a country is left completely alone — somebody has been explicit and
+ * second-guessing them would silently probe from the wrong place.
+ */
+export function proxyUsername(user: string, country: string): string {
+  const name = user.trim();
+  if (/-country-[a-z]{2}(?=-|$)/i.test(name)) return name;
+  // Bright Data (`brd-customer-…`), Oxylabs (`customer-…`), or anything already prefixed `user-`.
+  const carriesItsOwnPrefix = /^(brd-|customer-|user-)/i.test(name);
+  return `${carriesItsOwnPrefix ? name : `user-${name}`}-country-${country}`;
 }
 
 /**

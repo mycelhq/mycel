@@ -328,7 +328,49 @@ export async function reviewDeliverable(args: {
       because: "No review model is configured on this kernel, so nothing has second-read this.",
     };
   }
-  const verdict = parseReview(raw);
+  let verdict = parseReview(raw);
+
+  /**
+   * ═══════════════════════════════════════════════════════════════════════════════════════════════
+   * ONE RETRY, BECAUSE AN UNPARSEABLE VERDICT COSTS MORE THAN A SECOND ASK
+   * ═══════════════════════════════════════════════════════════════════════════════════════════════
+   *
+   * Measured across real runs: the grader returned something `parseReview` could not read in two of
+   * three. Not a crash and not a timeout — a well-formed answer in the wrong shape, which is the
+   * ordinary failure mode of asking for JSON.
+   *
+   * What that costs is larger than it looks, because everything downstream is fail-closed on it:
+   *
+   *   · `gradeAllows` requires `reviewed`, so nothing auto-releases — the founder's standing
+   *     permission is silently worthless;
+   *   · the repair round requires `reviewed`, so a run that COULD have fixed its own fault never
+   *     hears about it;
+   *   · and the founder opens a job whose only note is that we could not check it.
+   *
+   * Each of those is correct in isolation. Together they mean an unreadable answer from the grader
+   * turns off the two mechanisms that exist to keep work off the founder's desk.
+   *
+   * The retry carries the SHAPE back, exactly as the output validator next door carries the
+   * validator's own message rather than "try again". One round: a grader that answers in the wrong
+   * shape twice is not going to be argued into the right one, and a second retry buys a longer wait
+   * for the same hold.
+   */
+  if (!verdict) {
+    let retry: string | undefined;
+    try {
+      retry = await args.complete({
+        system: reviewSystemPrompt(),
+        user:
+          `${reviewUserPrompt({ text: args.text, kind: args.kind, summary: args.summary })}\n\n` +
+          `Your previous answer could not be read as JSON. Reply with the object and nothing else — ` +
+          `no prose before or after it, no code fence.`,
+      });
+    } catch {
+      retry = undefined;
+    }
+    verdict = parseReview(retry);
+  }
+
   if (!verdict) {
     return {
       reviewed: false,

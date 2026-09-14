@@ -24,7 +24,12 @@ import { readdir, readFile } from "node:fs/promises";
 import { getDomainStore } from "../src/domain";
 import { getBillingStore } from "../src/billing";
 import { getRequestStore } from "../src/requests";
+import { mintPortalLink } from "../src/portal";
 import {
+  CANNOT_SEE_POINTS,
+  ACCEPTED_WORK_POINTS,
+  HANDED_TO_YOU_POINTS,
+  MONEY_MAX,
   CASE_STALE_DAYS,
   CONDITIONAL_KINDS,
   CONSEQUENCE_WINDOW_DAYS,
@@ -487,6 +492,13 @@ test("a move blocked on the client ranks below equally-stale work we can finish 
   await getRequestStore().createRequest({
     project_id: project, client_id: client.id, kind: "document", ask: "March bank statement",
   });
+  /*
+    A WAY IN, because this test is about how a NUDGE ranks. Without one the client is shut out and
+    `client_cannot_see_it` correctly replaces the nudge — which is the right behaviour and the wrong
+    fixture for this assertion. The fixture was under-specified: it never said how the client would
+    see the thing being chased.
+  */
+  mintPortalLink({ project_id: project, client_id: client.id });
 
   const later = new Date(NOW.getTime() + (CASE_STALE_DAYS + 3) * DAY);
   const moves = (await proposeMoves(stores(), await authFor(project), {}, later)).moves;
@@ -607,7 +619,21 @@ test("a replied prospect is never proposed, and an unmet step condition proposes
 
   const moves = (await proposeMoves(stores(), await authFor(project), {}, NOW)).moves;
   const ids = new Set(moves.map((m) => m.entity.id));
-  assert.ok(!ids.has(replied.id), "a prospect who already replied was proposed for another message");
+  const kindFor = (id: string) => moves.filter((m) => m.entity.id === id).map((m) => m.kind);
+  /**
+   * NOT "is absent from the list" — that was this assertion for a long time, and it was a proxy for
+   * the real rule rather than the rule. The rule is that a prospect who replied is never proposed
+   * for ANOTHER MESSAGE, which is what the test's own name says.
+   *
+   * The proxy expired when `handed_to_you` arrived: a replied prospect SHOULD now appear, because
+   * the sequence stopping is the beginning of the founder's job and nothing used to say so. 21 of
+   * them sat untouched in production for 26 days behind the old reading of this line.
+   */
+  assert.deepEqual(kindFor(replied.id), ["handed_to_you"], "a replied prospect is proposed as the wrong thing");
+  assert.ok(
+    !kindFor(replied.id).includes("gtm_next_touch"),
+    "a prospect who already replied was proposed for another message",
+  );
   assert.ok(!ids.has(unmet.id), "a step whose only_if is unmet was proposed");
   assert.ok(!ids.has(waiting.id), "a prospect still inside the sequencer's cadence gap was proposed");
   assert.ok(ids.has(ready.id), "a prospect whose step is genuinely due was not proposed");
@@ -1674,4 +1700,372 @@ test("evidence and waste saturate rather than grow without bound", async () => {
   assert.equal(wastePoints(undefined), 0);
   assert.ok(wastePoints(200) < wastePoints(2_000));
   assert.equal(wastePoints(10_000), wastePoints(10_000_000), "waste saturates");
+});
+
+// ── the handoff the stage machine designed and nobody built ───────────────────────────────────────
+//
+// ═════════════════════════════════════════════════════════════════════════════════════════════════
+// A STRANGER ANSWERED, AND THE PRODUCT SAID NOTHING FOR TWENTY-SIX DAYS
+// ═════════════════════════════════════════════════════════════════════════════════════════════════
+//
+// `gtm/stages.ts` states the contract plainly: "`replied`, `booked`, `won` and `lost` are terminal
+// on purpose and that is how stopping works ... A HUMAN OWNS EVERYTHING FROM `replied`", and "a
+// reply wants an answer". Every campaign step carries `only_if: "!replied"`; no step anywhere has
+// `from: "replied"`. The sequence stops dead the moment outreach works, exactly as designed.
+//
+// The other half of that sentence was never written. A human owns it, and nothing ever told the
+// human. Counted in production, 13 September:
+//
+//     21 cases at `replied`, every one last touched on or before 18 August — 26 days
+//      2 cases at `booked`, same
+//
+// `propose_reply` is declared in the wedge, wired to a route, and has NEVER RUN — not once — because
+// the only way to reach it was for a founder to already know the reply was there.
+//
+// This is the most expensive silence in the product: every other move chases something that went
+// wrong, and this is the one moment the whole outbound machine has been paying for.
+
+test("A PROSPECT WHO REPLIED IS HANDED TO THE FOUNDER, NOT LEFT AT THE END OF A SEQUENCE", async () => {
+  const project = `p-${randomUUID()}`;
+  const domain = getDomainStore();
+  const campaign = await seedCampaign(project, [
+    { from: "connected", action: "send_message", advance_to: "dm1", only_if: "!replied" },
+  ]);
+  const replied = await domain.createCase({
+    project_id: project, wedge: gtmWedge(), title: "Marie Lepant", stage: "replied", status: "open",
+    data: { campaign_id: campaign, has_reply: true },
+  });
+
+  const moves = (await proposeMoves(stores(), await authFor(project), {}, NOW)).moves;
+  const mine = moves.filter((m) => m.entity.id === replied.id);
+  assert.deepEqual(mine.map((m) => m.kind), ["handed_to_you"], "the reply is still invisible");
+
+  const move = mine[0]!;
+  // The sentence a founder reads has to say what happened and whose turn it is. "Stage replied" is
+  // the machine's word for it and tells nobody anything.
+  assert.match(move.why, /replied to your outreach/);
+  assert.match(move.why, /from here it is yours/i);
+  assert.ok(!/\bstage\b|only_if|campaign_id/.test(move.why), "the row speaks machine");
+  assert.match(move.why, /Marie Lepant/, "the row does not say who");
+
+  /*
+    NO CARRIER, and this is the part that looks wrong until you check. `propose_reply` IS declared
+    in the wedge — but its input schema requires `body`, the exact words to send. Nothing here has
+    written those words, so a carrier would dispatch a run with an empty body: it would either fail
+    or invent a reply nobody read, on the one message where that is least forgivable.
+  */
+  assert.equal(move.carrier.wedge, "", "a carrier would send a reply nobody wrote");
+  assert.equal(move.takeable, false);
+  assert.ok(move.unavailable_reason, "a dark button with no reason is worse than no button");
+});
+
+test("A URN IS NOT A PERSON, AND AN UNPROMPTED MESSAGE IS NOT A REPLY", async () => {
+  /**
+   * Both halves of this were found by running the proposer against PRODUCTION, and neither could
+   * have been found any other way — a fixture titled "Marie Lepant" is a fixture somebody chose.
+   *
+   * All 17 live cases carried a LinkedIn member URN as their title, so the highest-value card in the
+   * product would have read "ACoAAAZQ-DoBYRIpbfCd3XyLhHsN3SO5ngxLXTU replied to your outreach 26
+   * days ago". There is nowhere to look the name up: `growth.people` keys on emails and public
+   * slugs, and none of the 17 appears in it.
+   *
+   * And all 17 carry `inbound_unsolicited: true` with `touch_count: 0`. They messaged the founder
+   * FIRST. "Replied to your outreach" describes a conversation that never happened — on the card
+   * whose whole job is to make a founder confident enough to open it. It is also the commercially
+   * important distinction: a stranger who wrote to you unprompted is warmer than anything a sequence
+   * produced, and a founder who reads it as another sequence reply will treat it like one.
+   */
+  const project = `p-${randomUUID()}`;
+  const domain = getDomainStore();
+  const campaign = await seedCampaign(project, [
+    { from: "connected", action: "send_message", advance_to: "dm1", only_if: "!replied" },
+  ]);
+  await domain.createCase({
+    project_id: project, wedge: gtmWedge(), stage: "replied", status: "open",
+    // The real shape, copied from a production row.
+    title: "ACoAAA3FXuABasGADqCkA4btgw5eoXDMDWA8IJ8",
+    data: { campaign_id: campaign, has_reply: true, inbound_unsolicited: true, touch_count: 0 },
+  });
+
+  const moves = (await proposeMoves(stores(), await authFor(project), {}, NOW)).moves;
+  const move = moves.find((m) => m.kind === "handed_to_you")!;
+  assert.ok(move, "the message produced no move");
+
+  assert.ok(!/ACoAA/.test(move.why), "the row printed a LinkedIn URN at a founder");
+  assert.ok(!/ACoAA/.test(move.entity.label), "the headline is an identifier");
+  assert.match(move.why, /Someone on LinkedIn/, "the row does not say who, honestly");
+  /*
+    And it must not claim an outreach that never happened. This is the assertion that would have
+    caught the wording as shipped.
+  */
+  assert.ok(!/replied to your outreach/.test(move.why), "an unprompted message was called a reply");
+  assert.match(move.why, /without being contacted first/);
+  assert.match(move.why, /they came to you/);
+
+  /**
+   * AND AN UNKNOWN IS NOT A ZERO. The first version of this read `touch_count ?? 0`, so a case with
+   * no such field counted as "never contacted" — it would have told a founder "they came to you"
+   * about somebody the sequencer had messaged four times. Absence of a field is not a fact, and the
+   * direction it fails in has to be the ordinary case.
+   */
+  const quiet = `p-${randomUUID()}`;
+  const c2 = await seedCampaign(quiet, [{ from: "connected", action: "send_message", advance_to: "dm1" }]);
+  await domain.createCase({
+    project_id: quiet, wedge: gtmWedge(), stage: "replied", status: "open", title: "Sequenced properly",
+    data: { campaign_id: c2, has_reply: true }, // no touch_count, no flag — we do not know
+  });
+  const unknown = (await proposeMoves(stores(), await authFor(quiet), {}, NOW)).moves
+    .find((m) => m.kind === "handed_to_you")!;
+  assert.match(unknown.why, /replied to your outreach/, "an unknown touch count was read as zero");
+});
+
+test("a reply outranks finished-but-unbilled work, because a reply expires", async () => {
+  const project = `p-${randomUUID()}`;
+  const domain = getDomainStore();
+  const campaign = await seedCampaign(project, [
+    { from: "connected", action: "send_message", advance_to: "dm1", only_if: "!replied" },
+  ]);
+  await domain.createCase({
+    project_id: project, wedge: gtmWedge(), title: "Answered yesterday", stage: "replied", status: "open",
+    data: { campaign_id: campaign },
+  });
+
+  const moves = (await proposeMoves(stores(), await authFor(project), {}, NOW)).moves;
+  const handed = moves.find((m) => m.kind === "handed_to_you");
+  assert.ok(handed, "the reply produced no move");
+
+  /**
+   * THE ORDERING CLAIM, asserted against the constants rather than against a second seeded move.
+   *
+   * The first version of this seeded an accepted deliverable and compared the two scores — and it
+   * was worse in two ways. It used a store method that does not exist, and it guarded the real
+   * assertion behind `if (unbilled)`, so the day the seeding broke the test would have gone green
+   * having checked nothing at all. A conditional assertion is a test that fails open.
+   *
+   * The claim itself: an unbilled invoice does NOT expire — it will be there next week, worth the
+   * same. A reply has a half-life measured in hours; the same words sent today and sent in nine days
+   * are not the same words. So "a stranger answered" outranks "work you already earned", and both
+   * stay below a large overdue invoice, whose money term alone reaches 40.
+   */
+  assert.ok(
+    HANDED_TO_YOU_POINTS > ACCEPTED_WORK_POINTS,
+    `a reply (${HANDED_TO_YOU_POINTS}) is worth no more than unbilled work (${ACCEPTED_WORK_POINTS})`,
+  );
+  assert.ok(HANDED_TO_YOU_POINTS < MONEY_MAX, "a reply outranks a large overdue invoice");
+
+  // And the constant is what the move actually carries — an ordering nothing reads is not an order.
+  const answered = handed!.score_terms.find((t) => t.term === "answered");
+  assert.ok(answered, "the move does not say why it ranks where it does");
+  assert.equal(answered!.points, HANDED_TO_YOU_POINTS);
+  assert.match(answered!.because, /a stranger answered/);
+});
+
+test("BOOKED IS NOT SWEPT UP WITH IT", async () => {
+  /**
+   * `gtm/stages.ts` holds the two apart deliberately: "a reply wants an answer, a booking wants
+   * preparation". A row headed "waiting on you" against a meeting that is on the calendar for
+   * Thursday is wrong in the direction that makes a founder distrust the whole list.
+   *
+   * Two cases sit at `booked` in production, also untouched since 18 August, and they stay invisible
+   * until a card for preparation exists. Asserted here so that gap is a recorded decision rather
+   * than something nobody noticed.
+   */
+  const project = `p-${randomUUID()}`;
+  const domain = getDomainStore();
+  const campaign = await seedCampaign(project, [
+    { from: "connected", action: "send_message", advance_to: "dm1", only_if: "!replied" },
+  ]);
+  const booked = await domain.createCase({
+    project_id: project, wedge: gtmWedge(), title: "Meeting on Thursday", stage: "booked", status: "open",
+    data: { campaign_id: campaign },
+  });
+  const won = await domain.createCase({
+    project_id: project, wedge: gtmWedge(), title: "Closed", stage: "won", status: "open",
+    data: { campaign_id: campaign },
+  });
+
+  const moves = (await proposeMoves(stores(), await authFor(project), {}, NOW)).moves;
+  assert.ok(!moves.some((m) => m.entity.id === booked.id), "a booked meeting was called 'waiting on you'");
+  assert.ok(!moves.some((m) => m.entity.id === won.id), "a won prospect is still being proposed");
+});
+
+test("a prospect mid-sequence is untouched by any of this", async () => {
+  // The regression that would matter most: widening the new kind until it swallows the sequencer's
+  // own cases, so every prospect in every campaign reads as "waiting on you".
+  const project = `p-${randomUUID()}`;
+  const domain = getDomainStore();
+  const campaign = await seedCampaign(project, [
+    { from: "connected", action: "send_message", advance_to: "dm1" },
+  ]);
+  const live = await domain.createCase({
+    project_id: project, wedge: gtmWedge(), title: "Mid sequence", stage: "connected", status: "open",
+    data: { campaign_id: campaign }, due_at: ago(1),
+  });
+  const moves = (await proposeMoves(stores(), await authFor(project), {}, NOW)).moves;
+  assert.deepEqual(
+    moves.filter((m) => m.entity.id === live.id).map((m) => m.kind),
+    ["gtm_next_touch"],
+    "an active prospect was handed to the founder",
+  );
+});
+
+// ── asking someone a question they cannot see ─────────────────────────────────────────────────────
+//
+// ═════════════════════════════════════════════════════════════════════════════════════════════════
+// 52 OPEN ASKS, 22 CLIENTS, AND TWO OF THEM HAD EVER BEEN GIVEN A WAY IN
+// ═════════════════════════════════════════════════════════════════════════════════════════════════
+//
+// Counted in production on 13 September. Twenty businesses were being asked for documents by a
+// product that had given them no way to read the question — and `nudge_client_request` was proposing
+// that the founder chase them for it, which is the least useful thing this list could say.
+//
+// IT IS NOT THE MAILBOX, which is what it looks like. AgentMail caps this account at three inboxes,
+// all three are taken, and every ask raised since has `thread_id` null. But the portal never needed
+// one: `portal-access.tsx` mints a one-time link the founder copies and sends however they like, and
+// `portal/requests/[request]/attachments` accepts the answer with no thread at all. The loop closes
+// without email. What was missing is anything that noticed the link had never been sent.
+
+test("A CLIENT WHO CANNOT SEE THE ASK IS NOT NUDGED ABOUT IT", async () => {
+  const project = `p-${randomUUID()}`;
+  const domain = getDomainStore();
+  const client = await makeClient(project, "Harbourline Coffee");
+  const kase = await domain.createCase({
+    project_id: project, wedge: WEDGE, title: "March close", stage: "delivery", status: "open", client_id: client.id,
+  });
+  await getRequestStore().createRequest({
+    project_id: project, client_id: client.id, case_id: kase.id,
+    kind: "document", ask: "The bank statement for March", party_role: "client",
+  } as never);
+
+  /*
+    EVALUATED LATE ENOUGH THAT A NUDGE WOULD OTHERWISE FIRE, which is the only way this assertion
+    means anything. The first version proposed at `NOW` against a request `createRequest` had just
+    stamped — `nudgeMove` waits `REQUEST_NUDGE_DAYS` before chasing anyone, so no nudge was possible
+    and "the nudge was replaced" was true of a nudge that never existed. Caught by sabotage: deleting
+    the `continue` that does the replacing left this test green.
+  */
+  const later = new Date(NOW.getTime() + (REQUEST_NUDGE_DAYS + 2) * DAY);
+  const moves = (await proposeMoves(stores(), await authFor(project), {}, later)).moves;
+  const mine = moves.filter((m) => m.client_id === client.id);
+  /*
+    REPLACES, never joins. Proposing both would put "remind them about the bank statement" beside
+    "they cannot see that you asked" — one situation described twice, the second time with the
+    reason. The same argument `unblock_wait` makes against falling through to the staleness block.
+  */
+  assert.deepEqual(mine.map((m) => m.kind), ["client_cannot_see_it"], "the nudge is still being proposed");
+
+  const move = mine[0]!;
+  assert.match(move.why, /Harbourline Coffee/, "the row does not say who");
+  assert.match(move.why, /never been given a way to see/);
+  assert.match(move.why, /copy the portal link and send it/, "the row does not say what to do");
+  /*
+    No age assertion: `createRequest` stamps its own `created_at`, so a fixture cannot back-date one
+    and an assertion about "20 days" would be testing the clock rather than the card. The oldest-age
+    clause is covered by the wording test above.
+  */
+  /*
+    NO CARRIER. `mintPortalLink` returns the raw token ONCE and keeps only its hash — that is the
+    whole design — so nothing can send it on the founder's behalf without changing what a portal
+    link is.
+  */
+  assert.equal(move.carrier.wedge, "");
+  assert.equal(move.takeable, false);
+});
+
+test("a client who HAS been let in is nudged normally", async () => {
+  const project = `p-${randomUUID()}`;
+  const domain = getDomainStore();
+  const client = await makeClient(project, "Foldgrain Bakery");
+  const kase = await domain.createCase({
+    project_id: project, wedge: WEDGE, title: "March close", stage: "delivery", status: "open", client_id: client.id,
+  });
+  await getRequestStore().createRequest({
+    project_id: project, client_id: client.id, case_id: kase.id,
+    kind: "document", ask: "The bank statement for March", party_role: "client",
+  } as never);
+  // The founder did their part: a link exists for this client.
+  mintPortalLink({ project_id: project, client_id: client.id });
+
+  /*
+    Evaluated LATER rather than back-dating the row: `createRequest` stamps its own `created_at`, and
+    `nudgeMove` deliberately waits `REQUEST_NUDGE_DAYS` before chasing anyone. Same technique as the
+    ranking test above. The shut-out card has no such wait on purpose — a client who cannot see the
+    question is a problem on day one, and the founder is the only one who can fix it.
+  */
+  const later = new Date(NOW.getTime() + (REQUEST_NUDGE_DAYS + 2) * DAY);
+  const moves = (await proposeMoves(stores(), await authFor(project), {}, later)).moves;
+  const mine = moves.filter((m) => m.client_id === client.id);
+  assert.deepEqual(mine.map((m) => m.kind), ["nudge_client_request"], "a reachable client got the wrong card");
+});
+
+test("A CLIENT WE HAVE WRITTEN TO IS NOT SHUT OUT", async () => {
+  /**
+   * A `thread_id` on the ask means the client was emailed: they can answer by replying, and telling
+   * the founder to re-send a portal link to somebody already in a conversation with them is a false
+   * alarm. It changes nothing today — measured 13 September, ZERO of the 22 clients with open asks
+   * have a thread, because AgentMail's inbox cap means no project can mint a mailbox — and it is
+   * here for the day that stops being true.
+   */
+  const project = `p-${randomUUID()}`;
+  const domain = getDomainStore();
+  const client = await makeClient(project, "Cedar & Co");
+  const kase = await domain.createCase({
+    project_id: project, wedge: WEDGE, title: "March close", stage: "delivery", status: "open", client_id: client.id,
+  });
+  await getRequestStore().createRequest({
+    project_id: project, client_id: client.id, case_id: kase.id,
+    kind: "document", ask: "The bank statement for March", party_role: "client",
+    thread_id: `t-${randomUUID()}`,
+  } as never);
+
+  const later = new Date(NOW.getTime() + (REQUEST_NUDGE_DAYS + 2) * DAY);
+  const moves = (await proposeMoves(stores(), await authFor(project), {}, later)).moves;
+  const mine = moves.filter((m) => m.client_id === client.id);
+  assert.deepEqual(
+    mine.map((m) => m.kind),
+    ["nudge_client_request"],
+    "a client we emailed was reported as unable to see the question",
+  );
+});
+
+test("ONE CARD PER CLIENT, NOT ONE PER ASK", async () => {
+  /**
+   * The failure this would otherwise reproduce at the worst moment. A client shut out with six open
+   * asks is ONE problem with one action — copy the link — and six identical cards is exactly the
+   * wall `UX.md` rule 2 forbids: "fifteen cards that differ only in the recipient are not fifteen
+   * decisions".
+   */
+  const project = `p-${randomUUID()}`;
+  const domain = getDomainStore();
+  const client = await makeClient(project, "Northwind Landscaping");
+  const kase = await domain.createCase({
+    project_id: project, wedge: WEDGE, title: "March close", stage: "delivery", status: "open", client_id: client.id,
+  });
+  for (const ask of ["The bank statement", "The ledger export", "The sales-tax rate"]) {
+    await getRequestStore().createRequest({
+      project_id: project, client_id: client.id, case_id: kase.id,
+      kind: "document", ask, party_role: "client",
+    } as never);
+  }
+
+  const late = new Date(NOW.getTime() + (REQUEST_NUDGE_DAYS + 2) * DAY);
+  const moves = (await proposeMoves(stores(), await authFor(project), {}, late)).moves;
+  const mine = moves.filter((m) => m.kind === "client_cannot_see_it");
+  assert.equal(mine.length, 1, `three asks produced ${mine.length} cards`);
+  // And none of the three produced a nudge alongside it.
+  assert.equal(moves.filter((m) => m.kind === "nudge_client_request").length, 0, "nudges were proposed too");
+  assert.match(mine[0]!.why, /3 open requests/, "the card does not say how many are stuck behind it");
+});
+
+test("it outranks the work that is waiting behind it", async () => {
+  /**
+   * A move that unblocks N other moves outranks any single one of them. Every open ask on this
+   * client, every nudge that would follow, and the production run waiting on the answer are all
+   * behind one copy-and-send.
+   */
+  assert.ok(
+    CANNOT_SEE_POINTS > HANDED_TO_YOU_POINTS && CANNOT_SEE_POINTS > ACCEPTED_WORK_POINTS,
+    "a prerequisite ranks below the things it blocks",
+  );
+  assert.ok(CANNOT_SEE_POINTS < MONEY_MAX, "it outranks a large overdue invoice");
 });

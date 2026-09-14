@@ -247,8 +247,36 @@ export interface DomainStore {
     patch: Partial<Pick<Thread, "case_id" | "subject" | "status">>,
   ): Promise<Thread | undefined>;
   listThreadsForClient(clientId: string): Promise<Thread[]>;
+  /**
+   * Every conversation in a business, newest activity first.
+   *
+   * ═══ WHY A PROJECT-WIDE LIST EXISTS AT ALL ═══
+   *
+   * There was only `listThreadsForClient`, so the only way to ask "what has this SERVICE been saying
+   * to clients" was one request per client — N+1 across the whole book, which gets slower exactly as
+   * a business becomes worth looking at. The founder asked for the per-service view and the shape of
+   * the question is cross-client by construction: a service runs engagements for many people.
+   *
+   * The WEDGE is not a parameter here, and deliberately. A thread knows its case; a case knows its
+   * wedge; teaching this store the second hop would put service semantics inside the conversation
+   * store, where the next person to add a filter would put the one after that. The caller resolves
+   * which cases belong to a service — it is already holding them — and passes ids.
+   */
+  listThreadsForProject(
+    projectId: string,
+    opts?: { caseIds?: string[]; limit?: number },
+  ): Promise<Thread[]>;
   addMessage(m: Omit<Message, "id" | "created_at">): Promise<Message>;
   listMessages(threadId: string): Promise<Message[]>;
+  /**
+   * The most recent message on each of these threads, in one read.
+   *
+   * A list of conversations is unreadable without the last thing said — "3 conversations" is a count,
+   * "Ashcroft Builders · we have the statements, sending now" is an answer. Fetching that with
+   * `listMessages` per thread is the N+1 this pair of methods exists to avoid, and it is the exact
+   * shape that made the client page slower the more a customer was worth (see its own note).
+   */
+  lastMessages(threadIds: string[]): Promise<Map<string, Message>>;
 
   // records (structured, queryable per-wedge state)
   /**
@@ -847,6 +875,21 @@ export class InMemoryDomainStore implements DomainStore {
   async listThreadsForClient(clientId: string): Promise<Thread[]> {
     return [...this.threads.values()].filter((t) => t.client_id === clientId);
   }
+  async listThreadsForProject(
+    projectId: string,
+    opts?: { caseIds?: string[]; limit?: number },
+  ): Promise<Thread[]> {
+    // Fails closed on an absent scope, like every other tenant-scoped read in this store. A
+    // project-wide list that answered "all of them" for an empty string is a cross-tenant leak
+    // waiting for one caller to forget an argument.
+    if (!projectId) return [];
+    const wanted = opts?.caseIds ? new Set(opts.caseIds) : undefined;
+    const rows = [...this.threads.values()]
+      .filter((t) => t.project_id === projectId)
+      .filter((t) => !wanted || (t.case_id ? wanted.has(t.case_id) : false))
+      .sort((a, b) => (b.updated_at ?? "").localeCompare(a.updated_at ?? ""));
+    return opts?.limit ? rows.slice(0, opts.limit) : rows;
+  }
   async addMessage(m: Omit<Message, "id" | "created_at">): Promise<Message> {
     const msg: Message = { ...m, id: randomUUID(), created_at: now() };
     (this.messages.get(m.thread_id) ?? this.messages.set(m.thread_id, []).get(m.thread_id)!).push(msg);
@@ -856,6 +899,15 @@ export class InMemoryDomainStore implements DomainStore {
   }
   async listMessages(threadId: string): Promise<Message[]> {
     return this.messages.get(threadId) ?? [];
+  }
+  async lastMessages(threadIds: string[]): Promise<Map<string, Message>> {
+    const out = new Map<string, Message>();
+    for (const id of threadIds) {
+      const all = this.messages.get(id) ?? [];
+      const last = all[all.length - 1];
+      if (last) out.set(id, last);
+    }
+    return out;
   }
 
   private records = new Map<string, Record_>();

@@ -465,6 +465,116 @@ export function distillFromRejection(args: {
 }
 
 /**
+ * ═════════════════════════════════════════════════════════════════════════════════════════════════
+ * THE CLIENT SENT THE WORK BACK AND SAID WHY — THE BEST SIGNAL THIS PRODUCT EVER GETS
+ * ═════════════════════════════════════════════════════════════════════════════════════════════════
+ *
+ * Everything else here learns from a FOUNDER: an edit before a send, a rejection in the approval
+ * queue. Useful, and all of it is a proxy. This is the real thing — the person paying for the work,
+ * looking at the finished article, writing in their own words what is wrong with it.
+ *
+ * It was being thrown away. `POST /v1/portal/deliverables/:id/changes` wrote the brief to the version
+ * verdict and to the timeline, handed it to the redraft as input, and stopped. The next deliverable
+ * of the same kind for the same client started from nothing, so the same complaint could arrive every
+ * month forever and the product would call that a working feedback loop.
+ *
+ * ═══ THE SUBJECT KEY, WHICH IS THE WHOLE DESIGN ═══
+ *
+ * `subject` is what makes two rules comparable: same subject + same scope means same question, so a
+ * later answer supersedes an earlier one. That is right for "what fee do we charge" and catastrophic
+ * here. Keying on the deliverable kind alone would mean a client who asks for invoice numbers in
+ * March and a shorter summary in April ends up with only the April lesson — the product would forget
+ * a correction the moment it got a second one.
+ *
+ * So the key carries a slug of the REQUEST. Identical complaints collide and corroborate, which is
+ * the honest measurement of "this client keeps asking for the same thing and we keep not doing it";
+ * different complaints coexist. Near-identical wording makes two rules, and that is the safe
+ * direction — a duplicate costs prompt budget, a lost one costs the client.
+ *
+ * Derived structurally from their words, never interpreted. This module's rule is that a subject is
+ * "derived structurally (action + field, or the gap's stable id), never guessed from prose", and
+ * reading a change request to decide what KIND of complaint it is would be exactly that guess.
+ *
+ * ═══ SCOPED TO THE CLIENT, ALWAYS ═══
+ *
+ * "Brightline wants Friday summaries" is not a house rule, and applying it to everyone is how a
+ * system that learns makes a business worse. `scopeMeta` does this and the caller must pass the
+ * client — a change request with no client attached is a lesson with no owner and is not stored.
+ */
+export function distillFromChangeRequest(args: {
+  project_id: string;
+  wedge: string;
+  task_type: string;
+  client_id?: string;
+  /** What the client received — the deliverable's kind, or its title if the kind is unknown. */
+  deliverable_kind: string;
+  /** Their words. The whole point; never summarised, never paraphrased. */
+  request: string;
+  deliverable_id?: string;
+  task_id?: string;
+  at?: string;
+}): NewRule | undefined {
+  const request = args.request.trim();
+  // No client, no lesson. A rule learned from one customer's taste, stored unscoped, is applied to
+  // every other customer of this business — the failure mode this module exists to prevent.
+  if (!request || !args.client_id) return undefined;
+
+  const kind = slugOf(args.deliverable_kind) || "work";
+  const asked = slugOf(request, 6);
+  return {
+    project_id: args.project_id,
+    wedge: args.wedge,
+    ...scopeMeta(args.client_id),
+    task_types: args.task_type ? [args.task_type] : [],
+    subject: `deliverable.${kind}.${asked || "changes"}`,
+    /*
+      `never`, matching `distillFromRejection`. A paying client refusing the work is at least as
+      strong as a founder refusing a draft, and the strength decides what survives when the prompt
+      budget is tight — dropping the customer's own correction to keep a stylistic preference is the
+      wrong trade every time. It also means a later, weaker lesson on the same subject raises
+      `needs_review` rather than silently overwriting this, which is correct: something a client
+      asked for should not be quietly reversed.
+    */
+    kind: "never",
+    text: `This client sent back work like the below and asked for this: ${request}`,
+    provenance: {
+      source: "rejection",
+      task_id: args.task_id,
+      at: args.at ?? new Date().toISOString(),
+      before: args.deliverable_id ? `deliverable ${args.deliverable_id}` : undefined,
+    },
+  };
+}
+
+/**
+ * A short, stable, READABLE key from prose.
+ *
+ * Readable because `subject` is what a human reads when asking why the agent did something, and a
+ * hash turns "why did it do that" into a database query. `deliverable.report.cite-the-invoice-
+ * numbers` answers it on sight.
+ *
+ * Stopwords are dropped so "please can you cite the invoice numbers" and "cite the invoice numbers"
+ * land on the same key — the commonest way one complaint becomes two rules.
+ */
+const KEY_STOPWORDS = new Set([
+  "a", "an", "and", "are", "as", "at", "be", "can", "could", "do", "for", "from", "have", "i", "if",
+  "in", "is", "it", "just", "like", "me", "my", "of", "on", "or", "our", "please", "should", "so",
+  "that", "the", "then", "these", "this", "to", "us", "was", "we", "were", "will", "with", "would",
+  "you", "your",
+]);
+
+function slugOf(text: string, words = 4): string {
+  return text
+    .toLowerCase()
+    .replace(/[^a-z0-9\s]+/g, " ")
+    .split(/\s+/)
+    .filter((w) => w && !KEY_STOPWORDS.has(w))
+    .slice(0, words)
+    .join("-")
+    .slice(0, 60);
+}
+
+/**
  * The scope a rule competes within.
  *
  * Contradiction is only meaningful inside one scope. A client-specific rule and a house rule about

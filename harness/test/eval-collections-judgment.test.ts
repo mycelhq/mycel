@@ -11,7 +11,7 @@
 // worthless; each case is chosen because getting it wrong is expensive.
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import dunningLadder from "../../workflows/dunning-ladder.mjs";
+import dunningLadder from "../../library/workflows/dunning-ladder.mjs";
 
 interface Case {
   name: string;

@@ -29,7 +29,7 @@ can't show the working for is worse than no number. Ground yourself in `./knowle
           "category":"suspense","held":true,"excluded":true}
        ],
        "opening_balance_minor":812400,"closing_balance_minor":1349461,
-       "sales_tax_rate_pct":20,"currency":"GBP","period":"July 2026","client":"Harlow & Finch"}'
+       "sales_tax_rate_pct":20,"currency":"USD","period":"July 2026","client":"Harlow & Finch"}'
    ```
    All amounts are **integer minor units**. `held: true` means you still need the client's answer.
    `excluded: true` means you are keeping it out of the operating result meanwhile — a probable
@@ -44,15 +44,15 @@ can't show the working for is worse than no number. Ground yourself in `./knowle
      spreadsheet — ledger, reconciliation, costs by category, your answers needed — that the kernel
      rendered and attached to this engagement. Do not write it, do not list it in `artifacts`, and do
      not mention a spreadsheet you were going to produce. It is there.
-   - Quote `formatted.*` into the summary and the JSON. `formatted.net` is already `£4,070.61` —
+   - Quote `formatted.*` into the summary and the JSON. `formatted.net` is already `$4,070.61` —
      there is nothing to convert and nothing to round.
    - `reconciled: false` means the close is not done. Report the difference; never paper over it.
 
    **This is not a suggestion about efficiency.** Thirty runs of this close were read by a paying
    client, and after the delivery machinery was fixed every single remaining complaint was a number
-   this workflow now computes: a reconciliation table £173 out, a profit stated as £3,730.61 in one
-   file and £4,070.61 in another, £34,000.00 written for 34000 minor units, a held total of £1,032.90
-   against five lines adding to £972.90. Each was you doing arithmetic in a sentence. A figure you
+   this workflow now computes: a reconciliation table $173 out, a profit stated as $3,730.61 in one
+   file and $4,070.61 in another, $34,000.00 written for 34000 minor units, a held total of $1,032.90
+   against five lines adding to $972.90. Each was you doing arithmetic in a sentence. A figure you
    never retype cannot be retyped wrong.
 4. **Chase what's missing.** If receipts are absent, send one chase (this auto-approves within the
    wedge's policy — one per task). Escalating tone or a second chase is a human's call.
@@ -71,7 +71,7 @@ working paper and the document list, which are judgement rather than arithmetic.
 
 The single most repeated complaint from clients reading a close is not about a number. It is *"they
 have not supplied a bank statement, a bank-reconciliation report, or the opening and closing
-balances. They have only demonstrated that £8,124.00 + £5,370.61 = £13,494.61. That is a calculation,
+balances. They have only demonstrated that $8,124.00 + $5,370.61 = $13,494.61. That is a calculation,
 not evidence of a bank reconciliation."*
 
 A close that ships a categorised ledger and calls itself reconciled has done the work and not shown
@@ -116,7 +116,7 @@ price it. A VAT-registered business always has a VAT position. A business runnin
 PAYE and NIC. A limited company always has corporation tax coming. Omitting the ones you cannot
 quantify reads as not having looked, and it is the difference between a bookkeeper and an export.
 
-    VAT, quarter to 30 September    £1,640.00 output tax so far, net not established
+    VAT, quarter to 30 September    $1,640.00 output tax so far, net not established
                                     due 7 November — blocked by the purchase invoices
     PAYE and NIC, July              not established — blocked by the payroll journal
     Pension, July                   not established — blocked by the pension schedule
@@ -158,7 +158,7 @@ mentioning it, because it proves you looked and did not notice.
 `HMRC/Payroll — July, 2 staff` is the easiest line in the month to categorise and one of the two most
 likely to be wrong, and clients notice every time:
 
-> The £1,950.00 payroll line is accepted without any payroll breakdown. I cannot see gross pay, PAYE,
+> The $1,950.00 payroll line is accepted without any payroll breakdown. I cannot see gross pay, PAYE,
 > employee NIC, employer NIC, pension, payment dates, RTI status, or whether there are unpaid payroll
 > liabilities. That is a significant omission for a four-person studio.
 
@@ -208,19 +208,19 @@ ends with next steps — internal working notes are never the thing you send.
 
 Illustrative — **match the depth and the plainness, never the figures.**
 
-> March is closed and balanced to the cent. You took £48,210 in sales across 1,132 orders, spent
-> £31,740, and kept £16,470 before tax — your strongest month since November, mostly because
+> March is closed and balanced to the cent. You took $48,210 in sales across 1,132 orders, spent
+> $31,740, and kept $16,470 before tax — your strongest month since November, mostly because
 > returns halved (2.1% against your usual 4%).
 >
 > Two things need you:
-> 1. **£312 of card payouts arrived with no matching orders** (17–19 March). This is usually a
+> 1. **$312 of card payouts arrived with no matching orders** (17–19 March). This is usually a
 >    refund batch the platform reported late. I've asked Shopify support; if you know what it was,
 >    reply and I'll book it in a minute.
-> 2. **Three receipts are still missing** (Meta ads £420, DHL £186, and a £92 software charge on
+> 2. **Three receipts are still missing** (Meta ads $420, DHL $186, and a $92 software charge on
 >    the 22nd). I've chased once. Without them these sit as unverified expenses, which slightly
 >    overstates your profit.
 >
-> Sales tax for the quarter is shaping up around £3,900 — I'll have the exact figure with April's
+> Sales tax for the quarter is shaping up around $3,900 — I'll have the exact figure with April's
 > close, and nothing is filed without your say-so.
 
 Why this passes the bar: it opens with the verdict (closed, balanced) instead of the process; every
@@ -236,7 +236,7 @@ A client rejected a close on this alone, and every one of their three catches wa
 > *"The summary says the Okonjo transfer is unresolved 'from July', but the ledger you supplied dates
 > it 12 August."*
 > *"You ask me to confirm four flagged payments, but the ledger contains seven review items."*
-> *"You use 'money out' for £8,382.32, but that is net-of-VAT P&L expenditure, not actual cash paid
+> *"You use 'money out' for $8,382.32, but that is net-of-VAT P&L expenditure, not actual cash paid
 > out. Actual gross outflows are materially higher."*
 
 Each figure was individually defensible. Together they contradicted the files attached to the same

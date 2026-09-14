@@ -9,7 +9,7 @@
 // still tells the founder not to pay for it.
 import test from "node:test";
 import assert from "node:assert/strict";
-import signalBacktest from "../../workflows/signal-backtest.mjs";
+import signalBacktest from "../../library/workflows/signal-backtest.mjs";
 
 const acct = (name: string, won: boolean, signals: { source: string; observed_at: string }[], engaged_at?: string) => ({
   name,

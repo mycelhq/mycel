@@ -32,7 +32,40 @@ import { createHash } from "node:crypto";
  * every task fails at session creation for no reason anyone changed. Bump deliberately; the hash in
  * the snapshot name means a bump builds a new snapshot rather than mutating the one in use.
  */
-export const OPENCODE_VERSION = process.env.MYCEL_OPENCODE_VERSION ?? "1.17.6";
+export const OPENCODE_VERSION = process.env.MYCEL_OPENCODE_VERSION ?? "1.18.30";
+
+/*
+  BUMPED 1.17.6 → 1.18.30 on 2026-09-12, and here is what was checked rather than assumed, because
+  "bump the agent runtime" is how a fleet loses a Tuesday:
+
+    · EVERY ENDPOINT THIS KERNEL CALLS STILL EXISTS — `/session`, `/session/:id/prompt_async`,
+      `/session/:id/message`, `/session/:id/abort`, `/event`, `/agent`. Read out of 1.18.30's
+      generated `sdk.gen.js`, not out of a changelog.
+    · THE PROMPT BODY IS UNCHANGED. `{ parts: [{type:"text"}], model: {providerID, modelID} }`
+      matches `SessionPromptAsyncData` exactly.
+    · THE SHAPES THE MAPPER READS ARE UNCHANGED. `ToolPart` is still
+      `{tool, callID, state:{status, input, output, title, time}}`, usage is still
+      `tokens:{input, output, reasoning, cache:{read, write}}`, and a streamed delta still rides on
+      `message.part.updated` as a sibling field rather than as an event of its own.
+    · THE NEW EVENTS ARE ADDITIVE — `todo.updated`, `pty.*`, `command.executed`, `vcs.branch.updated`
+      — and the mapper already ignores what it does not recognise, with a bounded log.
+
+  The one rename found: `installation.update.available` → `installation.update-available`. It is on
+  the ignore list either way, so it costs nothing; both spellings are listed there now rather than
+  quietly dropping the old one, because a self-hoster pinning the previous version still emits it.
+
+  AND THEN THE BINARY WAS RUN, because generated types are the thing this file already warns are
+  stale. Against 1.18.30 on a laptop, with the exact `opencode.json` this kernel writes:
+
+    · `permission: { "*": "allow", bash: {pattern map}, <an MCP tool name>: "deny" }` — ACCEPTED and
+      echoed back by `debug config`. None of those keys appear in the generated `Config` type, which
+      is precisely why reading the types alone would have been a guess.
+    · `tools: {write: true}` on an agent still normalises into `permission.edit: "allow"`, the same
+      folding the 1.17.6 note in `harness.ts` documents.
+    · `POST /session` → a session id. `GET /agent` → the agent list with `mode` and `permission`.
+      `POST /session/:id/abort` → 200. `POST /session/:id/prompt_async` → 204, immediately, exactly
+      as this kernel's header says. `GET /event` → SSE opening with `server.connected`.
+*/
 
 /** Base image. Node because opencode is a Node-ecosystem distribution and wedge tooling assumes it. */
 const BASE_IMAGE = "node:22-bookworm-slim";

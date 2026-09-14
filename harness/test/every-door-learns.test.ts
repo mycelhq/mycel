@@ -29,15 +29,19 @@ function tsFiles(dir: string, out: string[] = []): string[] {
  * `"source": "onboarding"`. Across the product's entire history, nothing has ever been learned from
  * a correction.
  *
- * It has failed twice, the same way, for different reasons:
+ * It has failed three times, the same way, for different reasons:
  *
  *   1. It lived inside `awaitApproval`, in the waiting run. A founder deciding two hours later
  *      decides after a deploy killed that run, so it never fired. Moved 6 September.
  *   2. It moved to `POST /v1/approvals/:id/approve` — and there is a SECOND approve route. Campaigns
  *      decide their own row, correctly, because nobody is blocked. Both human approvals since the
  *      September fix came through it, and it captured nothing.
+ *   3. A CLIENT sending a deliverable back is not an approval at all, so no amount of scanning for
+ *      `setApproval` was ever going to find it. The brief went to the version verdict, the timeline
+ *      and the redraft's input — all three about that one deliverable — and nothing carried it
+ *      forward. The single best correction signal in the product, discarded.
  *
- * Twice is a pattern, not an accident: the capture keeps following the mechanism instead of following
+ * Three times is a pattern, not an accident: the capture keeps following the mechanism instead of following
  * the decision. So this test does not check the two call sites — it looks for any route that settles
  * an approval and does not file.
  */
@@ -75,6 +79,41 @@ test("both known doors are still wired", () => {
       `${f} stopped filing the lesson when a human decides`,
     );
   }
+});
+
+test("THE THIRD DOOR: A CLIENT SENDING THE WORK BACK", () => {
+  /**
+   * Not an approval, so the scan above could never have seen it — which is the point. The pattern is
+   * not "somebody forgot to call the function", it is that the capture keeps being attached to a
+   * MECHANISM (the approval row) instead of to the EVENT (a human decided), and each new way of
+   * deciding arrives without it.
+   *
+   * This door is the best one in the product. Every other lesson here is learned from a founder
+   * guessing what the customer wants; this is the customer saying it, about finished work, having
+   * paid for it.
+   */
+  const src = strip(readFileSync(join(SRC, "deliverables.routes.ts"), "utf8"));
+  assert.match(src, /distillFromChangeRequest\(/, "a client's change request stopped becoming a rule");
+  assert.match(
+    src,
+    /recordObservation\(/,
+    "a client sending work back is no longer measured as the agent getting it wrong",
+  );
+  /*
+    The observation must NOT be conditional on a rule having been stored. A change request with no
+    client attached is still the agent getting it wrong, and suppressing the count for the rows we
+    understand least makes the quality metric flattering exactly where it should not be.
+
+    Pinned as the SHAPE of the guard rather than as a distance between two calls. The first version
+    asserted that `recordObservation` does not appear within 240 characters of `if (rule)` — which is
+    a proximity test, not a scope test, and it failed on correct code: a brace-less `if` guards
+    exactly one statement, so the next call is outside it no matter how close it sits.
+  */
+  assert.match(
+    src,
+    /if \(rule\) await applyDistilled\(/,
+    "the `if (rule)` guard grew a block — check `recordObservation` did not fall inside it",
+  );
 });
 
 test("a lesson is never filed without a scope", () => {

@@ -101,6 +101,7 @@ import { CONVERSION_METRIC, analyseExperiment, type ExperimentReport } from "./i
 import { aggregateWindow } from "./insight/store";
 import { getKnowledgeStore } from "./knowledge.store";
 import { appliedRuleIds, applyStatedRules } from "./rules.rank";
+import { clientsWithPortalAccess } from "./portal";
 
 /** The stores a proposal reads. Passed in, never reached for — same rule as `BrainStores`. */
 export interface MoveStores {
@@ -306,6 +307,67 @@ export const MOVE_KINDS = [
    * gate), and the value is entirely in the noticing.
    */
   "release_deliverable",
+  /**
+   * A prospect who replied, or a meeting that did not happen, waiting on a human. See
+   * `handedToYouMove`.
+   *
+   * ═══════════════════════════════════════════════════════════════════════════════════════════════
+   * THE HANDOFF THE STAGE MACHINE DESIGNED AND NOBODY BUILT
+   * ═══════════════════════════════════════════════════════════════════════════════════════════════
+   *
+   * `gtm/stages.ts` states the contract in its own words: "`replied`, `booked`, `won` and `lost` are
+   * terminal on purpose and that is how stopping works ... A HUMAN OWNS EVERYTHING FROM `replied`",
+   * and "a reply wants an answer". Every campaign step carries `only_if: "!replied"`, and no step
+   * anywhere has `from: "replied"` — so the sequence stops dead the moment outreach works, exactly
+   * as intended.
+   *
+   * The half that was never written is the other side of that sentence. A human owns it, and nothing
+   * ever told the human. Measured in production on 13 September:
+   *
+   *     21 cases at `replied`, every one last touched on or before 18 August — 26 days
+   *      2 cases at `booked`, same
+   *
+   * `propose_reply` exists, is declared in the wedge, is wired to a route, and has NEVER RUN. Not
+   * once, in the life of the system. It never will while the only way to reach it is for a founder
+   * to already know the reply is there.
+   *
+   * This is the most expensive silence in the product. Every other kind here chases something that
+   * has gone wrong; this one is the single moment the entire outbound machine has been paying for —
+   * a stranger answered — and it was the one event with no surface at all.
+   *
+   * ═══ NOT `gtm_next_touch`, AND THE DIFFERENCE IS THE WHOLE POINT ═══
+   *
+   * That kind asks the SEQUENCER what comes next and shows a move exactly when the sequencer would
+   * act. Its own note explains why it must not stretch to cover this: duplicating the gate "would
+   * mean a founder is shown 'message this prospect' for someone who already replied". Correct. The
+   * answer is not to loosen that gate but to add the row it deliberately excludes.
+   */
+  "handed_to_you",
+  /**
+   * A client with open asks who has never been able to reach the portal. See `cannotSeeItMove`.
+   *
+   * ═══════════════════════════════════════════════════════════════════════════════════════════════
+   * WE WERE ASKING PEOPLE FOR THINGS THEY COULD NOT SEE
+   * ═══════════════════════════════════════════════════════════════════════════════════════════════
+   *
+   * Counted in production on 13 September: 52 open asks across 22 clients, and TWO of those clients
+   * had ever had a portal link minted for them. Twenty businesses were being asked for documents by
+   * a product that had given them no way to read the question — and `nudge_client_request` was
+   * proposing the founder chase them for it, which is the least useful thing this list could say.
+   *
+   * IT IS NOT THE MAILBOX. AgentMail caps this account at three inboxes and every ask raised since
+   * has `thread_id` null, which looks like the cause and is not: `portal-access.tsx` mints a
+   * one-time link the founder copies and sends however they like, and
+   * `portal/requests/[request]/attachments` accepts the answer with no thread at all. The loop
+   * closes without email. What was missing is anything that noticed the link had never been sent.
+   *
+   * ═══ IT REPLACES THE NUDGE RATHER THAN JOINING IT ═══
+   *
+   * Proposing both would put "remind them about the bank statement" next to "they cannot see that
+   * you asked" — one situation described twice, the second time with the reason. The same argument
+   * `unblock_wait` makes against falling through to the staleness block.
+   */
+  "client_cannot_see_it",
 ] as const;
 export type MoveKind = (typeof MOVE_KINDS)[number];
 
@@ -448,7 +510,7 @@ export interface Move {
 // change this comment.
 
 /** Money's ceiling. The largest single term, deliberately: cash is the business's oxygen. */
-const MONEY_MAX = 40;
+export const MONEY_MAX = 40;
 /**
  * The invoice size, in MAJOR units, at which the money term saturates.
  *
@@ -606,7 +668,21 @@ export function deadlinePoints(daysUntil: number | undefined): number {
  * loses to a large overdue invoice, whose money term alone can reach 40 before its own deadline and
  * staleness terms are added. That is the ordering `moves.test.ts` pins.
  */
-const ACCEPTED_WORK_POINTS = 32;
+export const ACCEPTED_WORK_POINTS = 32;
+
+/**
+ * The flat worth of "a stranger answered you".
+ *
+ * Above `ACCEPTED_WORK_POINTS` (32), and that ordering is a claim worth defending. Accepted work is
+ * money already earned and it will still be there next week — an unbilled invoice does not expire.
+ * A reply does. It is the only event in this list with a half-life measured in hours: the same
+ * sentence sent today and sent in nine days are not the same sentence, and the 21 replies sitting
+ * untouched since 18 August are, in practice, gone.
+ *
+ * Still below a large overdue invoice, whose money term alone reaches 40. A founder owed $8,750 for
+ * sixty-four days should see that first, and this list should not need a second opinion about it.
+ */
+export const HANDED_TO_YOU_POINTS = 34;
 
 export function stalenessPoints(daysStale: number | undefined): number {
   if (daysStale === undefined || !Number.isFinite(daysStale) || daysStale <= 0) return 0;
@@ -1196,10 +1272,67 @@ export async function proposeMoves(
       status: "open",
       limit: 500,
     });
-    for (const r of rows) {
-      if (!ownerAllowed(scope, r.client_id)) { excluded++; continue; }
+    /**
+     * ═══ WHO CAN ACTUALLY READ WHAT WE ASKED, IN ONE QUERY ═══
+     *
+     * Asked once for every client in this batch rather than per request: `proposeMoves` runs on
+     * every load of the founder's home screen, and a per-row lookup would make it slower exactly as
+     * a business acquires clients.
+     */
+    const visible = rows.filter((r) => ownerAllowed(scope, r.client_id));
+    excluded += rows.length - visible.length;
+    const reachable = want("client_cannot_see_it")
+      ? await clientsWithPortalAccess([...new Set(visible.map((r) => r.client_id).filter(Boolean))]).catch(
+          // Fails OPEN: an unreadable portal store must not invent "nobody can see anything" and
+          // bury the list under a card per client. The nudges below are the existing behaviour.
+          () => null,
+        )
+      : null;
+    /**
+     * ═══ EMAIL COUNTS AS A WAY IN, EVEN THOUGH IT IS NOT WORKING TODAY ═══
+     *
+     * A client whose ask carries a `thread_id` was written to: they can answer by replying, and
+     * calling them shut out would be a false alarm telling the founder to re-send a link to somebody
+     * already in a conversation with them.
+     *
+     * It costs nothing — the requests are already in hand — and it changes nothing right now.
+     * Measured 13 September: 22 clients have open asks, 2 have a portal link and ZERO have a thread,
+     * because AgentMail's inbox limit means no project can mint a mailbox. This is here for the day
+     * that stops being true.
+     */
+    const emailed = new Set(visible.filter((r) => r.thread_id && r.client_id).map((r) => r.client_id!));
+    const shutOut = new Map<string, ClientRequest[]>();
+    for (const r of visible) {
+      if (reachable && r.client_id && !reachable.has(r.client_id) && !emailed.has(r.client_id)) {
+        shutOut.set(r.client_id, [...(shutOut.get(r.client_id) ?? []), r]);
+        continue; // REPLACES the nudge — see `client_cannot_see_it`.
+      }
       const move = await nudgeMove(stores.domain, r, nowIso, learned);
       if (move) moves.push(move);
+    }
+    if (shutOut.size) {
+      /*
+        Read ONLY when somebody is actually shut out, which is the rare path. This card names a
+        CLIENT rather than an ask, so it needs their display name — but paying for a client list on
+        every load of the home screen to label a card that usually is not there is the cost-with-no-
+        information this file warns about two blocks up.
+      */
+      const names = new Map<string, string>();
+      for (const cl of await stores.domain.listClients().catch(() => [])) {
+        if (cl.project_id === scope.project_id && cl.display_name) names.set(cl.id, cl.display_name);
+      }
+      for (const [clientId, asks] of shutOut) {
+        const move = cannotSeeItMove(
+          clientId,
+          scope.project_id,
+          // Their name, else the ask itself — never a bare id, which tells a founder nothing.
+          names.get(clientId) ?? asks[0]!.ask,
+          asks,
+          nowIso,
+          learned,
+        );
+        if (move) moves.push(move);
+      }
     }
   }
 
@@ -1385,6 +1518,15 @@ export async function proposeMoves(
       }
 
       if (k.wedge === gtmWedge()) {
+        /*
+          BEFORE the sequencer's own proposal, and instead of it. `gtmMove` bails on any stage that
+          is not ACTIVE, so these two can never both fire for one case — but the order says which
+          one owns the case, and a human-owned stage owns it.
+        */
+        if (want("handed_to_you")) {
+          const handed = handedToYouMove(k, nowIso, learned);
+          if (handed) { moves.push(handed); continue; }
+        }
         if (!want("gtm_next_touch")) continue;
         const move = await gtmMove(stores.domain, k, nowIso, campaigns, learned);
         if (move) moves.push(move);
@@ -1851,6 +1993,53 @@ function advanceMove(k: Case, nowIso: string, learned: Map<MoveKind, OutcomeStat
  * receipts against the requests store for every parked engagement would turn one page load into
  * hundreds of queries — and would still disagree with the sweep by up to five minutes.
  */
+/**
+ * ═════════════════════════════════════════════════════════════════════════════════════════════════
+ * STORED TEXT REACHES A FOUNDER, AND STORED TEXT IS AS OLD AS THE DATABASE
+ * ═════════════════════════════════════════════════════════════════════════════════════════════════
+ *
+ * `w.error` and `w.reason` are interpolated straight into `why`, which is the sentence under "Worth
+ * doing next" on Home. Found by opening the live demo on 13 September and reading it as a prospect
+ * would:
+ *
+ *   "…stopped: every way out of this wait is closed: their answer on 'Calder Dental — February
+ *    visibility' (deliverable e2496dc9-e8df-4ec9-aa58-ee00d51f4ce3 is not in this project)."
+ *
+ * `waits.ts` ALREADY FIXED THIS at the source — its own comment quotes that exact sentence and it
+ * now writes "the work it was waiting on no longer exists", with the id going to the log where the
+ * person who can use it looks. But the two rows were written on 5 September, before that shipped,
+ * and a stored string does not change because the code that would write it did. So the shop window
+ * has shown a UUID to every visitor since.
+ *
+ * A fix at the source stops the next one. This is the other half: the render boundary trusts nothing
+ * it reads, because history is permanent and a founder-facing sentence is never the right place for
+ * a machine identifier — whoever wrote it and whenever.
+ *
+ * ═══ WHAT IT REMOVES, AND WHAT IT DELIBERATELY DOES NOT ═══
+ *
+ * A parenthetical containing a UUID goes whole. Stripping only the id would leave "(deliverable is
+ * not in this project)", which is still a developer's diagnosis of our tenancy model rather than an
+ * account of what happened to their work. A bare UUID elsewhere is removed and the surrounding
+ * sentence left alone.
+ *
+ * Nothing else. This is not a copy-editor: text that is merely clumsy stays clumsy and gets fixed
+ * where it is written. A scrubber that rewrites prose is one that eventually rewrites a number.
+ */
+const UUID = /[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/i;
+
+export function plainly(text: string | null | undefined): string {
+  if (!text) return "";
+  return text
+    // A parenthetical holding a machine id is machinery entire — drop it.
+    .replace(/\s*\([^()]*\)/g, (m) => (UUID.test(m) ? "" : m))
+    // Any id that survived outside brackets.
+    .replace(new RegExp(UUID.source, "gi"), "")
+    // Tidy what removal left behind, without touching anything else.
+    .replace(/\s{2,}/g, " ")
+    .replace(/\s+([.,;:])/g, "$1")
+    .trim();
+}
+
 function waitProgress(w: CaseWait): { satisfied: number; total: number; outstanding: string[] } | undefined {
   const conditions = w.conditions ?? [];
   // A one-condition wait has no progress worth reporting: "0 of 1" is a fact and not information,
@@ -1904,7 +2093,7 @@ function unblockWaitMove(
   const gaveUp =
     w.status === "expired"
       ? `gave up after ${w.nudge_count} nudge${w.nudge_count === 1 ? "" : "s"}`
-      : `stopped: ${w.error ?? "the thing it was waiting on became impossible"}`;
+      : `stopped: ${plainly(w.error) || "the thing it was waiting on became impossible"}`;
 
   return assemble(
     {
@@ -1918,7 +2107,7 @@ function unblockWaitMove(
       client_id: k.client_id,
       case_id: k.id,
       why:
-        `${w.reason} since ${since}; ${gaveUp}.` +
+        `${plainly(w.reason)} since ${since}; ${gaveUp}.` +
         (progress ? ` ${progress.satisfied} of ${progress.total} in — still missing ${progress.outstanding.join(", ")}.` : "") +
         ` Nothing is watching this engagement any more, so it needs a decision: chase them yourself, re-scope it, or close it.`,
       signals: {
@@ -1996,6 +2185,198 @@ function checkInMove(k: Case, nowIso: string, learned: Map<MoveKind, OutcomeStat
     [
       { term: "staleness", points: stalenessPoints(daysStale), because: `no activity for ${daysStale} day(s)` },
       learnedTerm("check_in_case", learned),
+    ],
+    nowIso,
+  );
+}
+
+/**
+ * The flat worth of "this client cannot see anything you have asked them".
+ *
+ * Above a reply (34) and below a large overdue invoice. Nothing else on this list is a prerequisite
+ * for the rest of the list working: every open ask on this client, every nudge that would follow,
+ * and the production run waiting on the answer are all blocked behind one copy-and-send. A move that
+ * unblocks N other moves outranks any single one of them.
+ */
+export const CANNOT_SEE_POINTS = 36;
+
+/**
+ * A client with open asks and no way to read them.
+ *
+ * `askCount` is passed rather than re-read: the caller already has every open request in hand, and
+ * asking the store again per client is how the client page once got slower as a business got bigger.
+ */
+function cannotSeeItMove(
+  clientId: string,
+  projectId: string,
+  label: string,
+  asks: readonly ClientRequest[],
+  nowIso: string,
+  learned: Map<MoveKind, OutcomeStat>,
+): Move | undefined {
+  if (!asks.length) return undefined;
+  const today = nowIso.slice(0, 10);
+  const oldest = asks.reduce((d, r) => Math.max(d, daysBetween(r.created_at.slice(0, 10), today)), 0);
+  const n = asks.length;
+  return assemble(
+    {
+      id: `client_cannot_see_it:${clientId}`,
+      project_id: projectId,
+      kind: "client_cannot_see_it",
+      entity: { kind: "client_request", id: asks[0]!.id, label },
+      client_id: clientId,
+      case_id: asks[0]!.case_id,
+      why:
+        `${label} has ${n === 1 ? "an open request" : `${n} open requests`} and has never been given ` +
+        `a way to see ${n === 1 ? "it" : "them"}` +
+        (oldest > 0 ? `; the oldest has been waiting ${oldest} day${oldest === 1 ? "" : "s"}` : "") +
+        `. Open their page, copy the portal link and send it — nothing they were asked for can ` +
+        `arrive until they can read the question.`,
+      signals: {
+        days_stale: oldest,
+        learned: learned.get("client_cannot_see_it"),
+      },
+      /*
+        NO CARRIER. The link is minted once, shown once and never stored again — that is the whole
+        design of `mintPortalLink`, so nothing can send it on the founder's behalf without changing
+        what a portal link is. The founder copies it from the client's page.
+      */
+      carrier: { wedge: "", task_type: "", input: {} },
+    },
+    [
+      {
+        term: "blocked",
+        points: CANNOT_SEE_POINTS,
+        because: `${n === 1 ? "a request is" : `${n} requests are`} waiting on someone who cannot read ${n === 1 ? "it" : "them"}`,
+      },
+      { term: "staleness", points: stalenessPoints(oldest), because: `the oldest has been open ${oldest} day(s)` },
+      learnedTerm("client_cannot_see_it", learned),
+    ],
+    nowIso,
+  );
+}
+
+/**
+ * The prospect the sequencer handed to a human and nobody picked up.
+ *
+ * ═══ THE STAGES THIS COVERS, AND THE ONE IT DELIBERATELY DOES NOT ═══
+ *
+ * `replied` and `no_show`: both are "a person is waiting on your words". `gtm/stages.ts` argues
+ * exactly this for the second — a no-show "is the most recoverable state in the pipeline and the one
+ * most likely to be abandoned, because nothing surfaces it".
+ *
+ * `booked` is EXCLUDED, and not by oversight. The same file draws the line: `replied` and `booked`
+ * are "held apart ... because the two want different things from a human — a reply wants an answer,
+ * a booking wants preparation". A row headed "get back to them" against a meeting that is on the
+ * calendar for Thursday is wrong, and wrong in the direction that makes a founder distrust the list.
+ * Preparation is a different card and it is not this one. (Two cases sit at `booked` in production,
+ * also untouched since 18 August, and they stay invisible until that card exists. Said out loud
+ * here rather than quietly widened to make one number look better.)
+ *
+ * `won` and `lost` are terminal for everyone. Nothing is waiting.
+ */
+const HANDED_TO_YOU_STAGES: readonly string[] = ["replied", "no_show"];
+
+/**
+ * A LinkedIn member URN — `ACoAA...` — which is an identifier and not a person.
+ *
+ * FOUND BY RUNNING THIS AGAINST PRODUCTION, which is the only way it could have been found: all 17
+ * live cases carried one as their title, so the highest-value card in the product would have read
+ * "ACoAAAZQ-DoBYRIpbfCd3XyLhHsN3SO5ngxLXTU replied to your outreach 26 days ago". Every test passed
+ * — a fixture titled "Marie Lepant" is a fixture somebody chose.
+ *
+ * There is nowhere to look the name up: `growth.people` keys on emails and public slugs, and none of
+ * the 17 URNs appears in it. So the row says what is actually known instead of printing the token.
+ */
+const MEMBER_URN = /^ACoAA[A-Za-z0-9_-]{10,}$/;
+
+/** The subject of the sentence: their name when we have one, an honest noun when we do not. */
+function whoIs(title: string): string {
+  return MEMBER_URN.test(title.trim()) ? "Someone on LinkedIn" : title;
+}
+
+function handedToYouMove(
+  k: Case,
+  nowIso: string,
+  learned: Map<MoveKind, OutcomeStat>,
+): Move | undefined {
+  if (!HANDED_TO_YOU_STAGES.includes(k.stage)) return undefined;
+  const today = nowIso.slice(0, 10);
+  const days = daysBetween(k.updated_at.slice(0, 10), today);
+  const replied = k.stage === "replied";
+  const data = (k.data ?? {}) as Record<string, unknown>;
+  /**
+   * "REPLIED TO YOUR OUTREACH" IS NOT TRUE OF ALL OF THEM, and getting this wrong would be worse
+   * than saying nothing. Every one of the 17 live cases carries `inbound_unsolicited: true` and
+   * `touch_count: 0`: these people messaged the founder FIRST. Telling them "they replied to your
+   * outreach" describes a conversation that never happened, on the card whose whole job is to make
+   * a founder confident enough to open it.
+   *
+   * It also matters commercially. A stranger who wrote to you unprompted is a warmer lead than
+   * anyone a sequence produced, and a founder who thinks it is just another sequence reply will
+   * treat it like one.
+   */
+  /*
+    POSITIVE EVIDENCE ONLY. The first version read `Number(data.touch_count ?? 0) === 0`, so a case
+    with no `touch_count` field at all counted as "never contacted" — and it broke two of this
+    module's own tests, which is the cheap version of what it would have done in production: claimed
+    "they came to you" about somebody we had sequenced four times. Absence of a field is not a fact.
+
+    Every one of the 21 live rows carries `touch_count`; 17 carry it as 0 alongside
+    `inbound_unsolicited: true`, and the other 4 are genuine sequence replies. So the flag is the
+    signal, the count corroborates it WHEN PRESENT, and an unknown falls back to the ordinary case.
+  */
+  const unprompted =
+    data.inbound_unsolicited === true ||
+    ("touch_count" in data && Number(data.touch_count) === 0);
+  const who = whoIs(k.title);
+  const ago = days === 0 ? "today" : `${days} day${days === 1 ? "" : "s"} ago`;
+  return assemble(
+    {
+      id: `handed_to_you:${k.id}`,
+      project_id: k.project_id ?? "",
+      kind: "handed_to_you",
+      entity: { kind: "case", id: k.id, label: who },
+      client_id: k.client_id,
+      case_id: k.id,
+      why: !replied
+        ? `${who} booked a meeting and did not come` +
+          (days === 0 ? "" : `, ${ago}`) +
+          `. Nothing is chasing the reschedule.`
+        : unprompted
+          ? `${who} messaged you ${ago} without being contacted first, and nothing has been said ` +
+            `back. Nobody sequenced them — they came to you.`
+          : `${who} replied to your outreach ${ago}, and nothing has been said back. The sequence ` +
+            `stopped itself when they answered — from here it is yours.`,
+      signals: {
+        days_stale: days,
+        learned: learned.get("handed_to_you"),
+      },
+      /*
+        NO CARRIER, and this one is worth being precise about because the task type LOOKS available.
+        `propose_reply` is declared in the wedge — but its input schema requires `body`, the exact
+        words to send. Nothing here has written those words, and a carrier that dispatched a run with
+        an empty body would either fail or invent a reply nobody read. The founder opens the
+        conversation and answers; `takeability` reads the empty wedge and says so.
+      */
+      carrier: { wedge: "", task_type: "", input: {} },
+    },
+    [
+      {
+        term: "answered",
+        points: HANDED_TO_YOU_POINTS,
+        because: !replied
+          ? "a booked meeting did not happen and nothing is chasing the reschedule"
+          : unprompted
+            ? "a stranger wrote to you unprompted and is waiting on an answer"
+            : "a stranger answered your outreach and is waiting on a reply",
+      },
+      {
+        term: "staleness",
+        points: stalenessPoints(days),
+        because: `nothing has been said for ${days} day${days === 1 ? "" : "s"}`,
+      },
+      learnedTerm("handed_to_you", learned),
     ],
     nowIso,
   );

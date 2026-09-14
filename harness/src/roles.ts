@@ -84,6 +84,7 @@ import { join } from "node:path";
 import { loadWedge, wedgesDir, type WedgeManifest } from "./wedge";
 import { isSharedWorkflow, SHARED_WORKFLOWS } from "./workflows";
 import { CAPABILITIES, isCapability, capabilityFault } from "./capabilities";
+import { isAuthoredSlug } from "./wedge";
 
 /**
  * The roles the kernel itself initiates work for.
@@ -422,7 +423,12 @@ export function manifestFaults(slug: string, raw: unknown): ManifestFault[] {
       fault(`${slug}/wedge.json: "capabilities" must be an array of capability names, e.g. ["read_payments"]`);
     } else {
       for (const cap of capabilities as string[]) {
-        const problem = capabilityFault(cap);
+        /*
+          A WRITTEN service may name a need this kernel has never heard of — that is the point of
+          writing one — and a connection the founder brings answers it. A PACKAGED wedge may not:
+          `fly_to_mars` in our own manifest is a typo, and the closed vocabulary is what catches it.
+        */
+        const problem = capabilityFault(cap, { declarable: isAuthoredSlug(slug) });
         if (problem) fault(`${slug}/wedge.json declares a capability it cannot have: ${problem}`);
       }
     }

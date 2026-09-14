@@ -76,7 +76,9 @@
             "description": "How they paid — 'bank transfer', 'card', 'cash'. NEVER state a method that is not here; a wrong one on a receipt is a client correcting their bookkeeper."
           }
         }
-      }
+      },
+      "client_facing": false,
+      "_comment_client_facing": "Files a receipt into the ledger. Nothing leaves the building."
     },
     "daily_sync": {
       "capabilities": [
@@ -134,6 +136,7 @@
         ]
       },
       "internal": true,
+      "_comment_internal": "Pulls the day's transactions in. The month's close is what a client receives, never the sync.",
       "input_schema": {
         "_comment": "A SWEEP. Fires daily with an empty input and looks at whatever the feed holds, so nothing is required. The optional fields exist for the case where a caller already has the rows and re-fetching them would be waste.",
         "type": "object",
@@ -151,7 +154,9 @@
             }
           }
         }
-      }
+      },
+      "client_facing": false,
+      "_comment_client_facing": "Reads the bank feed. The client never sees a sync."
     },
     "nudge_client_request": {
       "_comment": "Inherits the spine (see harness/src/spine.ts). Only the access this trade needs is narrowed here.",
@@ -202,7 +207,9 @@
             "description": "Chase one client rather than the whole book. Absent means every client with something outstanding."
           }
         }
-      }
+      },
+      "client_facing": false,
+      "_comment_client_facing": "Asks the client FOR something. An ask is not a delivery."
     },
     "monthly_close": {
       "capabilities": [
@@ -286,6 +293,12 @@
           "kind": "each_has",
           "items": "artifacts",
           "field": "name"
+        },
+        {
+          "kind": "distinct_prose",
+          "items": "questions",
+          "field": "why_asking",
+          "_why": "Four questions with the same reason for asking reads as a form, not a bookkeeper. The client answers one and assumes the rest are boilerplate."
         }
       ],
       "description": "Reconcile the period to the cent, produce P&L figures, and flag anomalies. When the ask is client-ready, the deliverable the owner receives leads with a plain-language summary and ends with next steps — never the internal reconciliation notes.",
@@ -593,7 +606,7 @@
               },
               "boxes": {
                 "type": "object",
-                "description": "The nine boxes of a UK sales-tax return, in WHOLE POUNDS. A return is not one number, and Box 5 — not Box 1 — is what the client pays. Reporting output tax as the amount owed tells them to pay too much. Omit entirely when you are not producing a return; never half-fill it.",
+                "description": "UK ONLY, and optional. The nine boxes of a UK VAT return, in whole units of the filing currency.\n\nFill this ONLY when the business files a UK VAT return — `scheme` will say so. Everything else in `sales_tax` is jurisdiction-neutral and is what a close in any country reports: `output_tax_minor`, `input_tax_minor`, `net_due_minor`, `filing_deadline`. A business in Texas or Berlin has a sales-tax position and does not have nine boxes, and inventing them for one is worse than leaving this absent. A return is not one number, and Box 5 — not Box 1 — is what a UK client pays. Reporting output tax as the amount owed tells them to pay too much. Omit entirely when you are not producing a return; never half-fill it.",
                 "properties": {
                   "box1_vat_due_sales": {
                     "type": "integer",
@@ -670,7 +683,7 @@
           },
           "artifacts": {
             "type": "array",
-            "description": "THE WORK ITSELF, not a description of it.\n\nEvery deliverable task in this system produced a summary and nothing else, and a client scored one 3/10 partly for that reason: they were sent an account of work rather than the work. A service business does not sell reports about bookkeeping, it sells reconciled books; it does not sell a note about a questionnaire, it sells the questionnaire answered.\n\nSo this carries the artifact. A file you wrote to ./output/ and its name, or a URL to something live, or a repository. The `client_summary` is the covering note that goes WITH this — it is not a substitute for it, and a deliverable with an empty `artifacts` array is a deliverable that did not deliver.\n\nSay so plainly in the summary if you genuinely could not produce the artifact, and why. That is a real outcome. Pretending the summary is the work is not.\n\nFor this job: The reconciled ledger for the period as a file, and the sales-tax return as a file when the business is registered. The summary is the covering note that goes with them, not the work.",
+            "description": "THE WORK ITSELF, not a description of it.\n\nEvery deliverable task in this system produced a summary and nothing else, and a client scored one 3/10 partly for that reason: they were sent an account of work rather than the work. A service business does not sell reports about bookkeeping, it sells reconciled books; it does not sell a note about a questionnaire, it sells the questionnaire answered.\n\nSo this carries the artifact. A file you wrote to ./output/ and its name, or a URL to something live, or a repository. The `client_summary` is the covering note that goes WITH this — it is not a substitute for it, and a deliverable with an empty `artifacts` array is a deliverable that did not deliver.\n\nSay so plainly in the summary if you genuinely could not produce the artifact, and why. That is a real outcome. Pretending the summary is the work is not.\n\nFor this job: The reconciled ledger for the period AS A REAL WORKBOOK — call the `workbook` workflow with the rows, which attaches an .xlsx to this delivery automatically. A bookkeeping client sorts, filters and forwards the ledger; markdown is not a ledger, and a CSV you write by hand loses the money formatting the moment they open it. Do not author a document for it and do not write HTML or CSS — the covering note is rendered with this business's own brand already, and the sales-tax return as a file when the business is registered. The summary is the covering note that goes with them, not the work.",
             "items": {
               "type": "object",
               "required": [
@@ -1066,6 +1079,68 @@
         }
       },
       "lib": "close-figures"
+    },
+    {
+      "name": "workbook",
+      "description": "Turn a grid you have already decided is correct into a real Excel workbook (.xlsx), attached to this delivery automatically. Use it for anything a client will sort, filter or forward — a longlist, a ranking table, a budget, a control matrix. Do NOT use it to do arithmetic: it formats what you give it and never re-totals a column.",
+      "input_schema": {
+        "type": "object",
+        "required": [
+          "tabs"
+        ],
+        "properties": {
+          "filename": {
+            "type": "string",
+            "description": "e.g. \"april-longlist.xlsx\"."
+          },
+          "currency": {
+            "type": "string",
+            "description": "ISO-4217. Omit it and money renders as a plain number, which is honest."
+          },
+          "tabs": {
+            "type": "array",
+            "description": "One per sheet. A tab per schedule beats one sheet with blank rows between sections.",
+            "items": {
+              "type": "object",
+              "required": [
+                "name",
+                "header",
+                "rows"
+              ],
+              "properties": {
+                "name": {
+                  "type": "string"
+                },
+                "header": {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  }
+                },
+                "note": {
+                  "type": "string",
+                  "description": "A caveat rendered above the header, for something that must be read before the numbers."
+                },
+                "rows": {
+                  "type": "array",
+                  "description": "Each row is an array of cells. A plain string or number is fine; for a formatted number use {kind:\"n\", v:1234, format:\"money\"|\"pct\"|\"int\"} and for a date {kind:\"d\", v:\"2026-04-30\"}."
+                }
+              }
+            }
+          }
+        }
+      },
+      "output_schema": {
+        "type": "object",
+        "properties": {
+          "sheets": {
+            "type": "integer"
+          },
+          "rows": {
+            "type": "integer"
+          }
+        }
+      }
     }
   ],
   "policy": {

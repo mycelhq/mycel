@@ -11,7 +11,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
-import contentCalendar, { type PlannedPiece } from "../../workflows/content-calendar.mjs";
+import contentCalendar, { type PlannedPiece } from "../../library/workflows/content-calendar.mjs";
 
 /** `as const` so `effort` narrows to the enum rather than widening to `string`. */
 const PLAN: PlannedPiece[] = [
@@ -100,7 +100,7 @@ test("the headline is what to do, not a count of rows", () => {
 test("nothing in here can post anything", () => {
   // The guarantee, asserted rather than assumed. A future edit that reached for a network call would
   // have to delete this test to do it.
-  const src = readFileSync(new URL("../../workflows/content-calendar.mjs", import.meta.url), "utf8");
+  const src = readFileSync(new URL("../../library/workflows/content-calendar.mjs", import.meta.url), "utf8");
   for (const banned of ["fetch(", "http", "require(", "import(", "process.env"]) {
     assert.equal(src.includes(banned), false, `content-calendar must not reference ${banned}`);
   }

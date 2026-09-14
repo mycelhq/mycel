@@ -518,6 +518,40 @@ async function waitingOnClient(projectId: string, kase: Case): Promise<ClientReq
  * One project. Lists its open cases; for each, either closes it (all deliverables accepted) or ignites
  * it (ready + not started). Ceilinged, fail-closed, exactly-once via the claim marker.
  */
+/**
+ * ═════════════════════════════════════════════════════════════════════════════════════════════════
+ * A FOUNDER READS THIS ON THE CLIENT'S TIMELINE
+ * ═════════════════════════════════════════════════════════════════════════════════════════════════
+ *
+ * The note interpolated the reason code straight in, so the client page read:
+ *
+ *   "production started on its own — intake_satisfied. Nothing goes to the client until you
+ *    release it."
+ *
+ * Seen on the live demo on 13 September, ten times in a row on one engagement. `intake_satisfied`
+ * is a constant from this file; "production" is our word for a run. Neither is a word a founder
+ * uses about their own business, which is `docs/UX.md` rule 4 — and the sentence is about THEIR
+ * client's work, on the screen they open to find out what happened.
+ *
+ * The reasons are a closed set, so this is a `Record` rather than a lookup with a default: adding a
+ * fourth ignition reason without writing the sentence for it is a compile error, which is the only
+ * mechanism that survives a busy week.
+ */
+/** The closed set of reasons production starts by itself. Named so the sentences below are exhaustive. */
+type IgniteReason = "intake_satisfied" | "deposit_paid" | "first_pass";
+
+const STARTED_BECAUSE: Record<IgniteReason, string> = {
+  intake_satisfied: "everything it was waiting for had arrived",
+  deposit_paid: "the deposit landed",
+  first_pass: "the engagement had been open long enough to make a start",
+};
+
+function whyStarted(because: string): string {
+  // A reason from an older kernel, or a hand-written row. Say the plainest true thing rather than
+  // printing a code, and never throw on the history path.
+  return STARTED_BECAUSE[because as IgniteReason] ?? "it had what it needed";
+}
+
 export async function sweepFulfillmentIgnition(args: {
   domain: DomainStore;
   store: Store;
@@ -767,7 +801,7 @@ export async function sweepFulfillmentIgnition(args: {
           {
             at: nowIso,
             kind: "task_spawned",
-            note: `production started on its own — ${because}. Nothing goes to the client until you release it.`,
+            note: `Started on its own — ${whyStarted(because)}. Nothing goes to the client until you release it.`,
             task_id,
             actor: "system",
           },

@@ -47,6 +47,8 @@ export interface ClientRouteDeps {
   inScope: (set: Set<string>, pid?: string) => boolean;
 }
 
+import { openEngagementForNewClient } from "./engagement-open";
+
 export function mountClientRoutes(app: Hono, deps: ClientRouteDeps): void {
   const { domain, store, accessible, writeProjectId, inScope } = deps;
 
@@ -61,6 +63,27 @@ app.post("/v1/clients", async (c) => {
     metadata: (b.metadata as Record<string, unknown>) ?? {},
     preferences: (b.preferences as Record<string, unknown>) ?? undefined,
   });
+
+  /**
+   * ═══ AND THE DESK OPENS ═══
+   *
+   * Adding a client used to write one row and stop. For a business with a live service that is the
+   * moment everything is supposed to start — and for a real brand studio it was the moment nothing
+   * did: their own written service ran six times against nobody and produced nothing, because an
+   * engagement only ever opened from a signed envelope and they had no proposal flow.
+   *
+   * `openEngagementForNewClient` opens the case on the one live producing service, sends the intake
+   * questions that service declared, invites the connections it needs, and arms the clock. The
+   * ignition sweep starts the work when the answers land. It refuses to guess when a business runs
+   * two — that is a decision about whose letterhead the work goes out under.
+   *
+   * NOT AWAITED INTO THE RESPONSE'S CRITICAL PATH BEYOND ITS OWN COMPLETION, and never raised: a
+   * client that was created is created. An engagement that failed to open is visible, recoverable,
+   * and must not make adding a client look broken.
+   */
+  await openEngagementForNewClient(projectId, client, store).catch((e) =>
+    console.error(`[mycel] client ${client.id} added but no engagement opened:`, e),
+  );
   return c.json(client, 201);
 });
 app.get("/v1/clients", async (c) => {

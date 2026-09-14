@@ -143,7 +143,12 @@ test("raising an invoice is what turns the money clocks on — no blueprint anyw
   assert.deepEqual(await schedulesFor(projectId), [], "a project that has done nothing carries no clocks");
   assert.deepEqual(
     await projectFacts(projectId),
-    { raises_invoices: false, asks_clients: false, bills_retainers: false, does_fulfillment: false },
+    /*
+      `has_clients` is false here even though `world()` made one: `projectFacts` is called without a
+      domain store on this line, and every domain-backed fact degrades to false rather than throwing
+      — an upkeep check that three sweeps depend on must not die because a store is absent.
+    */
+    { raises_invoices: false, asks_clients: false, bills_retainers: false, does_fulfillment: false, has_clients: false },
     "and the facts say why",
   );
 
@@ -305,4 +310,123 @@ test("GET /v1/upkeep names a project and reports what is not running", async () 
   assert.equal(sync.running, false, "no payment provider is connected in this fixture");
   assert.ok(sync.blocked, "the gap is served, not merely logged — /v1/schedules cannot show an absence");
   assert.equal(r.json.roles.dunning, "invoice-chaser", "and the role map says who would carry a chase");
+});
+
+// ── the clock that arms the clocks ────────────────────────────────────────────────────────────────
+//
+// ═════════════════════════════════════════════════════════════════════════════════════════════════
+// A DORMANT PROJECT WAS SELF-SEALING
+// ═════════════════════════════════════════════════════════════════════════════════════════════════
+//
+// `ensureUpkeep` is what creates a project's schedules, and it had exactly ONE caller:
+// `GET /v1/upkeep`, which fires when a founder opens a page. The scheduler tick claims DUE
+// SCHEDULES — so a project with no schedules is invisible to it, and a project whose founder has not
+// logged in since signup can never acquire one.
+//
+// Meridian Growth Studio was shaped on 9 September, added a client two minutes later, and nobody has
+// logged in since. Arming its engagement sweep from a page visit would have meant arming it never,
+// for exactly the accounts that need it most — and the same is true of every sweep anyone adds to
+// `upkeep.ts` in future. This is the pass that makes any of them reach a quiet account.
+import { startScheduler } from "../src/scheduler";
+// `upkeepAll` reads the domain and identity stores only; the Store argument is for the tick. A
+// fresh in-memory one keeps this test about the thing it is testing.
+import { InMemoryStore } from "../src/store";
+
+test("A PROJECT NOBODY HAS OPENED STILL ACQUIRES ITS CLOCKS", async () => {
+  const { app, projectId, client } = await world();
+  const domain = getDomainStore();
+
+  // Raising an invoice is enough to make this project WANT the chase sweep.
+  const inv = await api(app, "invoices", {
+    method: "POST",
+    body: JSON.stringify({ client_id: client.id, currency: "USD", lines: [LINE], due_date: "2020-01-01" }),
+  });
+  assert.equal(inv.status, 201);
+
+  // Tear its clocks down, so it looks exactly like an account that signed up and never came back.
+  for (const s of (await domain.listSchedules()).filter((s) => s.project_id === projectId)) {
+    await domain.deleteSchedule(s.id);
+  }
+  assert.equal(
+    (await domain.listSchedules()).filter((s) => s.project_id === projectId).length,
+    0,
+    "the fixture did not actually reach the dormant state",
+  );
+
+  const sched = startScheduler(new InMemoryStore(), domain);
+  try {
+    /*
+      The TICK first, to prove it is not the thing that repairs this. It claims due schedules, and a
+      project with none has nothing to claim — which is the whole shape of the bug.
+    */
+    await sched.tick();
+    assert.equal(
+      (await domain.listSchedules()).filter((s) => s.project_id === projectId).length,
+      0,
+      "the ordinary tick is somehow arming projects, so this test proves nothing",
+    );
+
+    const armed = await sched.upkeepAll();
+    const after = (await domain.listSchedules()).filter((s) => s.project_id === projectId);
+    assert.ok(after.length > 0, "a dormant project still has no clocks after an upkeep pass");
+    assert.ok(armed > 0, "the pass armed schedules but reported none");
+    assert.ok(
+      after.some((s) => s.task_type === CHASE_SWEEP_TASK_TYPE),
+      `the sweep this project's own work calls for was not armed. Got: ${after.map((s) => s.task_type)}`,
+    );
+  } finally {
+    sched.stop();
+  }
+});
+
+test("AND THE CLOCK ACTUALLY CALLS IT", () => {
+  /**
+   * Caught by sabotage, on the change whose entire purpose is this failure mode: replacing the two
+   * timer bodies with `() => {}` left every test above green, because they call `upkeepAll()`
+   * directly. A pass that only runs when a test runs it is a pass that does not run.
+   *
+   * Source assertions, because the alternative is a test that waits ten minutes. The property they
+   * pin is exactly the one that was missing: something on a clock, not a request, reaches this.
+   */
+  const src = readFileSync(new URL("../src/scheduler.ts", import.meta.url).pathname, "utf8");
+  assert.match(
+    src,
+    /setInterval\(\(\) => void upkeepAll\(\), UPKEEP_SWEEP_MS\)/,
+    "nothing periodic calls upkeepAll, so a dormant project stays dormant for ever",
+  );
+  assert.match(
+    src,
+    /setTimeout\(\(\) => void upkeepAll\(\), 10_000\)/,
+    "no pass after boot, so a deploy does not repair the accounts this exists for",
+  );
+  // And it is not wired to a request. That was the whole bug: one caller, `GET /v1/upkeep`.
+  const fn = src.slice(src.indexOf("async function upkeepAll"), src.indexOf("const timer = setInterval"));
+  assert.match(fn, /identity\.listProjects\(org\.id\)/, "the pass does not iterate projects");
+  assert.match(fn, /ensureUpkeep\(domain, p\.id\)/, "the pass does not actually ensure anything");
+});
+
+test("the upkeep pass is idempotent — a second run arms nothing", async () => {
+  const { app, projectId, client } = await world();
+  await api(app, "invoices", {
+    method: "POST",
+    body: JSON.stringify({ client_id: client.id, currency: "USD", lines: [LINE], due_date: "2020-01-01" }),
+  });
+  const sched = startScheduler(new InMemoryStore(), getDomainStore());
+  try {
+    await sched.upkeepAll();
+    const before = (await getDomainStore().listSchedules()).filter((s) => s.project_id === projectId).length;
+    /*
+      This runs every ten minutes against every project for the life of the process. If it were not
+      a no-op in the steady state it would be a schedule generator, and the scheduler would fire the
+      same sweep N times a day.
+    */
+    assert.equal(await sched.upkeepAll(), 0, "a second pass armed more clocks");
+    assert.equal(
+      (await getDomainStore().listSchedules()).filter((s) => s.project_id === projectId).length,
+      before,
+      "the project collected duplicate schedules",
+    );
+  } finally {
+    sched.stop();
+  }
 });

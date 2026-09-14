@@ -41,6 +41,8 @@ import { KERNEL_VERSION } from "./version";
 import "./dunning";
 import { reportShowroomConfig } from "./showroom";
 import { reportSchemaDrift } from "./db/verify";
+import { existsSync } from "node:fs";
+import { libraryGapReport, libraryGaps } from "./library";
 
 const { store, backend } = await createStore();
 await initDomainStore(); // durable service surface when MYCEL_DATABASE_URL is set
@@ -187,6 +189,19 @@ if (unreachable) {
   console.error(`\n  ✗ ${unreachable}\n    Refusing to start: every task would fail at its first callback.\n`);
   process.exit(1);
 }
+
+/*
+  ═══ THE RUNTIME LIBRARY, CHECKED WHERE IT IS EXPECTED ═══
+
+  Six directories have gone missing in production, one at a time, and every one was found by somebody
+  eventually running the built image and looking. This is that look, done by the process that knows
+  where it expects things to be — see `library.ts` for why it warns rather than refusing.
+
+  Placed beside the sandbox check and before the listener, so the line is in the log above "listening"
+  rather than buried under a minute of request noise.
+*/
+const gaps = libraryGaps((p) => existsSync(p));
+if (gaps.length) console.error(libraryGapReport(gaps));
 
 const server = serve({ fetch: app.fetch, port });
 const queue = await initQueue();

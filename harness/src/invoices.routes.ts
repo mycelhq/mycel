@@ -402,11 +402,38 @@ export function mountInvoiceRoutes(app: Hono, deps: InvoiceRouteDeps): void {
     // demand for money. The same check every route that attaches to a client makes.
     if (!(await clientInProject(clientId, projectId))) return c.json({ error: "unknown client" }, 400);
 
+    /**
+     * ═══════════════════════════════════════════════════════════════════════════════════════════
+     * THE ENGAGEMENT MUST BELONG TO THE CLIENT BEING BILLED
+     * ═══════════════════════════════════════════════════════════════════════════════════════════
+     *
+     * `case_id` was passed straight through with only the CLIENT checked, so an invoice could be
+     * filed against a different customer's job inside the same business. Every consumer of that link
+     * then reads a true number in the wrong place: the per-service impact panel credits the wrong
+     * service, the money plan believes a job has been billed when it has not, and the engagement's
+     * own page shows revenue it never earned.
+     *
+     * It matters more now than it did yesterday, because the console has started DEFAULTING this
+     * field rather than leaving it empty — 31 of 35 production invoices carried no engagement at all,
+     * which is why the default exists. A default that is usually right needs a floor under it, since
+     * the failure it enables is silent: a misattributed invoice looks exactly like a correct one.
+     *
+     * `threads.routes` makes the same pairing argument for attaching a conversation to a case, and
+     * for the same reason — one check is tenancy, the other is not mixing two customers up.
+     */
+    const caseId = typeof b.case_id === "string" && b.case_id ? b.case_id : undefined;
+    if (caseId) {
+      const kase = await getDomainStore().getCase(caseId);
+      if (!kase || kase.project_id !== projectId || kase.client_id !== clientId) {
+        return c.json({ error: "that job belongs to a different client", code: "case.mismatch" }, 400);
+      }
+    }
+
     const rails = await getPaymentRails(projectId).catch(() => emptyRails(projectId));
     const inv = await billing().createInvoice({
       project_id: projectId,
       client_id: clientId,
-      case_id: typeof b.case_id === "string" ? b.case_id : undefined,
+      case_id: caseId,
       currency: normalizeCurrency(b.currency, rails.currency || "USD"),
       // Always a draft. An invoice that arrives already `sent` skips `issue_date` and the sent
       // stamp, and then nobody can say when the clock started.

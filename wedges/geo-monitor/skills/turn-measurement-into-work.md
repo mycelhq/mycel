@@ -151,8 +151,8 @@ the pages below are illustrative, and reproducing any of them in a real report i
 >
 > **This week:**
 > 1. **Small — rewrite the opening of /services/emergency.** The page states your call-out fee
->    (£95) in paragraph four, under the brand story. Move it to the first sentence, phrased as the
->    answer: "An emergency call-out costs £95 day or night, including the first hour." One hour of
+>    ($95) in paragraph four, under the brand story. Move it to the first sentence, phrased as the
+>    answer: "An emergency call-out costs $95 day or night, including the first hour." One hour of
 >    work; it targets the exact query you lost this week.
 > 2. **Medium — a comparison page: "Fixed-price vs hourly emergency plumbing".** Assistants are
 >    asked this constantly and currently cite a trade forum. Concede honestly where hourly wins

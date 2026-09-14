@@ -25,7 +25,7 @@ import { resolveBrandKit } from "../src/brandkit";
 import { renderWorkbook } from "../src/render/xlsx";
 import { machineHeaders } from "../src/render/taste";
 import { malformedCsv } from "../src/runtime";
-import closeFigures from "../../workflows/close-figures.mjs";
+import closeFigures from "../../library/workflows/close-figures.mjs";
 import type { ReportDocumentInput } from "../src/render/report";
 import type { DeckDocumentInput, InvoiceDocumentInput, ReceiptDocumentInput } from "../src/render";
 import type { Invoice } from "../src/contract";
@@ -534,6 +534,6 @@ test("geo-monitor's weekly report is declared as a deck, so the renderer is reac
   // fields that do not exist renders nothing and complains about nothing, which is the silent kind.
   assert.equal(weekly.chart?.label, "name");
   assert.equal(weekly.chart?.value, "beat_us_on");
-  const pack = readFileSync(new URL("../../packs/share_of_voice/1/run.mjs", import.meta.url), "utf8");
+  const pack = readFileSync(new URL("../../library/packs/share_of_voice/1/run.mjs", import.meta.url), "utf8");
   assert.match(pack, /beat_us_on/);
 });

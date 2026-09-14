@@ -54,6 +54,14 @@ import { mkdirSync, readFileSync, renameSync, writeFileSync, existsSync } from "
 import { createHash } from "node:crypto";
 import { dirname, join } from "node:path";
 import { ProxyRequiredError, redactProxy, requireProxy } from "./proxy";
+import {
+  allocateIps,
+  brightDataApiConfig,
+  countAvailable,
+  ipProxyUrl,
+  releaseIps,
+  type BrightDataConfig,
+} from "./brightdata-api";
 
 export type ProxyProviderId = "byo" | "static" | "decodo" | "brightdata";
 
@@ -527,6 +535,142 @@ function allocateBrightData(connectionId: string, stickyKey: string, country?: s
   bind(ledger, connectionId, stickyKey);
   writeLedger(ledger);
   return { proxyUrl, provider: "brightdata", ref, country: cc };
+}
+
+/**
+ * ═════════════════════════════════════════════════════════════════════════════════════════════════
+ * A REAL, DEDICATED IP — BOUGHT WHEN THE MEMBER CONNECTS, GIVEN BACK WHEN THEY STOP PAYING
+ * ═════════════════════════════════════════════════════════════════════════════════════════════════
+ *
+ * `allocateBrightData` above builds a GATEWAY url with a sticky session id. That was the right first
+ * step and it is not what this product promises: a sticky session is a promise about a conversation,
+ * and LinkedIn scores account↔IP STABILITY. Bright Data may re-home a session; a dedicated IP is a
+ * thing you hold, named in the username as `-ip-<address>`.
+ *
+ * So when the account API is configured, connecting buys one IP in the member's country and the
+ * lease records the address. When it is not configured, everything falls back to the sticky session
+ * exactly as before — this is additive, and a deployment that has not set an API key never spends.
+ *
+ * ── ASYNC, WHICH IS WHY IT IS A SEPARATE ENTRY POINT ──
+ *
+ * `allocateProxy` is synchronous and called from several places that are not. Buying an IP is an
+ * HTTP round trip to Bright Data. Rather than make every caller async for a path most deployments do
+ * not use, this runs FIRST, writes the lease, and leaves `allocateProxy` to find it — which it
+ * already does, because an existing brightdata lease always wins over minting a new one.
+ *
+ * ── IDEMPOTENT, BECAUSE THE ALTERNATIVE IS BUYING TWICE ──
+ *
+ * A member reconnecting, a second org connecting the same LinkedIn, a retry after a timeout: all of
+ * them land here, and all of them must return the address that member already has. The sticky key is
+ * the LinkedIn MEMBER, so the ledger answers that question before any money is spent.
+ */
+export async function provisionDedicatedIp(input: ProxyAllocateInput): Promise<ProxyLease | undefined> {
+  const cfg = brightDataApiConfig();
+  if (!cfg || activeProxyProvider() !== "brightdata") return undefined;
+
+  const stickyKey = stickyOf(input);
+  const ledger = readLedger();
+  const existing = leaseFor(ledger, stickyKey);
+  if (existing?.provider === "brightdata") {
+    // Already has one — a reconnect, a second org, or a retry. Bind and return; never buy again.
+    bind(ledger, stickyKey === input.connectionId ? input.connectionId : input.connectionId, stickyKey);
+    writeLedger(ledger);
+    return {
+      proxyUrl: existing.proxyUrl,
+      provider: "brightdata",
+      ref: existing.ref,
+      ...(existing.country ? { country: existing.country } : {}),
+    };
+  }
+
+  const cc = resolveMemberCountry(input.country);
+  if (!cc) {
+    // No country, no purchase. Buying "somewhere" for a member whose country we do not know is the
+    // foreign-IP outcome this whole file exists to avoid.
+    return undefined;
+  }
+
+  const [allocated] = await allocateIps(cfg, cc, 1);
+  if (!allocated) return undefined;
+
+  const password = process.env.MYCEL_BRIGHTDATA_PASSWORD?.trim() ?? "";
+  const host = (process.env.MYCEL_BRIGHTDATA_HOST ?? "brd.superproxy.io").trim();
+  const port = (process.env.MYCEL_BRIGHTDATA_PORT ?? "33335").trim();
+  const proxyUrl = ipProxyUrl(cfg, password, allocated.ip, host, port);
+
+  // `brightdata:ip:<address>` — the ref is what `releaseDedicatedIp` reads to know there is a real
+  // address to give back. A session lease keeps its old `brightdata:session:` ref and costs nothing
+  // to drop.
+  const ref = `brightdata:ip:${allocated.ip}`;
+  const fresh = readLedger();
+  fresh.leases[stickyKey] = { proxyUrl, provider: "brightdata", ref, country: allocated.country || cc };
+  bind(fresh, input.connectionId, stickyKey);
+  writeLedger(fresh);
+  return { proxyUrl, provider: "brightdata", ref, country: allocated.country || cc };
+}
+
+/**
+ * Can we actually sell somebody a line in this country today?
+ *
+ * Asked BEFORE the founder is told their country is available. Without it the first news of an
+ * unservable country arrives after they have chosen it and paid — and the provider's own error for
+ * that case is "no IPs available", which reads as permanent.
+ */
+export async function dedicatedCountryAvailable(country: string): Promise<boolean> {
+  const cfg = brightDataApiConfig();
+  const cc = normaliseCountry(country);
+  if (!cfg || !cc) return false;
+  try {
+    return (await countAvailable(cfg, cc)) > 0;
+  } catch {
+    // A provider that will not answer is not a country we can promise. Refusing is the safe
+    // direction: the alternative is taking money for a line we cannot open.
+    return false;
+  }
+}
+
+/**
+ * Give the address back to Bright Data.
+ *
+ * ═══ THE ONE THAT COSTS MONEY IF IT IS FORGOTTEN ═══
+ *
+ * `releaseProxy` drops the ledger row and tells nobody, so a cancelled customer's dedicated IP goes
+ * on billing every month with nothing using it. This is the other half: the ledger row is read
+ * BEFORE it is deleted, and an address is handed back only when no other connection is still bound
+ * to that member.
+ *
+ * Returns what happened rather than throwing, because every caller is a cancellation or a
+ * disconnect — paths where an unreachable provider must not take the rest of the cleanup down with
+ * it. A false here means "still paying", and it is worth logging where it is called.
+ */
+export async function releaseDedicatedIp(connectionId: string): Promise<{ released: boolean; ip?: string }> {
+  const ledger = readLedger();
+  const stickyKey = ledger.bindings[connectionId] ?? (ledger.leases[connectionId] ? connectionId : undefined);
+  if (!stickyKey) return { released: false };
+
+  const lease = ledger.leases[stickyKey];
+  const ip = lease?.ref?.startsWith("brightdata:ip:") ? lease.ref.slice("brightdata:ip:".length) : undefined;
+
+  // Still in use by another connection on the same LinkedIn member: the ledger row stays and so does
+  // the address. Two orgs sharing one member share one IP, by design.
+  const otherBindings = Object.entries(ledger.bindings).some(([id, key]) => key === stickyKey && id !== connectionId);
+  if (otherBindings) return { released: false, ...(ip ? { ip } : {}) };
+
+  if (!ip) return { released: false };
+
+  const cfg = brightDataApiConfig();
+  if (!cfg) return { released: false, ip };
+  try {
+    const ok = await releaseIps(cfg, [ip]);
+    return { released: ok, ip };
+  } catch {
+    return { released: false, ip };
+  }
+}
+
+/** The account-API credentials, for callers that need to know whether provisioning is even possible. */
+export function dedicatedIpsConfigured(): BrightDataConfig | undefined {
+  return brightDataApiConfig();
 }
 
 function allocateDecodo(connectionId: string, stickyKey: string, country?: string): ProxyLease {

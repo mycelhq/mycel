@@ -48,7 +48,7 @@ by being wrong.
 
 ## What actually gets an invoice paid
 
-- **One invoice per message.** "You have three outstanding" is a project; "Invoice 104, £1,200, due
+- **One invoice per message.** "You have three outstanding" is a project; "Invoice 104, $1,200, due
   the 3rd" is a task somebody can finish before lunch.
 - **The number, the date, and the reference in the first line.** The person reading this is looking
   for it in a system. Make it findable, not persuasive.
@@ -95,7 +95,7 @@ a human with a clear account of what has been tried — not to run a ladder to i
 
 ## The relationship is usually worth more than the invoice
 
-A client who pays late for three years is worth more than the £1,200 they owe today, and the whole
+A client who pays late for three years is worth more than the $1,200 they owe today, and the whole
 point of automating this is that it stays polite when a tired founder would not. **If a chase would
 read as aggressive to somebody having a bad week, do not send it — surface it instead.**
 

@@ -91,6 +91,24 @@ export type ShipCheck =
    */
   | { kind: "not_when"; field: string; unknown_when: string }
   /**
+   * `field` must hold at least `n` entries whenever `when` equals `equals`.
+   *
+   * The inverse of `not_when`, and it exists because the absence that mattered most in this system
+   * was a LEGAL one. `draft_shape` answers `runs_as.fit: none` — "nothing we ship is the work this
+   * business sells" — and `to_author` is the list of services to write for them. Nothing required
+   * the second when the first was true, so "we cannot run your business, and here is nothing to do
+   * about it" was a valid, schema-clean answer.
+   *
+   * Measured across every shaping run in production: TWELVE said `fit: none`, and NINE of those
+   * proposed nothing. Texas Payroll and Contractor Compliance was shaped three separate times and
+   * proposed nothing on all three. Those are the businesses the written-service path exists for, and
+   * it is exactly the businesses it never fired for.
+   *
+   * A conditional requirement rather than a plain `min_items`, because when the catalogue DOES cover
+   * the delivery an empty list is correct and demanding an entry would invent work.
+   */
+  | { kind: "required_when"; field: string; when: string; equals: string; n: number }
+  /**
    * A stated count must equal the list it counts.
    *
    * "The work calls for confirmation of four review items, but the ledger contains five lines marked
@@ -231,6 +249,41 @@ export type ShipCheck =
    * "small" means — the wedge's own schema enumerates the values and this only asks for a spread.
    */
   | { kind: "spread"; items: string; field: string; distinct: number }
+  /**
+   * ═══════════════════════════════════════════════════════════════════════════════════════════════
+   * A LIST OF N THINGS MUST NOT BE ONE THING, N TIMES
+   * ═══════════════════════════════════════════════════════════════════════════════════════════════
+   *
+   * Read out of production on 13 September. A real `propose_campaign` artifact, 7,386 bytes, headed
+   * "Every message, in full", with a `### Name` section for each of thirteen prospects. Every
+   * message under every name was BYTE-IDENTICAL:
+   *
+   *   "Hi {first_name}, I work with SaaS teams on finding the right co-marketing partners and
+   *    shaping joint campaigns. Since you work with founders in France, I thought there may be
+   *    useful overlap in the companies and audiences we each see."
+   *
+   * Twenty-six times, `{first_name}` not even interpolated. It cleared every gate we had, because
+   * every gate we had asks about ONE entry at a time: `each_has` says the field is filled in,
+   * `min_words` says it is long enough, `forbids` says it avoids the tells. Nothing asks whether
+   * entry two says anything entry one did not.
+   *
+   * That is the single most visible form of slop a service business can send. A heading per person
+   * is a PROMISE that what follows is about that person, and thirteen copies of one paragraph
+   * breaks it more completely than a short answer would — a client who spots it stops believing the
+   * other twelve were read either.
+   *
+   * ═══ WHY SIMILARITY AND NOT EQUALITY ═══
+   *
+   * Byte-equality catches the case above and nothing else. The next version of the same failure is
+   * the same paragraph with the name swapped in, which is equally worthless and passes an equality
+   * test. Trigram overlap is the measure this repo already uses for it — the artifact-mirror finding
+   * was recorded as "14% median trigram overlap" — so it is the one used here.
+   *
+   * `distinct` is the FLOOR on how many genuinely different entries there must be, mirroring
+   * `spread` above, so a list of three where two are near-copies is a fault while two legitimately
+   * similar entries in a list of twenty are not.
+   */
+  | { kind: "distinct_prose"; items: string; field: string; distinct?: number; max_similarity?: number }
   /**
    * The words that make a client stop believing the firm wrote this.
    *
@@ -429,6 +482,32 @@ function at(root: unknown, path: string): unknown {
   return cur;
 }
 
+/**
+ * Trigram overlap, 0..1 — the house measure for "is this the same text".
+ *
+ * Chosen because it is already the one this repo reports with: the finding that a work-sample
+ * artifact was a mirror of the prospect's own homepage was recorded as "14% median trigram overlap".
+ * Using a second measure here would mean two numbers that disagree about the same question.
+ *
+ * Lowercased and stripped of everything but letters, digits and single spaces, so "Hi Sarah, we…"
+ * and "Hi Marcus, we…" — the same template with a name swapped — score as the near-copies they are
+ * rather than as two different documents.
+ */
+export function trigramOverlap(a: string, b: string): number {
+  const grams = (s: string): Set<string> => {
+    const t = ` ${s.toLowerCase().replace(/[^a-z0-9]+/g, " ").trim()} `;
+    const out = new Set<string>();
+    for (let i = 0; i + 3 <= t.length; i++) out.add(t.slice(i, i + 3));
+    return out;
+  };
+  const x = grams(a);
+  const y = grams(b);
+  if (x.size === 0 || y.size === 0) return x.size === y.size ? 1 : 0;
+  let shared = 0;
+  for (const g of x) if (y.has(g)) shared++;
+  return shared / (x.size + y.size - shared);
+}
+
 const num = (v: unknown): number | undefined => (typeof v === "number" && Number.isFinite(v) ? v : undefined);
 const words = (v: unknown): number => (typeof v === "string" ? v.trim().split(/\s+/).filter(Boolean).length : 0);
 
@@ -567,6 +646,24 @@ export function shipFaults(
         }
       }
 
+      if (c.kind === "required_when") {
+        const trigger = at(parsed, c.when);
+        if (String(trigger ?? "") === c.equals) {
+          const got = at(parsed, c.field);
+          const n = Array.isArray(got) ? got.length : 0;
+          if (n < c.n) {
+            out.push({
+              kind: c.kind,
+              message:
+                `"${c.when}" is "${c.equals}", so "${c.field}" needs at least ${c.n} ` +
+                `entr${c.n === 1 ? "y" : "ies"} and has ${n}. Saying this business cannot be served ` +
+                `and naming nothing to build about it is not an answer — if none of the work is ` +
+                `something we already run, then all of it is something to write.`,
+            });
+          }
+        }
+      }
+
       if (c.kind === "not_when") {
         const flagged = at(parsed, c.unknown_when) === true;
         const stated = at(parsed, c.field);
@@ -660,6 +757,49 @@ export function shipFaults(
               `"${c.field}" has ${v.length} where the service promises at least ${c.n}. ` +
               `A report with nothing to do next is a measurement, not a deliverable.`,
           });
+        }
+      }
+
+      if (c.kind === "distinct_prose") {
+        const items = at(parsed, c.items);
+        if (Array.isArray(items) && items.length > 1) {
+          const texts = items
+            .map((it) => (it as Record<string, unknown>)?.[c.field])
+            .filter((v): v is string => typeof v === "string" && v.trim().length > 0);
+          if (texts.length > 1) {
+            /*
+              0.5, measured rather than guessed. Real unrelated sentences from the same trade score
+              0.00-0.07; a near-copy differing by one word scores 0.92. The interesting case sits in
+              between: "Hi Sarah, we do bookkeeping" against "Hi Marcus, we do bookkeeping" is 0.559
+              — a template with a name swapped in, which is the exact next version of the production
+              failure this exists for, and a 0.6 ceiling let it through. 0.5 catches it with an order
+              of magnitude of margin above genuinely different prose.
+            */
+            const ceiling = c.max_similarity ?? 0.5;
+            /*
+              Cluster by similarity, then count the clusters. Counting PAIRS would report thirteen
+              identical messages as seventy-eight faults and bury the one sentence that matters.
+            */
+            const clusters: string[][] = [];
+            for (const t of texts) {
+              const home = clusters.find((g) => trigramOverlap(g[0]!, t) > ceiling);
+              if (home) home.push(t);
+              else clusters.push([t]);
+            }
+            const want = Math.min(c.distinct ?? texts.length, texts.length);
+            if (clusters.length < want) {
+              const biggest = clusters.reduce((a, g) => (g.length > a.length ? g : a));
+              out.push({
+                kind: c.kind,
+                message:
+                  `"${c.items}" has ${texts.length} entries and only ${clusters.length} distinct ` +
+                  `"${c.field}" between them — ${biggest.length} say the same thing. A heading per ` +
+                  `entry promises the reader that what follows is about that entry; repeating one ` +
+                  `paragraph breaks the promise more completely than a short answer would. ` +
+                  `The repeated one begins "${biggest[0]!.trim().slice(0, 70)}".`,
+              });
+            }
+          }
         }
       }
 
@@ -818,7 +958,11 @@ export function plainChecks(shipRequires: readonly string[] | undefined, checks:
   if (kinds.has("agrees")) out.push("We never tell a client something balances while showing a difference.");
   if (kinds.has("minor_units")) out.push("Amounts are checked so a figure can't come out a hundred times too big.");
   if (kinds.has("not_when")) out.push("We won't quote a figure and also say we couldn't work it out.");
+  if (kinds.has("required_when")) {
+    out.push("If none of what we already run is your work, we say what we would build instead.");
+  }
   if (kinds.has("counts")) out.push("If we say there are four things to look at, there are four.");
+  if (kinds.has("distinct_prose")) out.push("A list of ten things is ten things, not one thing written ten times.");
   if (kinds.has("each_has") && checks.some((c) => c.kind === "each_has" && c.field === "recommendation")) {
     out.push("Anything we ask you comes with what we'd recommend, so it's a yes or no.");
   }
@@ -900,6 +1044,13 @@ export function describeShipContract(
             `list; two numbers about the same thing that disagree cost you every other number too.`,
         );
         break;
+      case "required_when":
+        lines.push(
+          `When \`${c.when}\` is "${c.equals}", \`${c.field}\` must list at least ${c.n} ` +
+            `entr${c.n === 1 ? "y" : "ies"}. If nothing we already run is the work this business ` +
+            `sells, then the work is something to write — name it.`,
+        );
+        break;
       case "not_when":
         lines.push(
           `\`${c.field}\` must be absent whenever \`${c.unknown_when}\` is true. Never state a figure ` +
@@ -920,6 +1071,13 @@ export function describeShipContract(
         lines.push(
           `EVERY entry in \`${c.items}\` needs a \`${c.field}\` — not just the first one. ` +
             `An entry you cannot fill in should not be in the list.`,
+        );
+        break;
+      case "distinct_prose":
+        lines.push(
+          `Every \`${c.field}\` in \`${c.items}\` must SAY SOMETHING DIFFERENT. One paragraph ` +
+            `repeated under each heading, or the same sentence with a name swapped in, is one entry ` +
+            `pretending to be many — write about the entry in front of you, or drop it from the list.`,
         );
         break;
       case "spread":
@@ -981,6 +1139,25 @@ export function readShipChecks(raw: unknown): ShipCheck[] {
       out.push({ kind: "counts", items: s("items")!, field: s("field")! });
     } else if (c.kind === "not_when" && s("field") && s("unknown_when")) {
       out.push({ kind: "not_when", field: s("field")!, unknown_when: s("unknown_when")! });
+    } else if (c.kind === "required_when" && s("field") && s("when") && s("equals")) {
+      const n = Number((c as Record<string, unknown>).n);
+      out.push({
+        kind: "required_when",
+        field: s("field")!,
+        when: s("when")!,
+        equals: s("equals")!,
+        n: Number.isFinite(n) && n > 0 ? n : 1,
+      });
+    } else if (c.kind === "distinct_prose" && s("items") && s("field")) {
+      // `distinct` and `max_similarity` are optional — the defaults are the measured ones. A wedge
+      // that states neither gets "every entry must differ" at a 0.5 ceiling, which is the rule.
+      out.push({
+        kind: "distinct_prose",
+        items: s("items")!,
+        field: s("field")!,
+        ...(n("distinct") !== undefined ? { distinct: n("distinct")! } : {}),
+        ...(n("max_similarity") !== undefined ? { max_similarity: n("max_similarity")! } : {}),
+      });
     } else if (c.kind === "sums_to" && s("items") && s("each") && s("total")) {
       out.push({ kind: "sums_to", items: s("items")!, each: s("each")!, total: s("total")! });
     } else if (c.kind === "min_items" && s("field") && n("n") !== undefined) {

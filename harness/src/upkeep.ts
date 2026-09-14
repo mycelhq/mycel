@@ -85,6 +85,7 @@ import {
   ensureFulfillmentSchedule,
   projectDoesFulfillment,
 } from "./fulfillment-ignite";
+import { OPEN_ENGAGEMENTS_TASK_TYPE, ensureEngagementSchedule } from "./engagement-sweep";
 import {
   RETAINER_SWEEP_TASK_TYPE,
   ensureRetainerSchedule,
@@ -136,6 +137,11 @@ export interface ProjectFacts {
    * `projectDoesFulfillment`.
    */
   does_fulfillment: boolean;
+  /**
+   * The business has at least one client. Arms the engagement sweep — which exists for the account
+   * that has a client and NO engagement, so it cannot be gated on engagements existing.
+   */
+  has_clients: boolean;
 }
 
 /**
@@ -149,7 +155,7 @@ export interface ProjectFacts {
  */
 export async function projectFacts(projectId: string, domain?: DomainStore): Promise<ProjectFacts> {
   if (!projectId) throw new Error("upkeep must be scoped to a project");
-  const [invoices, asks, retainers, fulfils] = await Promise.all([
+  const [invoices, asks, retainers, fulfils, clients] = await Promise.all([
     getBillingStore().listInvoices({ project_id: projectId, limit: 1 }),
     getRequestStore().listRequests({ project_id: projectId, status: "open", limit: 1 }),
     // Optional store, because `projectFacts` has a caller that holds no domain store and a retainer
@@ -158,12 +164,21 @@ export async function projectFacts(projectId: string, domain?: DomainStore): Pro
     domain ? projectHasRetainer(domain, projectId).catch(() => false) : Promise.resolve(false),
     // Same optional-store contract: no domain ⇒ "no fulfillment", never a throw.
     domain ? projectDoesFulfillment(domain, projectId).catch(() => false) : Promise.resolve(false),
+    /*
+      Same optional-store contract as the two above: no domain store means "no clients", never a
+      throw. Capped at one row — this is an existence question, and a business with four hundred
+      clients must not pay for four hundred rows to answer it every upkeep.
+    */
+    domain
+      ? domain.listClients().then((all) => all.filter((c) => c.project_id === projectId).slice(0, 1)).catch(() => [])
+      : Promise.resolve([] as unknown[]),
   ]);
   return {
     raises_invoices: invoices.length > 0,
     asks_clients: asks.length > 0,
     bills_retainers: retainers,
     does_fulfillment: fulfils,
+    has_clients: clients.length > 0,
   };
 }
 
@@ -281,6 +296,27 @@ export async function ensureUpkeep(
       blocked: undefined,
     },
     () => ensureFulfillmentSchedule(domain, projectId, PAYMENTS_WEDGE, now),
+  );
+
+  /*
+    ── and one step before it ────────────────────────────────────────────────────────────────────
+
+    Armed on HAS_CLIENTS, not on `does_fulfillment`, and the difference is the whole reason this
+    exists. Ignition above wants an open engagement to work on; this one is for the business that
+    has a client and NO engagement, because `openEngagementForNewClient` is a one-shot at the moment
+    a client is added and nothing ever asks again if it declined.
+
+    Thirteen clients across four businesses were in exactly that state on 13 September, the oldest
+    since 16 August — including every signup in the last month that got as far as adding a client.
+  */
+  await consider(
+    {
+      task_type: OPEN_ENGAGEMENTS_TASK_TYPE,
+      title: "open engagements for clients that have none",
+      wanted: facts.has_clients,
+      blocked: undefined,
+    },
+    () => ensureEngagementSchedule(domain, projectId, PAYMENTS_WEDGE, now),
   );
 
   // ── money late ────────────────────────────────────────────────────────────────────────────────

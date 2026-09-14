@@ -29,11 +29,54 @@
  * failure as the bug being fixed and much harder to see. Ours are named one at a time, on purpose.
  */
 
-/** Mycel's own domains. Everything at these is machinery. */
-const PLATFORM_DOMAINS = ["mycelai.dev"];
+/**
+ * ═════════════════════════════════════════════════════════════════════════════════════════════════
+ * WHOSE PLATFORM — READ FROM THE ENVIRONMENT, WITH OURS AS THE DEFAULT
+ * ═════════════════════════════════════════════════════════════════════════════════════════════════
+ *
+ * These were two hardcoded literals naming Mycel's own mailboxes, in a kernel that is Apache-2.0 and
+ * meant to be self-hosted. For anybody who clones it the values are worse than useless: their kernel
+ * carefully ignores mail from OUR addresses, and their own ops mailbox — the one that sends them
+ * QA probes and bounce notices — has no way to be named, so it becomes a client in their CRM.
+ *
+ * Which is the exact bug this file was written to fix, reproduced for every user but us. A default
+ * that is right for the vendor and silently wrong for everybody else is the shape of hardcoding
+ * worth hunting: it never fails here, so nothing ever reports it.
+ *
+ * Set as comma-separated lists. Hosted behaviour is unchanged when they are unset.
+ */
+const fromEnv = (name: string, fallback: string[]): string[] => {
+  /*
+    UNSET falls back. SET-BUT-EMPTY does not, and the distinction is the whole point.
 
-/** Named one at a time — see the note above about `agentmail.to`. */
-const PLATFORM_ADDRESSES = ["gotomarket@agentmail.to", "mycel@agentmail.to"];
+    `raw?.trim()` then `if (!raw)` conflated them: `VAR="  "` restored our defaults while
+    `VAR=" , ,"` returned none, so the same intent expressed two ways gave opposite answers. Only
+    the absence of the variable is "you did not say"; anything present is an instruction, and
+    "I named none" is the honest reading of an empty one.
+
+    Returning nothing is also the safe direction. With no platform addresses, `isPlatformAddress`
+    says no, and a real sender is filed as a client — recoverable. The other way round a real client
+    is discarded as machinery, which is not.
+  */
+  const raw = process.env[name];
+  if (raw === undefined) return fallback;
+  return raw.split(",").map((s) => s.trim().toLowerCase()).filter(Boolean);
+};
+
+/**
+ * Read per call, not once at import.
+ *
+ * A module-level `const` is decided by whichever module happened to load first, which makes this
+ * untestable without a fresh process and unsettable by anything that configures the kernel after
+ * boot. It runs once per inbound message, so there is no cost worth optimising for here.
+ */
+
+/** `MYCEL_PLATFORM_DOMAINS` — everything at these is machinery, never a client. */
+const platformDomains = (): string[] => fromEnv("MYCEL_PLATFORM_DOMAINS", ["mycelai.dev"]);
+
+/** `MYCEL_PLATFORM_ADDRESSES` — named one at a time, see the note above about `agentmail.to`. */
+const platformAddresses = (): string[] =>
+  fromEnv("MYCEL_PLATFORM_ADDRESSES", ["gotomarket@agentmail.to", "mycel@agentmail.to"]);
 
 const clean = (h: string) => h.trim().toLowerCase().replace(/^mailto:/, "");
 
@@ -60,8 +103,8 @@ export function isPlatformAddress(handle: string, extra: string[] = []): boolean
   const a = withoutTag(bareAddress(handle));
   if (!a.includes("@")) return false;
   const domain = a.slice(a.lastIndexOf("@") + 1);
-  if (PLATFORM_DOMAINS.includes(domain)) return true;
-  return [...PLATFORM_ADDRESSES, ...extra.map(clean)].some((p) => withoutTag(clean(p)) === a);
+  if (platformDomains().includes(domain)) return true;
+  return [...platformAddresses(), ...extra.map(clean)].some((p) => withoutTag(clean(p)) === a);
 }
 
 /**

@@ -278,6 +278,12 @@
         {
           "kind": "no_tells",
           "field": "client_summary"
+        },
+        {
+          "kind": "distinct_prose",
+          "items": "act",
+          "field": "lead_with",
+          "_why": "The opening line per prospect. A real propose_campaign artifact shipped thirteen prospects with one byte-identical message under each name; this is that failure's schema-shaped sibling."
         }
       ]
     },
@@ -609,6 +615,7 @@
     "advance_sequences": {
       "harness_dispatched": true,
       "internal": true,
+      "_comment_internal": "Moves our own outreach along. The business's customers never see it.",
       "description": "The five-minute outreach tick. Harness work, not agent work: the copy was approved days ago, so no model is invoked. Spawned by the sequencer's own schedule — do not create these by hand.",
       "input_schema": {
         "type": "object",
@@ -651,6 +658,7 @@
     "gtm_autonomous": {
       "harness_dispatched": true,
       "internal": true,
+      "_comment_internal": "Runs our own pipeline end to end. Its output is a decision, not a deliverable.",
       "description": "One turn of the autonomous GTM loop: FullEnrich discovery from the project's stored audience, then — if it found people the project has not seen — a normal propose_campaign approval. Harness work, not agent work; spawned by the audience's own schedule when the founder enables it. Discovers and proposes only; every send still waits for the founder's approval envelope. Do not create these by hand.",
       "input_schema": {
         "type": "object",
@@ -693,6 +701,7 @@
     "outreach_touch": {
       "harness_dispatched": true,
       "internal": true,
+      "_comment_internal": "One touch on one prospect of OURS. A client of the business is not involved.",
       "description": "One dispatched step of one prospect's sequence. The anchor an auto-approval, a timeline entry and an audit row hang off. Created by the sequencer, or by a founder taking the touch off their next-move list before the cadence gets to it.",
       "_comment": "A ROW, NOT A RUN, which is why there is no `harness` block and no `output_schema` here. The copy was written and approved before the founder said yes, so nothing is drafted at dispatch time and no model is invoked — this task exists so that every message the campaign produced stays individually inspectable afterwards. What it therefore owes is an INPUT contract, and `required` states it: the next-move engine proposes exactly this shape (see `gtmMove` in moves.ts), and a field missing from it is a touch nobody could reconstruct later. moves.test.ts holds the declaration and the proposal to each other.",
       "input_schema": {
@@ -1055,6 +1064,7 @@
     "ops_distribution_tick": {
       "harness_dispatched": true,
       "internal": true,
+      "_comment_internal": "The engine's own heartbeat.",
       "description": "One tick of the distribution loop: read what is due, decide what may spend, execute the touches that clear every cap, and report what happened. Spawned by a schedule, never created by hand. The tick is BOUNDED WORK — it does what is due right now and stops. It does not wait for anything, retry indefinitely, or explore; a tick that finds nothing due is a successful tick.",
       "input_schema": {
         "type": "object",

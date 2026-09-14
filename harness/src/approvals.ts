@@ -12,7 +12,8 @@ import { getDomainStore } from "./domain";
 import { evaluatePolicy } from "./policy";
 import { taskClientId } from "./runtime";
 import { matchStanding } from "./standing";
-import { loadWedge } from "./wedge";
+import { loadProjectWedge } from "./authored";
+import { isAuthoredSlug, loadWedge } from "./wedge";
 import type { Store } from "./store";
 
 /** The outcome of an approval — plus, when the human edits the action before approving, the
@@ -227,6 +228,46 @@ export async function recordAutoApproval(
   return approval.approval_id;
 }
 
+/**
+ * ═══════════════════════════════════════════════════════════════════════════════════════════════
+ * THE MANIFEST WHOSE ENVELOPE DECIDES — INCLUDING A SERVICE WE WROTE FOR THIS ONE BUSINESS
+ * ═══════════════════════════════════════════════════════════════════════════════════════════════
+ *
+ * This was `loadWedge(task?.wedge ?? "")`, and `loadWedge` REFUSES an authored slug by design: a
+ * written service lives in a project-scoped table, and a loader with no project in hand answering
+ * for it is the tenancy leak that gate exists to prevent. Returning null is the honest answer there.
+ *
+ * The consequence here was not honest. `evaluatePolicy(undefined, …)` says "no auto-approve policy —
+ * human gate applies", so EVERY action of EVERY written service went to a person, forever — while
+ * `repairAuthoredManifest` carefully clamped allowances that nothing would ever read. The founder's
+ * direction, recorded in `wedgeauthor.ts`, is the opposite and says why: *"a business that asks
+ * permission for everything on day one is a gate the founder learns to stop reading, which kills the
+ * gate for the sends that matter."* And this file's own header has the measurement — 195 of 196
+ * production approvals expired. Unread gates do not fail loudly; they fail as work that never
+ * happened.
+ *
+ * ═══ WHY EVALUATING AN AUTHORED ENVELOPE IS SAFE, AND WHERE THAT SAFETY COMES FROM ═══
+ *
+ * The author of these rules is a model, and it is the thing being granted. The protection is that
+ * `toLoaded` runs `repairAuthoredManifest` — and therefore `sanitiseAuthoredPolicy` — on EVERY LOAD,
+ * not once at authoring time. So the clamp does not depend on what is in the row: no wildcards, no
+ * prefixes, no money rules, at most three exact actions, ten a day. A row written before the
+ * sanitiser existed, or edited in the database directly, is re-clamped on the way through here.
+ *
+ * Everything else that stood between an action and a person still stands: `requireHuman` skips this
+ * entirely, `matchStanding` refuses to cover a `high` verdict, and the approval row is still written
+ * and still lands in the founder's feed with its reason.
+ *
+ * A `task` with no `project_id` gets the disk loader and nothing else — `loadProjectWedge` throws
+ * rather than guess a tenant, and an approval path is not the place to find out.
+ */
+async function manifestFor(task: { wedge?: string; project_id?: string } | undefined) {
+  const slug = task?.wedge ?? "";
+  if (!isAuthoredSlug(slug)) return loadWedge(slug);
+  if (!task?.project_id) return null;
+  return loadProjectWedge(task.project_id, slug).catch(() => null);
+}
+
 /** Create an approval, emit approval.requested, and block until resolved (or TTL expiry). */
 export async function awaitApproval(
   store: Store,
@@ -261,7 +302,7 @@ export async function awaitApproval(
   const task = await store.getTask(taskId);
   const decisionByPolicy = req.requireHuman
     ? { auto: false, reason: "platform rules require a human on this send" }
-    : await evaluatePolicy(loadWedge(task?.wedge ?? "")?.manifest, {
+    : await evaluatePolicy((await manifestFor(task))?.manifest, {
         action: req.action,
         payload: req.preview,
         taskId,

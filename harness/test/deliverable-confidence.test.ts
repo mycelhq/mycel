@@ -64,7 +64,7 @@ test("nothing in the kernel branches on the score", () => {
 
 test("the craft every deliverable run reads tells it to produce this", () => {
   // Otherwise the field is built and never populated — the failure mode this repo keeps hitting.
-  const craft = readFileSync(new URL("../../craft/delivering-work.md", import.meta.url), "utf8");
+  const craft = readFileSync(new URL("../../library/craft/delivering-work.md", import.meta.url), "utf8");
   assert.match(craft, /confidence/, "no craft tells a run to report confidence");
   assert.match(craft, /"fit"|`fit`/, "the craft never names the field");
   assert.match(craft, /unsure/, "the craft never asks for what the run had to guess");

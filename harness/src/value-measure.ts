@@ -184,7 +184,7 @@ export function measureValue(
       : undefined;
 
   const parts = [`${hours} hours of work reached a client across ${productive} pieces`];
-  if (money) parts.push(`about ${money.currency} ${money.amount.toLocaleString("en-US")} at your own rate`);
+  if (money) parts.push(`about ${money.currency} ${String(money.amount).replace(/\B(?=(\d{3})+(?!\d))/g, ",")} at your own rate`);
   const caveats: string[] = [];
   if (unestimated) caveats.push(`${unestimated} had no time estimate on file and are NOT counted`);
   if (unproductive) caveats.push(`${unproductive} never reached a client and are excluded`);

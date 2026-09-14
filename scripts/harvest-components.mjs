@@ -10,8 +10,8 @@
  *                    TWENTYFIRST_API_KEY is set; skipped loudly otherwise.
  *
  * Output:
- *   kernel/component-library/{source}/{name}.json   — the registry item, verbatim (files + content)
- *   kernel/component-library/index.json             — one searchable index: name, source, type,
+ *   kernel/design/component-library/{source}/{name}.json   — the registry item, verbatim (files + content)
+ *   kernel/design/component-library/index.json             — one searchable index: name, source, type,
  *                                                     description, dependencies, file paths, tags
  *
  * The index is what the builder agent searches (small, greppable); the per-item JSON is what the
@@ -24,7 +24,7 @@ import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..");
-const OUT = join(ROOT, "component-library");
+const OUT = join(ROOT, "design/component-library");
 
 const fetchJson = async (url, headers = {}) => {
   const res = await fetch(url, { headers });

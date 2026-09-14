@@ -8,7 +8,7 @@
 // Integer cents throughout, by contract. A case that a float would fail is the point, not an edge.
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import reconcile from "../../workflows/reconcile.mjs";
+import reconcile from "../../library/workflows/reconcile.mjs";
 
 type Recon = {
   difference_cents: number;

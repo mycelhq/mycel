@@ -11,7 +11,7 @@ import { matchTwoPass } from "../src/match";
 // anti-drift test below is the thing that must be fixed rather than deleted.
 // reconcile is now a kernel-owned SHARED primitive that books-keeper references by lib, not a file
 // in the wedge directory — so this drift check imports it from the shared library.
-import reconcile from "../../workflows/reconcile.mjs";
+import reconcile from "../../library/workflows/reconcile.mjs";
 
 const p = (key: string, amount: number, date?: string, reference?: string) => ({ key, amount, date, reference });
 

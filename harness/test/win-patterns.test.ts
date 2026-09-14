@@ -7,7 +7,7 @@
 // Every test here is about the tool refusing to answer.
 import test from "node:test";
 import assert from "node:assert/strict";
-import winPatterns from "../../workflows/win-patterns.mjs";
+import winPatterns from "../../library/workflows/win-patterns.mjs";
 
 const mk = (stage: string, industry: string, source: string, n = 1) =>
   Array.from({ length: n }, () => ({ stage, attributes: { industry, source } }));

@@ -41,9 +41,27 @@ test("every workspace dependency the kernel has is vendored by the publisher", {
   assert.ok(workspace.length > 0, "no file: deps — if that is now true, this test can go");
 
   const sh = publisher();
-  assert.match(sh, /git -C "\$ROOT" archive HEAD packages/, "the publisher does not stage packages/");
-  assert.match(sh, /file:\\\.\\\.\/packages\//, "the publisher does not rewrite the dependency paths");
-  assert.match(sh, /\[ -d "\$STAGE\/packages\/linkedin" \]/, "nothing asserts the packages actually staged");
+  /**
+   * ═══ THE LIST IS DERIVED, AND THAT IS WHAT IS ASSERTED ═══
+   *
+   * These three assertions used to pin the IMPLEMENTATION: `archive HEAD packages` (the whole
+   * directory) and a hardcoded `-d "$STAGE/packages/linkedin"`. Both were satisfied by a publisher
+   * that also shipped `rally` — our laptop LinkedIn runner, which no kernel dependency names — so the
+   * test was green while the repo published something that is not the kernel.
+   *
+   * What matters is the property: the staged set equals the set the manifest declares. A publisher
+   * that reads its list out of `package.json` has that property by construction, for packages that do
+   * not exist yet as much as for these four.
+   */
+  assert.match(sh, /file:\.\.\/packages\//, "the publisher no longer derives its list from the kernel's own file: deps");
+  assert.match(sh, /git -C "\$ROOT" archive HEAD "packages\/\$pkg"/, "packages are not staged one by one from the derived list");
+  assert.match(
+    sh,
+    /\[ -f "\$STAGE\/packages\/\$pkg\/package\.json" \]/,
+    "nothing asserts each derived package actually staged",
+  );
+  // And the other direction, which is the bug that shipped: nothing extra.
+  assert.match(sh, /is staged and the kernel does not depend on it/, "a package the kernel does not need can still ship");
 });
 
 test("the publisher refuses rather than shipping a tree that cannot install", { skip }, () => {
@@ -71,5 +89,9 @@ test("the Dockerfile's packages COPY is satisfiable in the published tree", { sk
   // repo the context is the kernel directory, so the packages have to be inside it.
   const df = readFileSync(new URL("../../Dockerfile", import.meta.url), "utf8");
   if (!/^COPY packages /m.test(df)) return;
-  assert.match(publisher(), /archive HEAD packages/, "the Dockerfile COPYs packages/ that the publisher never stages");
+  assert.match(
+    publisher(),
+    /archive HEAD "packages\/\$pkg"/,
+    "the Dockerfile COPYs packages/ that the publisher never stages",
+  );
 });

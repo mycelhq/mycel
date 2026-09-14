@@ -16,6 +16,7 @@
 
 import { existsSync, readFileSync, readdirSync, statSync } from "node:fs";
 import { join } from "node:path";
+import { libraryPath } from "./library";
 
 export interface DesignSystem {
   id: string;
@@ -26,7 +27,7 @@ export interface DesignSystem {
 }
 
 export function designSystemsDir(): string {
-  return process.env.MYCEL_DESIGN_SYSTEMS_DIR ?? join(process.cwd(), "design-systems", "systems");
+  return process.env.MYCEL_DESIGN_SYSTEMS_DIR ?? join(libraryPath("design-systems"), "systems");
 }
 
 /** Ids on disk, sorted. Empty when the directory did not ship — callers degrade, never throw. */

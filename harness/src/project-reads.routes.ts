@@ -50,6 +50,64 @@ app.get("/v1/artifacts/:id", async (c) => {
   return serveArtifact(await withContent(a));
 });
 
+/**
+ * ═════════════════════════════════════════════════════════════════════════════════════════════════
+ * EVERY CONVERSATION IN THE BUSINESS, OPTIONALLY THE ONES ONE SERVICE IS HAVING
+ * ═════════════════════════════════════════════════════════════════════════════════════════════════
+ *
+ * The founder: *"we have inbox in agentmail per service right? can or should we show it per service?
+ * build mail inbox, filter ones for that service? inbound and outbound?"*
+ *
+ * The premise is worth correcting because it decides the shape of this route. There is ONE address
+ * per business, not one per service — `mailbox-ensure.ts` mints it from the project name when the
+ * first engagement opens. That is the right design and should not change: a client emails the
+ * business, and per-service addresses would make a four-person studio look like a company with
+ * departments, then break threading the moment somebody replies to the wrong one.
+ *
+ * So a service does not own an inbox. It owns a set of ENGAGEMENTS, and those own conversations.
+ * `?wedge=` is therefore a FILTER over one inbox, which is also the only version of this that stays
+ * true when a client's one thread covers two services.
+ *
+ * ═══ WHY THE LAST MESSAGE RIDES ALONG ═══
+ *
+ * A list of conversations without the last thing said is a list of counts. The console would then
+ * fetch `/v1/threads/:id` per row — the exact N+1 the client page's own note says it was rebuilt to
+ * remove — so the batch happens here, in one query (`lastMessages`).
+ *
+ * Bodies are NOT truncated here. The console decides how much of a message to show, and a store that
+ * pre-clips loses the ability to change that decision without a deploy of the kernel.
+ */
+app.get("/v1/threads", async (c) => {
+  const projectId = writeProjectId(c);
+  if (!projectId) return c.json({ error: "specify a project (X-Mycel-Project header)" }, 400);
+  if (!inScope(accessible(c), projectId)) return c.json({ error: "not found" }, 404);
+
+  const wedge = (c.req.query("wedge") ?? "").trim();
+  const limit = Math.min(Math.max(1, Number(c.req.query("limit") ?? 100) || 100), 300);
+
+  /**
+   * The wedge → case → thread hop, resolved HERE rather than in the store.
+   *
+   * A thread knows its case and a case knows its wedge. Teaching the conversation store that second
+   * hop would put service semantics inside it, and the next filter after this one would go there
+   * too. `listCases` is already the tenant-scoped, fail-closed reader for the first half.
+   */
+  let caseIds: string[] | undefined;
+  if (wedge) {
+    const cases = await domain.listCases({ project_id: projectId, wedge });
+    caseIds = cases.map((k) => k.id);
+    // An explicit filter matching nothing answers NOTHING, never everything. The unfiltered list is
+    // a different question and a caller that asked this one must not be given it by accident.
+    if (caseIds.length === 0) return c.json({ threads: [] });
+  }
+
+  const threads = await domain.listThreadsForProject(projectId, { caseIds, limit });
+  const last = await domain.lastMessages(threads.map((t) => t.id));
+  return c.json({
+    threads: threads.map((t) => ({ ...t, last: last.get(t.id) ?? null })),
+  });
+});
+
 app.get("/v1/threads/:id", async (c) => {
   const thread = await domain.getThread(c.req.param("id"));
   if (!thread || !inScope(accessible(c), thread.project_id)) return c.json({ error: "not found" }, 404);

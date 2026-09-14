@@ -24,6 +24,7 @@ import { reconcileProject } from "./payments";
 import { fireSchedule } from "./scheduler";
 import { setSecret } from "./secrets";
 import { loadWedge } from "./wedge";
+import { serviceNotEnabled, unknownService } from "./service-words";
 
 export interface BlueprintRoutesDeps {
   domain: DomainStore;
@@ -93,9 +94,9 @@ app.post("/v1/blueprints/:slug/provision", async (c) => {
   if (!projectId) return c.json({ error: "specify a project (X-Mycel-Project header)" }, 400);
   const b = loadBlueprint(c.req.param("slug"));
   if (!b) return c.json({ error: "unknown blueprint" }, 404);
-  if (!loadWedge(b.wedge)) return c.json({ error: `blueprint needs wedge "${b.wedge}", which isn't installed` }, 400);
+  if (!loadWedge(b.wedge)) return c.json({ error: `this business shape needs the "${b.wedge}" service, which isn't installed here` }, 400);
   if (!identity.projectAllowsWedge(projectId, b.wedge)) {
-    return c.json({ error: `wedge "${b.wedge}" is not enabled for this project` }, 403);
+    return c.json({ error: serviceNotEnabled(b.wedge) }, 403);
   }
   const result = await provision(domain, b, projectId);
   await audit({

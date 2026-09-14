@@ -25,7 +25,8 @@ import { SkillAttention } from "./skill-attention";
 import { MAX_STEER_TURNS, STEER_TURN_START_MS, SteerQueue } from "./steer-queue";
 import { registerRun, deregisterRun, getRun, type PreviewStatus } from "./runregistry";
 // PREVIEW_PORT (4321, deliberately not 3000 — the verify step boots its own throwaway `next dev` on
-// 3000) lives in sandbox.ts so DockerSandbox can publish it at acquire time.
+// 3000) lives in sandbox.ts so DockerSandbox can publish it at acquire time. The port split does not
+// by itself keep the two apart: Next 16 locks per DIRECTORY. See startPreview.
 import { PREVIEW_PORT , SANDBOX_HOME } from "./sandbox";
 import { groundRun, type Grounding, type GroundingFile } from "./knowledge";
 import { deriveAuthority as deriveBrainAuthority, digestFor as brainDigestFor } from "./brain";
@@ -43,7 +44,14 @@ import {
   type UsageDelta,
 } from "./opencode";
 import { buildGatePatterns, MYCEL_PLUGIN_CODE } from "./plugin";
-import { brokeredCaveat, capabilityAdapter, isCapability, resolveCapability, whyNoProvider } from "./capabilities";
+import {
+  brokeredCaveat,
+  capabilityAdapter,
+  isCapability,
+  isDeclarableCapability,
+  resolveCapability,
+  whyNoProvider,
+} from "./capabilities";
 import { composioConfig, connConfig as composioConnConfig, isComposio } from "./composio";
 import {
   renderToolContext,
@@ -279,10 +287,27 @@ export function capabilityConnections(
     // No project means no tenant to resolve against, and resolving against "all of them" is the
     // cross-tenant leak this repo has shipped twice. A task with no project gets no capability
     // grants at all; a wedge that names connections directly is unaffected.
-    return { ids, missing: capabilities.filter(isCapability).map((c) => whyNoProvider(c)) };
+    // Every capability, not only the eleven: a declared one with no project is just as unresolvable
+    // and the founder is owed the same sentence about it.
+    return { ids, missing: capabilities.map((c) => whyNoProvider(c)) };
   }
   for (const name of capabilities) {
-    if (!isCapability(name)) continue; // Already refused at manifest load; belt and braces here.
+    /**
+     * ═══ AN UNKNOWN NAME USED TO VANISH HERE, WITH NO GRANT AND NO SENTENCE ═══
+     *
+     * `continue` was correct while `CAPABILITIES` was the whole vocabulary — an unknown name could
+     * only be a typo, already refused at manifest load. It stopped being correct when a service
+     * became able to declare a need this kernel has never heard of and a connection became able to
+     * answer it: a physiotherapy practice asking to read appointments got no connection, no
+     * `missing` entry, and therefore no explanation anywhere.
+     *
+     * `resolveCapability` now answers both kinds, and a name that is neither known nor declarable is
+     * still refused — loudly, in `missing`, rather than by silence.
+     */
+    if (!isCapability(name) && !isDeclarableCapability(name)) {
+      missing.push(`"${name}" is not a capability this kernel can resolve — check the spelling.`);
+      continue;
+    }
     // Supplied in the task. No connection is needed and none is granted — the run reads the input,
     // which is what the input contract told it to do.
     if (supplied.has(name)) continue;
@@ -998,10 +1023,20 @@ export async function runOpenCodeTask(
       // A declared-but-missing scaffold no longer reaches here at all — `seedWorkspace` throws, and
       // the run fails in its first seconds naming the scaffold instead of expiring thirty minutes
       // later having searched the sandbox for a project nobody put there.
-      note: seeded.root
-        ? `workspace ~/${ws.dir}: seeded from ${ws.seed} — ${seeded.written} files` +
-          (seeded.skipped ? ` (${seeded.skipped} binary/oversized files skipped)` : "")
-        : `workspace ~/${ws.dir}: created empty — this wedge declares no scaffold to seed from.`,
+      /*
+        THREE OUTCOMES, THREE SENTENCES. This line already existed because "a seed that silently
+        no-ops and a seed that never ran leave identical feeds" — and then a third case appeared
+        that it could not say: a repair round re-entering against a workspace the agent had already
+        built in. That one printed the same "seeded from business-template — 634 files" as a first
+        seed, which is how a loop that wiped the agent's work three times read as normal.
+      */
+      note: !seeded.root
+        ? `workspace ~/${ws.dir}: created empty — this wedge declares no scaffold to seed from.`
+        : seeded.reused
+          ? `workspace ~/${ws.dir}: already built in — left exactly as the previous session left it, ` +
+            `nothing re-seeded from ${ws.seed}.`
+          : `workspace ~/${ws.dir}: seeded from ${ws.seed} — ${seeded.written} files` +
+            (seeded.skipped ? ` (${seeded.skipped} binary/oversized files skipped)` : ""),
     });
   }
 
@@ -2040,28 +2075,97 @@ export async function runOpenCodeTask(
               status.stage = "booting";
               publish();
               say("preview: dev server booting");
+              /**
+               * ═══ THE DEV LOCK IS PER-DIRECTORY, AND THE PORT SEPARATION NEVER PROTECTED US ═══
+               *
+               * `sandbox.ts` picks 4321 "deliberately not 3000 — the verify step boots its own
+               * throwaway `next dev` on 3000". That was a defence against a PORT collision, and the
+               * collision is not on the port. Next 16 takes a lock on the DIRECTORY, and both
+               * servers run in ~/app. Read from a failed boot in production:
+               *
+               *     ✓ Ready in 472ms
+               *     ⨯ Another next dev server is already running.
+               *     - PID: 10398   - Dir: /root/app
+               *
+               * Which is verify's throwaway, still alive: `verify-build.sh` ends with
+               * `kill $(cat /tmp/dev.pid)`, and that pid is the `npm run dev` WRAPPER. npm takes
+               * the signal, the `next-server` grandchild is orphaned and keeps the lock. The port
+               * split made this invisible rather than impossible — nothing ever collided on 4321,
+               * so the guard looked like it was working for as long as Next 15 had no such lock.
+               *
+               * So clear the squatter before spawning. Scoped to port 3000 BY NUMBER, which is
+               * verify's and cannot be the preview's: a blanket `pkill next` here would kill a live
+               * preview the founder is watching every time the agent verified its own work.
+               */
+              await sandbox
+                .exec(
+                  [
+                    `pids=$(command -v fuser >/dev/null 2>&1 && fuser 3000/tcp 2>/dev/null)`,
+                    `[ -z "$pids" ] && pids=$(command -v lsof >/dev/null 2>&1 && lsof -ti tcp:3000 2>/dev/null)`,
+                    // Last resort: no fuser, no lsof. /proc is always there, and a next-server whose
+                    // cwd is the workspace and which is not ours is by definition the leak.
+                    `[ -z "$pids" ] && pids=$(for d in /proc/[0-9]*; do grep -qs 'next' "$d/cmdline" 2>/dev/null && [ "$(readlink -f "$d/cwd" 2>/dev/null)" = "$HOME/${ws.dir}" ] && echo "\${d#/proc/}"; done)`,
+                    `[ -n "$pids" ] && kill -9 $pids 2>/dev/null`,
+                    // The lock file outlives the process it named, and Next trusts the file.
+                    `rm -rf ~/${ws.dir}/.next/dev 2>/dev/null`,
+                    `echo CLEARED="$pids"`,
+                  ].join("\n"),
+                  20_000,
+                )
+                .then((r) => {
+                  const who = r.stdout.match(/CLEARED=(.+)/)?.[1]?.trim();
+                  if (who) say(`preview: cleared a stale dev server (${who}) holding the workspace`);
+                })
+                .catch(() => {});
+              /**
+               * ═══ AND LEAVE A DEATH CERTIFICATE, SO A DEAD BOOT IS NOT WAITED OUT ═══
+               *
+               * The founder, watching the three-minute version: *"this is taking too long."* They
+               * were right in a way the old loop could not see — Next had already printed its
+               * refusal and EXITED, at second one. The loop polled a port that nothing would ever
+               * answer for the remaining 179.
+               *
+               * `spawn` returns void and gives us no handle, so the shell records the exit itself.
+               * Checked in the SAME exec as the probe, so watching for the corpse costs no extra
+               * round trip. This is the general fix: any boot that dies — a missing dependency, a
+               * syntax error in next.config, an OOM — now reports in seconds with its own log,
+               * instead of three minutes and a sentence about time.
+               */
+              await sandbox.exec(`rm -f /tmp/preview.exit`, 10_000).catch(() => {});
               await sandbox.spawn(
-                `cd ~/${ws.dir} && PORT=${PREVIEW_PORT} npm run dev > /tmp/preview.log 2>&1`,
+                `cd ~/${ws.dir} && PORT=${PREVIEW_PORT} npm run dev > /tmp/preview.log 2>&1; echo $? > /tmp/preview.exit`,
               );
               // Probe FROM INSIDE the sandbox: the kernel may have no route to the port until the
               // Daytona preview link is minted, but 127.0.0.1 is always the truth about "is it up".
               const deadline = Date.now() + 180_000;
               let up = false;
+              let died = false;
               while (Date.now() < deadline && !ctx.shouldAbort()) {
                 const probe = await sandbox
                   .exec(
-                    `curl -s -o /dev/null -m 3 -w '%{http_code}' http://127.0.0.1:${PREVIEW_PORT}/ || true`,
+                    `curl -s -o /dev/null -m 3 -w '%{http_code}' http://127.0.0.1:${PREVIEW_PORT}/ || true; echo " gone=$(cat /tmp/preview.exit 2>/dev/null)"`,
                     10_000,
                   )
                   .catch(() => ({ stdout: "", stderr: "", code: 1 }));
+                const out = probe.stdout.trim();
                 // Any HTTP answer counts — a dev server serving a 404 or a compile-error overlay is
                 // still a dev server the founder should be looking at.
-                if (/^[1-5]\d\d$/.test(probe.stdout.trim())) {
+                if (/^[1-5]\d\d\b/.test(out)) {
                   up = true;
+                  break;
+                }
+                /*
+                  ORDER MATTERS: the port is read first. A dev server that answered and then exited
+                  between the two halves of this line is still a server worth showing, and calling it
+                  dead because of a race would be the same false negative in a new costume.
+                */
+                if (/gone=\d/.test(out)) {
+                  died = true;
                   break;
                 }
                 await new Promise((r) => setTimeout(r, 2_500));
               }
+              if (died) throw new Error("the dev server exited instead of starting");
               if (!up) throw new Error("dev server did not answer within 3 minutes");
               // previewUrl mints the externally-reachable address (Daytona preview link / mapped
               // localhost); the port is already answering, so "live" is now a fact, not a hope.
@@ -3473,7 +3577,7 @@ function buildAgentsMd(
    * A close ran nine times and told the same client nine times that their VAT scheme was unknown,
    * their return period was not supplied and their deadlines could not be stated — while the
    * platform held a `Client` row with a `preferences` object built for exactly this. The client's
-   * verdict was the obvious one: "for £400 a month, they should obtain or verify these basic facts."
+   * verdict was the obvious one: "for $400 a month, they should obtain or verify these basic facts."
    *
    * A firm that asks the same question every month is not a firm anyone keeps. This is the general
    * fix, not a VAT one: a durable fact about a client — their scheme, their tone, their billing day,
@@ -4296,6 +4400,49 @@ function buildAgentsMd(
     parts.push(
       "The summary is the covering note that goes with the work. If you find yourself writing a " +
         "summary and nothing else, you have described the job rather than done it.",
+    );
+    parts.push("");
+    /**
+     * ═══════════════════════════════════════════════════════════════════════════════════════════
+     * DO NOT DESIGN THE DOCUMENT. THE HARNESS ALREADY DOES.
+     * ═══════════════════════════════════════════════════════════════════════════════════════════
+     *
+     * Measured on a real run: the agent wrote an 8,391-character HTML report of which 3,079
+     * characters — 37% — were hand-rolled CSS. A `:root` block of custom properties, `clamp()`
+     * typography, a box-sizing reset, forty-one lines of a design system invented from nothing.
+     * Against 592 words of actual analysis.
+     *
+     * And the harness had ALREADY rendered the same content properly. `deliverables.wrap.ts` does
+     * `if (kind === "document" && content && renderDocument)` — the run's markdown goes through
+     * `blocksFromMarkdown` → `insertChart` → `render("report", …, brandKit)`, which applies the
+     * founder's own brand, inserts the wedge's declared chart, and is checked by `tasteBlockers`.
+     *
+     * So every deliverable shipped TWO documents: a branded, taste-checked PDF, and a bespoke HTML
+     * file with a different look. Same content, two designs, and a third of the run's output budget
+     * spent competing with a renderer that was always going to run.
+     *
+     * ── WHY THIS IS THE FIX FOR THE WORK BEING THIN, NOT JUST FOR THE DUPLICATE ──
+     *
+     * The reviewer on that run failed it on "It is the thing they asked for" and "Every number and
+     * claim is traceable". Both are analysis faults, and the attention that would have fixed them
+     * went into a stylesheet. Taking the document away gives the whole budget back to the work.
+     *
+     * ── AND IT IS WHY THE PRODUCT LOOKS LIKE ONE PRODUCT ──
+     *
+     * A founder forwarding two deliverables from the same business should not be forwarding two
+     * designs. One renderer means one look, everywhere, without anybody maintaining it.
+     */
+    parts.push(
+      "**Write the analysis, not the document.** Put the work in `./output/` as markdown or data — " +
+        "a `.md` with your findings, a `.csv` of the rows, a `.json` of the figures. The house " +
+        "renderer turns that into the finished document with this business's own brand on it.",
+    );
+    parts.push("");
+    parts.push(
+      "Do not write HTML and do not write CSS. A stylesheet you invent is thrown away or, worse, " +
+        "attached beside the rendered one so the client gets the same report twice in two designs. " +
+        "Every minute spent on a `:root` block is a minute not spent on the numbers, and the numbers " +
+        "are the only part a client can tell apart from anybody else's.",
     );
     parts.push("");
     /**

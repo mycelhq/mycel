@@ -45,11 +45,11 @@ practice and it is not this quarter's problem to solve; absorption is slow to ea
 **You are increasingly selected.** With retrieval on, your implant-cost page was chosen as a source
 in 3 of 4 implant queries. Perplexity quoted the price band verbatim:
 
-> "Brightline Dental lists single implants at £2,400–£2,900 including the crown, with the consultation
+> "Brightline Dental lists single implants at $2,400–$2,900 including the crown, with the consultation
 > credited against treatment."
 
 That sentence exists because the page states the number plainly in a table, in one place, with the
-caveat attached. The old page said "prices from £2,400" in a hero image. No assistant could read it.
+caveat attached. The old page said "prices from $2,400" in a hero image. No assistant could read it.
 
 **Read this as:** healthy and improvable. A practice never absorbed but often selected is exactly
 the profile that responds to source work — which is what you are paying for. Do not let anyone sell
@@ -117,5 +117,5 @@ We ship the opening hours this week and re-probe the emergency queries on the 21
 page goes into next week unless you would rather we started the study first — say so and we will
 reorder.
 
-**We need from you:** confirmation that the £2,400–£2,900 band is still current for Q4, and whether
+**We need from you:** confirmation that the $2,400–$2,900 band is still current for Q4, and whether
 the anonymised case data can be used publicly. Nothing else is blocked on you.

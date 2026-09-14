@@ -64,49 +64,37 @@ ENV PLAYWRIGHT_CHROMIUM_EXECUTABLE=/usr/bin/chromium
 COPY tsconfig.json ./
 COPY harness ./harness
 
-# The wedges and blueprints are DATA the kernel reads from disk at runtime — `wedgesDir()` and
-# `blueprintsDir()` both resolve against the working directory. Without them the container starts,
-# passes its health check, and then answers "unknown wedge" to every task and 404 to every
-# blueprint: a kernel that runs nothing while looking perfectly healthy.
-#
-# Found by running the built image rather than by building it. Both directories are small and
-# version-controlled, so they belong in the image; a founder's runtime edits live in the database
-# and are merged over these at task time.
+# `wedges/` is DATA the kernel reads from disk at runtime — `wedgesDir()` resolves it against the
+# working directory. Without it the container starts, passes its health check, and then answers
+# "unknown wedge" to every task: a kernel that runs nothing while looking perfectly healthy. Found by
+# running the built image rather than by building it.
 COPY wedges ./wedges
-COPY blueprints ./blueprints
 
-# Two more runtime-DATA directories, same category of bug as wedges above and found the same way.
-# `workflowLibDir()` resolves `<cwd>/workflows` (the shared deterministic workflow library a wedge
-# references by `lib`) and `skillsSeedDir()` resolves `<cwd>/service-skills` (the curated skill
-# library seeded into the store on boot). Without these bytes in the image the container is perfectly
-# healthy while a `lib`-referencing workflow 404s and the whole skill library seeds EMPTY — which is
-# exactly what shipped: neither directory was ever copied. Both are small and version-controlled.
-COPY workflows ./workflows
-COPY service-skills ./service-skills
-
-# Third runtime-DATA directory, same bug, same fix. `designSystemsDir()` resolves
-# `<cwd>/design-systems/systems` — 29 vendored style systems that are what stops every deliverable
-# this kernel emits from looking like raw markdown. Without these bytes `designSystemIds()` returns
-# [] and every run degrades silently to no house style at all.
-COPY design-systems ./design-systems
-
-# FOURTH runtime-DATA directory missing its COPY, and the most expensive of them. `craft/` holds the
-# rules `sharedCraft()` mounts on EVERY run that produces something a client receives — the eight
-# things a model playing a paying client rejected a deliverable for, none of which were about the
-# trade. `craft.ts` fails soft to [] by design, so without these bytes every deliverable in
-# production was produced with none of it and nothing anywhere said so.
-COPY craft ./craft
-
-# THE SCAFFOLD A BUILD RUN STARTS FROM, staged into `kernel/templates/` by buildspec.yml.
+# ═══ AND THE REST OF THE RUNTIME LIBRARY, IN ONE LINE ═══
 #
-# Same category of bug as the two directories above, and found the same way. `product-builder`
-# declares `seed: "business-template"`, and `seedRoot()` looks in `<cwd>/templates/<name>` first.
-# Without these bytes in the image, `seedWorkspace` degrades to "create an empty ~/app and say so on
-# the feed" — survivable by design, but it means every hosted build run starts the agent from
-# nothing and then fails its `npm run build` verification, while the container looks perfectly
-# healthy. `business-template/` is a SIBLING of this Docker context (it is also its own image), so
-# CI copies it in before building; `templates/.gitkeep` keeps this COPY valid when it has not.
-COPY templates ./templates
+# `library/` holds the other seven directories the kernel reads off disk while it runs: blueprints,
+# packs, workflows, service-skills, design-systems, craft, templates.
+#
+# This was seven separate COPY lines and it forgot SIX of them, one at a time, each discovered in
+# production. Every one of these resolvers fails soft — the directory is missing, the resolver
+# returns nothing, the health check passes, and the product is quietly worse in a way no error
+# surface mentions:
+#
+#   · blueprints        404 to every blueprint
+#   · workflows         a `lib`-referencing workflow 404s mid-run
+#   · service-skills    the curated skill library seeds EMPTY
+#   · design-systems    every deliverable degrades to no house style at all
+#   · craft             every client-facing run produced without the rules it is held to
+#   · packs             4,442 `workflow:*` calls in production and ZERO `pack:*`, ever, while four
+#                       shipped wedges declared packs they could never reach
+#
+# One line cannot be forgotten six times, and an eighth directory added under it is carried without
+# anybody remembering to say so. `the-image-carries-what-the-kernel-reads.test.ts` still checks the
+# general property, because a new resolver could always point somewhere else entirely.
+#
+# `templates/business-template` is a SIBLING of this Docker context (it is also its own image), so CI
+# stages it in before building; `library/templates/.gitkeep` keeps this valid when it has not.
+COPY library ./library
 
 ENV PORT=4000
 EXPOSE 4000

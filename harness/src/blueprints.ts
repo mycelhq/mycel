@@ -29,6 +29,7 @@ import {
 } from "./capabilities";
 import { hasSecret } from "./secrets";
 import { loadWedge } from "./wedge";
+import { libraryPath } from "./library";
 
 /**
  * One thing a business needs before it can run.
@@ -187,7 +188,7 @@ export function manifestSatisfiesBlueprint(slug: string, raw: unknown): string[]
 }
 
 export function blueprintsDir(): string {
-  return process.env.MYCEL_BLUEPRINTS_DIR ?? join(process.cwd(), "blueprints");
+  return libraryPath("blueprints", process.env.MYCEL_BLUEPRINTS_DIR);
 }
 
 export function listBlueprints(): Blueprint[] {

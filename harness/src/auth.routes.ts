@@ -16,6 +16,7 @@
 // file next to project and task routes that share none of that.
 import type { Hono } from "hono";
 import { getIdentityStore, signupInviteOnly } from "./identity";
+import { normaliseReferralCode } from "./referrals";
 // `rateLimited` is aliased to `limited` in server.ts and the routes below use that name; kept the
 // alias so the moved bodies read identically to what they replaced.
 import { clientKey, rateLimitedDurable as limitedDurable } from "./rate-limit";
@@ -44,6 +45,8 @@ app.post("/v1/auth/signup", async (c) => {
     password?: string;
     org_name?: string;
     invite_token?: string;
+    /** Somebody's referral code, as typed or as pasted out of a link. See `normaliseReferralCode`. */
+    referral_code?: string;
   };
   const email = (b.email ?? "").trim().toLowerCase();
   const password = b.password ?? "";
@@ -62,6 +65,25 @@ app.post("/v1/auth/signup", async (c) => {
   // the reset flow where the same honesty would be an enumeration oracle for a stranger.
   if (!out) return c.json({ error: "that email already has an account — sign in instead" }, 409);
   if ("entry" in gate && gate.entry) identity.consumeSignupAccess(gate.entry);
+
+  /**
+   * ═══ WHO BROUGHT THEM, RECORDED AFTER THE ACCOUNT EXISTS AND NEVER BEFORE ═══
+   *
+   * Every failure here is SILENT, and that is the whole design. A code that was mistyped, expired
+   * with a rotated link, or belongs to the same org somebody is signing up from must cost nothing:
+   * the account is already created and the person is already through the door. A signup that 400s
+   * because a referral code was wrong would trade a customer for a rounding error in an attribution
+   * table.
+   *
+   * The reverse — attributing when we should not — is guarded in `attributeReferral`: once only,
+   * never onto itself, and only to an org that exists.
+   */
+  const referral = normaliseReferralCode(b.referral_code);
+  if (referral) {
+    const referrer = identity.orgByReferralCode(referral);
+    const orgId = out.projects[0]?.org_id;
+    if (referrer && orgId) identity.attributeReferral(orgId, referrer.id);
+  }
   return c.json({ token: out.session.token, member: out.member, projects: out.projects }, 201);
 });
 

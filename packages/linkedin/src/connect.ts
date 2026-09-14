@@ -34,6 +34,8 @@ import {
   adoptStickyKey,
   proxyPoolEnabled,
   releaseProxy,
+  provisionDedicatedIp,
+  releaseDedicatedIp,
   resolveConnectProxy,
   stickyKeyForLiAt,
   type ProxyProviderId,
@@ -274,6 +276,24 @@ async function newConnection(input: ConnectBase & { label: string }): Promise<{ 
   let provider: ProxyProviderId = "byo";
   let leaseCountry: string | undefined;
   try {
+    /**
+     * BUY THE ADDRESS FIRST, when this deployment provisions them.
+     *
+     * `provisionDedicatedIp` writes the lease and `resolveConnectProxy` then finds it — an existing
+     * brightdata lease always wins over minting a session URL. Ordered this way so there is exactly
+     * one place that decides what a lease looks like, and so a deployment with no account API key
+     * falls through to the behaviour that exists today without a branch here.
+     *
+     * It is allowed to fail into the gateway. An IP purchase that cannot complete — a provider
+     * outage, a country with no stock — should not cost a founder their connect: they get the sticky
+     * session, which is what every deployment had until now, and the next reconnect tries again.
+     */
+    await provisionDedicatedIp({
+      connectionId: conn.id,
+      ...(input.stickyKey ? { stickyKey: input.stickyKey } : {}),
+      ...(input.country ? { country: input.country } : {}),
+    }).catch(() => undefined);
+
     const resolved = resolveConnectProxy({
       connectionId: conn.id,
       stickyKey: input.stickyKey,
@@ -1467,6 +1487,21 @@ export async function disconnectLinkedIn(connectionId: string): Promise<void> {
   forgetLiveSession(connectionId);
   await deleteSecret(connectionId).catch(() => {});
   await deleteSecret(proxyKey(connectionId)).catch(() => {});
+  /*
+    GIVE THE ADDRESS BACK BEFORE DROPPING THE LEDGER ROW — the order is the whole thing. The row is
+    where the IP is recorded, so `releaseProxy` first would delete the only note of what we are
+    paying for, and the charge would run every month with nothing using it.
+
+    It refuses on its own when another connection still shares that LinkedIn member's address, and it
+    never throws: a disconnect must not fail because the provider was unreachable. A `released:
+    false` with an ip is worth a line in the log — it means we are still paying.
+  */
+  const gave = await releaseDedicatedIp(connectionId).catch(
+    () => ({ released: false }) as { released: boolean; ip?: string },
+  );
+  if (gave.ip && !gave.released) {
+    console.warn(`[mycel] dedicated IP ${gave.ip} was not released — still billing until it is`);
+  }
   releaseProxy(connectionId);
   forgetUsage(connectionId);
   await connectionStore().deleteConnection(connectionId);

@@ -7,7 +7,7 @@ Nothing in it is true of anybody.)*
 
 ## Client summary
 
-Three contractors, 112 hours logged, £14,560 billable, and one problem worth ten minutes of your
+Three contractors, 112 hours logged, $14,560 billable, and one problem worth ten minutes of your
 time: R. Adeyemi is 31 hours into a statement of work capped at 40 with two weeks left on the
 engagement. At the current rate it runs out on Tuesday.
 
@@ -20,10 +20,10 @@ extension needs signing before the 25th.
 
 | Contractor | Client | Hours | Rate | Billable |
 | --- | --- | ---: | ---: | ---: |
-| R. Adeyemi | Halden Group | 42 | £145 | £6,090 |
-| T. Vasquez | Halden Group | 38 | £130 | £4,940 |
-| K. Mbeki | Orrell Partners | 32 | £110 | £3,520 |
-| **Total** | | **112** | | **£14,560** |
+| R. Adeyemi | Halden Group | 42 | $145 | $6,090 |
+| T. Vasquez | Halden Group | 38 | $130 | $4,940 |
+| K. Mbeki | Orrell Partners | 32 | $110 | $3,520 |
+| **Total** | | **112** | | **$14,560** |
 
 All three timesheets submitted. Adeyemi's arrived Thursday after one chase; the other two were in by
 Wednesday.
@@ -50,7 +50,7 @@ conversation on a Monday is routine account management. Your relationship, your 
 
 ### 2. Invoice 2201 — drafted, needs release
 
-£14,560 to Halden Group for the week, lines matching the table above. Ready to send.
+$14,560 to Halden Group for the week, lines matching the table above. Ready to send.
 
 ### 3. Orrell extension — sign by the 25th
 

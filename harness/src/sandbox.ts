@@ -29,6 +29,13 @@ export interface ExecResult {
  * a preview server squatting on 3000 would make verify pass against the wrong process (a false
  * green). Lives here rather than in runtime.ts because `DockerSandbox` must publish it at `acquire`
  * time — docker cannot map a port after the container exists.
+ *
+ * THE SPLIT IS NOT ENOUGH ON ITS OWN, and believing it was cost the preview entirely. Next 16 locks
+ * the dev server to its DIRECTORY, not its port, and both servers run in ~/app — so verify's
+ * throwaway, orphaned by a kill aimed at npm's wrapper instead of its child, refused every preview
+ * boot with "Another next dev server is already running" while this comment said we were safe. The
+ * port number still matters for the false-green argument above; the lock is cleared in
+ * `startPreview`, and verify now kills its own process tree.
  */
 export const PREVIEW_PORT = 4321;
 

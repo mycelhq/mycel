@@ -10,7 +10,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
-import { freshProjectId, makeFreshApp } from "./helpers";
+import { api, freshProjectId, makeFreshApp } from "./helpers";
 import { getDomainStore } from "../src/domain";
 import { _resetBilling, getBillingStore } from "../src/billing";
 import {
@@ -494,4 +494,111 @@ test("a malformed recurrence is refused rather than anchored to today", () => {
   })!;
   assert.equal(plan.lines[0]!.recurrence, undefined, "no anchor, no recurrence — the founder sees it is not running");
   assert.equal(plan.lines[1]!.recurrence, undefined, "and recurrence that has drifted onto a milestone is dropped");
+});
+
+// ─────────────────────────────────────────────────────────────────────────────────────────────────
+// The door a founder actually uses. Everything above tests the engine; this tests whether anybody
+// can reach it.
+// ─────────────────────────────────────────────────────────────────────────────────────────────────
+
+test("a founder can turn a one-time engagement into a retainer, and it bills the next period", async () => {
+  /**
+   * ═══ THE BUG: THE ENGINE WAS UNREACHABLE ═══
+   *
+   * `PUT /v1/cases/:id/money-plan` rebuilt each incoming line field by field — id, label,
+   * amount_minor, kind, status, deliverable_id — and `recurrence` was not on the list. So the field
+   * was discarded BEFORE `applyMoneyPlanEdit` could validate it, and every test above this line
+   * exercised a path no founder could take.
+   *
+   * What that cost: a founder who delivered a one-off and then agreed a monthly could set the line's
+   * kind to `retainer`, see the word on the screen, save, and get a line that bills exactly once —
+   * because `MoneyPlanLine` says plainly that a retainer line with no recurrence bills like a
+   * one-off. The only recurring retainers in production were the ones a wedge's kickoff or a
+   * proposal's cadence happened to stamp on the way past.
+   *
+   * So this test goes through the HTTP route, not the module, and then bills it: the assertion is
+   * that the thing a founder clicks produces an invoice next month.
+   */
+  const { app, store } = await makeFreshApp();
+  _resetBilling();
+
+  const created = await api(app, "cases", {
+    method: "POST",
+    body: JSON.stringify({ wedge: "books-keeper", title: "Ridgeline — cleanup then monthly" }),
+  });
+  assert.equal(created.status, 201);
+  const kase = created.json;
+
+  // The one-off, as it was sold: a deposit and a milestone, no recurrence anywhere.
+  const once = await api(app, `cases/${kase.id}/money-plan`, {
+    method: "PUT",
+    body: JSON.stringify({
+      currency: "GBP",
+      lines: [
+        { label: "Deposit", amount_minor: 50_000, kind: "deposit" },
+        { label: "Cleanup", amount_minor: 150_000, kind: "milestone" },
+      ],
+    }),
+  });
+  assert.equal(once.status, 200);
+  assert.equal(once.json.money_plan.lines.length, 2);
+
+  // Then they agree a monthly on top of it, which is the sentence this product exists to support.
+  const withRetainer = await api(app, `cases/${kase.id}/money-plan`, {
+    method: "PUT",
+    body: JSON.stringify({
+      currency: "GBP",
+      lines: [
+        ...once.json.money_plan.lines.map((l: any) => ({ id: l.id, label: l.label, amount_minor: l.amount_minor, kind: l.kind })),
+        {
+          label: "Monthly bookkeeping",
+          amount_minor: 90_000,
+          kind: "retainer",
+          recurrence: { every: "month", interval: 1, anchor: "2026-03-01" },
+        },
+      ],
+    }),
+  });
+  assert.equal(withRetainer.status, 200);
+  const line = withRetainer.json.money_plan.lines.find((l: any) => l.kind === "retainer");
+  assert.ok(line, "the retainer line survived the save");
+  assert.equal(line.recurrence?.anchor, "2026-03-01", "THE FIELD THE ROUTE USED TO DROP");
+  assert.equal(line.recurrence?.every, "month");
+  assert.equal(line.recurrence?.interval, 1);
+  assert.equal(line.recurrence?.state, "active", "a saved cadence is running, not parked");
+
+  // And the one-off lines are untouched, because adding a retainer must not rewrite what was sold.
+  assert.deepEqual(
+    withRetainer.json.money_plan.lines.filter((l: any) => l.kind !== "retainer").map((l: any) => l.amount_minor),
+    [50_000, 150_000],
+  );
+
+  // The engine now sees it. Two periods have passed by April, and only the due ones bill.
+  const fresh = await getDomainStore().getCase(kase.id);
+  const plan = readMoneyPlan(fresh!.data)!;
+  const due = retainerPeriodsDue(plan.lines.find((l) => l.kind === "retainer")!.recurrence!, "2026-04-15");
+  assert.ok(due.length >= 1, "a cadence saved through the route is a cadence the sweep can read");
+  assert.equal(due[0]!.start, "2026-03-01", "billing starts at the anchor, not at the save");
+  void store;
+});
+
+test("a cadence the route cannot validate does not become a silent one-off", async () => {
+  /**
+   * THE BUG THIS PREVENTS: passing `recurrence` straight through invites the opposite failure — a
+   * malformed cadence being stored and then re-read differently after a deploy, which MOVES PERIOD
+   * BOUNDARIES under a ledger that has already claimed them. `readRetainerRecurrence` refuses
+   * anything without a YYYY-MM-DD anchor, so the line saves as a one-off. That is the right answer:
+   * a founder sees no cadence on the screen and tries again, and nothing has been billed wrongly.
+   */
+  const { app } = await makeFreshApp();
+  const kase = (await api(app, "cases", { method: "POST", body: JSON.stringify({ wedge: "books-keeper", title: "bad cadence" }) })).json;
+  const saved = await api(app, `cases/${kase.id}/money-plan`, {
+    method: "PUT",
+    body: JSON.stringify({
+      currency: "GBP",
+      lines: [{ label: "Monthly", amount_minor: 1000, kind: "retainer", recurrence: { every: "month", interval: 1, anchor: "next tuesday" } }],
+    }),
+  });
+  assert.equal(saved.status, 200);
+  assert.equal(saved.json.money_plan.lines[0].recurrence, undefined, "refused, not anchored to today");
 });

@@ -21,7 +21,7 @@ test("packs: share_of_voice@1 is installed and digest-pinned", () => {
   assert.ok(packs.some((p) => p.name === "share_of_voice" && p.version === 1));
   const spec = resolvePack("share_of_voice@1");
   assert.ok(spec);
-  const entry = join(wedgesDir(), "..", "packs", "share_of_voice", "1", "run.mjs");
+  const entry = join(wedgesDir(), "..", "library", "packs", "share_of_voice", "1", "run.mjs");
   const live = createHash("sha256").update(readFileSync(entry)).digest("hex");
   assert.equal(spec!.digest, live, "pack.json digest must match run.mjs bytes");
 });

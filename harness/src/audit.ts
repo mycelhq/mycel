@@ -171,6 +171,12 @@ export type AuditAction =
    * to by hand are indistinguishable from each other once the row has been overwritten.
    */
   | "org.plan_changed"
+  /*
+    A referral converted to a paying account. In the REFERRER's chain, because it is the evidence
+    behind a credit they will eventually ask about — and because the referred org has no business
+    reading a record of who introduced them.
+  */
+  | "referral.credited"
   /**
    * A session was minted for an account with no ceilings.
    *

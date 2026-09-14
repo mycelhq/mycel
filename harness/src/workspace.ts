@@ -34,6 +34,7 @@ import {
   type SubstantiveSpec,
 } from "./substantive";
 import type { SiteFile } from "./sitequality";
+import { libraryPath } from "./library";
 
 // ---------------------------------------------------------------------------------------------
 // What a manifest may declare
@@ -531,7 +532,7 @@ export function seedCandidates(name: string): string[] {
   const env = process.env.MYCEL_TEMPLATES_DIR;
   return env
     ? [join(env, safe)]
-    : [join(process.cwd(), "templates", safe), join(process.cwd(), "..", safe), join(process.cwd(), safe)];
+    : [join(libraryPath("templates"), safe), join(process.cwd(), "..", safe), join(process.cwd(), safe)];
 }
 
 export function seedRoot(name: string): string | null {
@@ -667,8 +668,57 @@ export function readSeed(name: string, exclude: string[] = DEFAULT_EXCLUDES): Se
 export interface SeedOutcome extends SeedResult {
   /** Files actually written into the sandbox. Below `files.length` only if a write failed. */
   written: number;
+  /**
+   * The workspace was already seeded by an earlier session in this sandbox, so nothing was written.
+   * `files` still describes the scaffold; `written` is 0.
+   */
+  reused?: boolean;
 }
 
+/**
+ * Written on the first seed, in the sandbox HOME and never inside the workspace.
+ *
+ * Inside `ws.dir` was the obvious place and it was wrong: `substantive.ts` diffs the seeded tree
+ * against the built one to decide whether the run actually authored anything, and a marker in the
+ * workspace shows up as a file the AGENT added — inflating the change report and weakening the gate
+ * that exists to catch a build which changed six strings and a hex value. `substantive.test.ts`
+ * caught it on the first full run ("seeding must not invent files").
+ *
+ * Keyed on the workspace so one sandbox with two workspaces seeds both. The sandbox dies with the
+ * run, so the marker has exactly the lifetime it needs and no exclusion list has to stay in sync.
+ */
+const seedMark = (dir: string) => `.mycel-seeded-${dir.replace(/[^A-Za-z0-9]+/g, "-")}`;
+
+/**
+ * ═════════════════════════════════════════════════════════════════════════════════════════════════
+ * A SEED HAPPENS ONCE PER WORKSPACE, NOT ONCE PER SESSION
+ * ═════════════════════════════════════════════════════════════════════════════════════════════════
+ *
+ * The repair loop in `orchestrator.ts` re-enters `runOpenCodeTask` against the SAME live sandbox,
+ * and this function used to overwrite all 634 scaffold files every time. Read the feed of the build
+ * that failed in production on 13 September:
+ *
+ *     06:50:06  workspace ~/app: seeded from business-template — 634 files
+ *     07:00:25  verification failed — repair round 1 of 2: handing the verify output back
+ *     07:02:13  workspace ~/app: seeded from business-template — 634 files      <- wiped
+ *     07:08:56  verification failed — repair round 2 of 2
+ *     07:10:44  workspace ~/app: seeded from business-template — 634 files      <- wiped again
+ *     07:16:57  failed: the deployed site still carries the template's own copy
+ *
+ * The fault being repaired was TEMPLATE COPY LEFT ON THE PAGE. Every repair round restored the
+ * template copy, then handed the agent a prompt reading "Your previous session already built the
+ * application in ~/app — do NOT start over and do NOT scaffold anything new." The one instruction
+ * the kernel had just made impossible to obey.
+ *
+ * Files the agent CREATED survived (the scaffold has nothing at those paths). Files the agent
+ * EDITED did not — and the residue lives in exactly those: the marketing content, the home page,
+ * the shared components. So the loop could only ever reproduce the fault it was repairing, and it
+ * burned sixteen minutes of sandbox doing it, twice.
+ *
+ * The marker is a file rather than a flag through the call chain because the hazard is re-ENTRY:
+ * anything that reaches this function against a built workspace must be safe, whether it came from
+ * the repair loop, a resumed turn, or something not written yet.
+ */
 export async function seedWorkspace(
   sandbox: Pick<Sandbox, "exec" | "writeFile">,
   ws: ResolvedWorkspace,
@@ -677,6 +727,19 @@ export async function seedWorkspace(
   // "empty" from "wrong path", and the run that motivated this file spent its budget finding out.
   await sandbox.exec(`cd ~ && mkdir -p ${q(ws.dir)}`, 60_000);
   if (!ws.seed) return { root: null, files: [], skipped: 0, truncated: false, written: 0 };
+
+  /*
+    Read BEFORE the scaffold is resolved, so a reused workspace costs one `test -f` rather than a
+    full walk of the template directory. `-f` on the marker and not `-d` on the workspace: the
+    directory was created three lines up and is never evidence of anything.
+  */
+  const mark = await sandbox
+    .exec(`test -f ~/${seedMark(ws.dir)} && echo SEEDED || true`, 30_000)
+    .catch(() => ({ stdout: "", stderr: "", code: 1 }));
+  if (mark.stdout.includes("SEEDED")) {
+    const seed = readSeed(ws.seed, ws.exclude);
+    return { ...seed, written: 0, reused: true };
+  }
 
   const seed = readSeed(ws.seed, ws.exclude);
   if (!seed.root) {
@@ -724,6 +787,13 @@ export async function seedWorkspace(
     await sandbox.writeFile(`${ws.dir}/${f.name}`, f.content);
     written++;
   }
+  /*
+    LAST, so a seed that dies halfway is not remembered as finished. A crash between the first file
+    and the marker leaves the workspace unmarked and the next attempt reseeds it — which is the
+    right way round: re-seeding a half-written scaffold costs a minute, and skipping one costs the
+    run.
+  */
+  await sandbox.writeFile(seedMark(ws.dir), `${ws.seed}\n`);
   return { ...seed, written };
 }
 

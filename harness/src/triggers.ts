@@ -36,6 +36,7 @@ import { getIdentityStore } from "./identity";
 import { enqueueTask } from "./queue";
 import type { Store } from "./store";
 import { loadWedge } from "./wedge";
+import { serviceNotEnabled, unknownService } from "./service-words";
 
 /**
  * A stable UUID for a delivery.
@@ -96,13 +97,13 @@ export async function startRunFromTrigger(args: {
   // The wedge must still exist and still be enabled for the project. A founder who removes a wedge
   // shouldn't discover it's still running because a webhook kept firing.
   const wedge = loadWedge(sub.wedge);
-  if (!wedge) return { ok: false, status: 404, reason: `unknown wedge: ${sub.wedge}` };
+  if (!wedge) return { ok: false, status: 404, reason: unknownService(sub.wedge) };
   const types = wedge.manifest.task_types;
   if (types && Object.keys(types).length && !types[sub.task_type]) {
     return { ok: false, status: 404, reason: `unknown task_type "${sub.task_type}"` };
   }
   if (!identity.projectAllowsWedge(projectId, sub.wedge)) {
-    return { ok: false, status: 404, reason: `wedge "${sub.wedge}" is not enabled for this project` };
+    return { ok: false, status: 404, reason: serviceNotEnabled(sub.wedge) };
   }
 
   // Idempotency, before any limit is spent: a redelivery must not consume plan budget either.

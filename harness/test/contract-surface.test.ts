@@ -187,7 +187,26 @@ test("the generated app's ingest key can only append, and only to its own projec
   // the numbers "land in the right place". The first presents a credential on a path it was not
   // scoped for. The second is the exact shape of the cross-tenant bug `insight/keys.ts` exists to
   // make impossible — and two cross-tenant leaks have already shipped in this codebase.
-  const INSIGHT = readFileSync(join(ROOT, "business-template/lib/insight.ts"), "utf8");
+  /**
+   * ═══ READ WITH THE COMMENTS BLANKED OUT, AND THAT IS NOT A WEAKENING ═══
+   *
+   * This scanned the raw file, and the file it scans is the one module in the template whose whole
+   * job is REFUSING to read identifying things — so it is also the one module that has to explain,
+   * in prose, which things it refuses to read. The sentence "no path, no referrer, no identifier"
+   * failed the assertion below on the word `referrer`, in a comment stating the rule the assertion
+   * enforces.
+   *
+   * Seven guards in this repo have now tripped on their own documentation or somebody else's, and
+   * `cloud/test/_decomment.ts` is the ruling: comments are ARGUMENTS for rules, never evidence of
+   * them. Spans are blanked rather than removed so line numbers survive — a guard that strips
+   * comments and then reports "line 41" points at the wrong line, which is worse than not reporting
+   * one.
+   *
+   * What is lost: nothing. A comment cannot read a header.
+   */
+  const INSIGHT = readFileSync(join(ROOT, "business-template/lib/insight.ts"), "utf8")
+    .replace(/\/\*[\s\S]*?\*\//g, (m) => m.replace(/[^\n]/g, " "))
+    .replace(/\/\/[^\n]*/g, (m) => " ".repeat(m.length));
 
   // One endpoint, named literally, with no template hole in the path part.
   const paths = [...INSIGHT.matchAll(/\/v1\/[A-Za-z0-9/_-]*/g)].map((m) => m[0]);

@@ -158,7 +158,7 @@ app.post("/v1/skills/library", async (c) => {
     source_url: typeof b.source_url === "string" ? b.source_url : undefined,
   });
   if (!parsed) return c.json({ error: "a skill needs a name (frontmatter `name:` or a `# Heading`) and a body" }, 400);
-  if (!parsed.domains.length) return c.json({ error: "tag the skill with at least one domain, or no wedge can find it" }, 400);
+  if (!parsed.domains.length) return c.json({ error: "tag the skill with at least one domain, or no service can find it" }, 400);
   return c.json({ skill: await addLibrarySkill(domain, parsed) });
 });
 

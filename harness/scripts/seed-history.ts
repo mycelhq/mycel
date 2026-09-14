@@ -44,6 +44,7 @@
 import { env, exit, argv } from "node:process";
 import { randomUUID, createHash } from "node:crypto";
 import pg from "pg";
+import { FILES, SUMMARY, seedVersions } from "./lib/revisions";
 
 const arg = (flag: string): string | undefined => {
   const i = argv.indexOf(flag);
@@ -218,6 +219,29 @@ const PEOPLE_FOR_CASES: { slug: string; name: string; stage: string; location: s
   { slug: "stuart-bell", name: "Stuart Bell", stage: "lost", location: "Newcastle, UK" },
 ];
 
+
+/**
+ * A believable hour for a booked call, stable per person.
+ *
+ * Weekdays only, 10:00–16:00 UTC, never on the hour twice in a row. A demo whose meetings are all at
+ * 09:00 tomorrow reads as fixture data; one at 14:30 on Thursday reads as somebody's week.
+ */
+function meetingSlot(slug: string): string {
+  const d = new Date();
+  // 1–6 days out, skipping the weekend so a Friday seed does not book a Sunday.
+  let ahead = 1 + Math.floor(rnd(`meet:${slug}`) * 6);
+  const at = new Date(d.getTime());
+  while (ahead > 0) {
+    at.setUTCDate(at.getUTCDate() + 1);
+    const day = at.getUTCDay();
+    if (day !== 0 && day !== 6) ahead -= 1;
+  }
+  const hour = 10 + Math.floor(rnd(`hour:${slug}`) * 7);
+  const half = rnd(`half:${slug}`) < 0.5 ? 0 : 30;
+  at.setUTCHours(hour, half, 0, 0);
+  return at.toISOString();
+}
+
 async function main() {
   if (!URL) throw new Error("MYCEL_SEED_DB_URL (or DATABASE_URL) is required");
   if (!WANT_ORG || !PROJECT) throw new Error("--org-id and --project-id are both required");
@@ -357,6 +381,29 @@ async function main() {
       if (pending || rnd(`a:${seed}`) < 0.04) {
         const waited = 25 + rnd(`w:${seed}`) * 320; // minutes
         const decided = pending ? null : new Date(created.getTime() + waited * 60_000);
+        /**
+         * ═══ THE LINE THAT IS SUPPOSED TO FALL ═══
+         *
+         * "How much still needs you" reads `involvementByWeek`, which counts `auto_approved` as
+         * WITHOUT you and everything else as WITH you. This seed only ever wrote `approved` and
+         * `pending`, so the demo drew a flat line at 100% — the product's headline promise, plotted,
+         * failing, in the shop window.
+         *
+         * That chart is deliberately allowed to say the promise is not being kept; its own note
+         * argues for that, and in PRODUCTION it should keep saying it until it is. But the demo
+         * exists to show the product working, and a business that has been running for ten weeks and
+         * granted standing approvals is one where the line falls. So it falls — from everything
+         * stopping at a person in week one to about a third by the last week.
+         *
+         * It is not decoration, and the demo stays internally consistent: `seed-tenant` grants the
+         * standing approvals that would have produced exactly this, so a visitor who follows the
+         * caption to Standing approvals finds the rules that explain the fall.
+         */
+        const weeksAgo = Math.floor(d / 7);
+        const totalWeeks = Math.ceil(70 / 7);
+        // Oldest week ~0% unattended, newest ~65%. `d` counts days BACK, so it falls as d shrinks.
+        const unattended = 0.65 * (1 - weeksAgo / totalWeeks);
+        const alone = !pending && rnd(`auto:${seed}`) < unattended;
         const draft = APPROVAL_DRAFTS[Math.floor(rnd(`d:${seed}`) * APPROVAL_DRAFTS.length)]!;
         await db.query(
           `INSERT INTO public.approvals (approval_id, task_id, action, risk, preview, status, created_at, decided_at)
@@ -371,7 +418,7 @@ async function main() {
               client: client.display_name,
               connection: "Zoho — hello@ridgelinestudio.com",
             }),
-            decided ? "approved" : "pending", created, decided,
+            pending ? "pending" : alone ? "auto_approved" : "approved", created, decided,
           ],
         );
       }
@@ -380,18 +427,6 @@ async function main() {
   console.log(`  tasks       ${inserted} across 70 days`);
 
   // ── 2. DELIVERABLES, with bytes somebody can open ─────────────────────────
-  const FILES = [
-    { name: "ridgeline-visibility-april.csv", type: "text/csv", kind: "report", title: "Ridgeline — April AI visibility" },
-    { name: "ridgeline-visibility-march.csv", type: "text/csv", kind: "report", title: "Ridgeline — March AI visibility" },
-    { name: "fairmont-listings-audit.csv", type: "text/csv", kind: "report", title: "Fairmont Dental — listings audit" },
-    { name: "willow-pricing-copy.md", type: "text/markdown", kind: "document", title: "Willow & Pine — pricing page copy" },
-    { name: "marlow-q2-content-plan.md", type: "text/markdown", kind: "document", title: "Marlow — Q2 content plan" },
-    { name: "delgado-launch-review.md", type: "text/markdown", kind: "document", title: "Delgado — post-launch review" },
-    { name: "sunset-lifecycle-emails.md", type: "text/markdown", kind: "document", title: "Sunset — lifecycle email sequence" },
-    { name: "cedar-local-seo.csv", type: "text/csv", kind: "report", title: "Cedar Home Care — local SEO positions" },
-    { name: "pike-reviews-summary.csv", type: "text/csv", kind: "report", title: "Pike Street — reviews summary" },
-    { name: "ridgeline-competitor-sweep.csv", type: "text/csv", kind: "report", title: "Ridgeline — competitor sweep" },
-  ];
 
   /**
    * ═══════════════════════════════════════════════════════════════════════════════════════════════
@@ -508,28 +543,6 @@ async function main() {
    * email quotes, and for most clients it is the whole deliverable — they read it and never open
    * the attachment. So it says the finding, not the fact that a finding exists.
    */
-  const SUMMARY: Record<string, string> = {
-    "ridgeline-visibility-april.csv":
-      "Named in 6 of 9 buyer questions, up from 4 in March. The one still missing you is \"best 3PL for ecommerce\" — DSV wins it by listing the platforms they integrate with, which your solutions page does not.",
-    "ridgeline-visibility-march.csv":
-      "Named in 4 of 9. Two of the misses are the same page problem: the answer is below the case studies, so nothing reads it as the answer.",
-    "ridgeline-competitor-sweep.csv":
-      "You take the answer outright on three questions and lose six. Five of the six go to a page that answers in its first paragraph; yours answer in the third.",
-    "fairmont-listings-audit.csv":
-      "Fairview Road shows the wrong Saturday hours where most people look, and Marsh Lane is missing from Bing entirely. Nine of sixteen listings are clean.",
-    "cedar-local-seo.csv":
-      "Harpenden moved from 7 to 3 and into the map pack after the hours fix. Redbourn has no page of its own — everything there ranks off the St Albans page, which is why it sits at 9.",
-    "pike-reviews-summary.csv":
-      "4.6 across 41 Google reviews. Lunch service speed is the one theme moving the wrong way, and \"card machine declined\" is new this month — four mentions in thirty days.",
-    "willow-pricing-copy.md":
-      "Rewritten pricing page, plus the query behind the tiers table. Ready for the build.",
-    "marlow-q2-content-plan.md":
-      "Twelve pieces for Q2, sequenced so the two that need a partner interview are booked first.",
-    "delgado-launch-review.md":
-      "Eleven enquiries against two before the rebuild. One form field is costing submissions.",
-    "sunset-lifecycle-emails.md":
-      "Six emails, the second half of the lifecycle build. Copy and the segment each one sends to.",
-  };
 
   const csv = (title: string, name: string, seed: string) => {
     const written = CSV[name];
@@ -771,15 +784,50 @@ async function main() {
       [artifactId, owner.id, f.name, f.type, body, at(2 + i), Buffer.byteLength(body), kase.client_id],
     );
     await db.query(
-      `INSERT INTO public.deliverables (id, project_id, case_id, client_id, title, kind, status, current_version, created_at, updated_at)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$9)
+      `INSERT INTO public.deliverables (id, project_id, case_id, client_id, title, kind, status, current_version, created_at, updated_at, accepted_at)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$9,$10)
        ON CONFLICT (id) DO NOTHING`,
       [
         `del_${createHash("sha1").update(f.name).digest("hex").slice(0, 8)}`,
         PROJECT, kase.id, kase.client_id, f.title, f.kind,
-        i < 7 ? "accepted" : "delivered",
-        i === 0 ? 3 : i === 1 ? 2 : 1,
+        /*
+          ═══ "delivered" IS NOT A STATE THIS PRODUCT HAS ═══
+
+          This read `i < 7 ? "accepted" : "delivered"`, and `delivered` is not in `DeliverableStatus`
+          — the union is drafting | in_review | with_client | changes_requested | accepted |
+          withdrawn. Three rows on the LIVE DEMO carried it, which means three rows whose state
+          nothing in the product can describe: `DELIVERABLE_STATES` has no entry, so `state_note` has
+          no sentence, the portal has no `client_sees` line, and every switch on status falls through.
+
+          `with_client` is the state it was reaching for and it says the thing out loud — "sent —
+          waiting on your client to accept it or ask for changes". That is the half of the loop a
+          demo most needs to show.
+
+          This is what writing seed data in raw SQL costs. The route would have refused the value;
+          an INSERT takes whatever string it is handed. See `accepted_at` directly below for the
+          second half of the same bill.
+        */
+        i < 7 ? "accepted" : "with_client",
+        // Read from the same place the loop below reads it, so the row's claim and the rows that
+        // back it cannot drift. They did: this said 3 and the seeder wrote none.
+        seedVersions({ index: i, baseDaysAgo: 2 + i, finalSummary: "" }).length,
         at(2 + i),
+        /*
+          ═══ AND THE STAMP, WITHOUT WHICH "ACCEPTED" IS A WORD AND NOT A FACT ═══
+
+          Seven rows said `accepted` and left `deliverables.accepted_at` null, because only the
+          VERSION was being stamped. The parent row is what every reader actually joins on:
+
+            · `founder-alerts.ts` skips on `!d.accepted_at`, so the demo never fired the alert that
+              says a client accepted something — the single best moment this product has.
+            · `hours_to_accept` is null, so the demo cannot say how fast it turns work around.
+            · The per-service impact panel counts `accepted_at` and reads zero on a tenant with
+              seven accepted deliverables in it.
+
+          The route sets both together (`transitionDeliverable` stamps the row, `settleVersion`
+          stamps the version). Reaching behind it means remembering both, and this forgot one.
+        */
+        i < 7 ? at(1 + i) : null,
       ],
     );
     /**
@@ -794,35 +842,33 @@ async function main() {
      * Where `current_version` is more than one, the earlier versions are seeded too, each with the
      * change the client asked for. That history is not decoration: accept-or-ask-for-changes is the
      * loop this product sells, and a demo where nothing was ever sent back shows the easy half.
+     *
+     * WHICH ONES AND WHAT THEY SAID LIVE IN `lib/revisions.ts`, not here, because the direction of
+     * the demo's learning curve — the answer it gives to the only question the product is sold on —
+     * used to be an emergent property of two ternaries in this loop, and it came out backwards. It is
+     * a claim now, and `test/the-demo-argues-for-the-product.test.ts` checks it.
      */
-    const finalV = i === 0 ? 3 : i === 1 ? 2 : 1;
     const accepted = i < 7;
-    for (let v = 1; v <= finalV; v++) {
-      const last = v === finalV;
+    for (const ver of seedVersions({ index: i, baseDaysAgo: 2 + i, finalSummary: SUMMARY[f.name] ?? f.title })) {
       await db.query(
         `INSERT INTO public.deliverable_versions
            (id, project_id, deliverable_id, version, summary, artifact_ids, task_id, author,
             created_at, released_at, accepted_at, change_request, change_requested_at)
-         VALUES ($1,$2,$3,$4,$5,$6,$7,'agent',$8,$8,$9,$10,$11)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$9,$10,$11,$12)
          ON CONFLICT (id) DO NOTHING`,
         [
           randomUUID(),
           PROJECT,
           `del_${createHash("sha1").update(f.name).digest("hex").slice(0, 8)}`,
-          v,
-          last
-            ? (SUMMARY[f.name] ?? f.title)
-            : `${SUMMARY[f.name] ?? f.title} (superseded — see version ${v + 1}.)`,
-          // Only the version a client can actually open carries the file. An earlier draft that was
-          // sent back is a record of the ask, not a second copy of the work.
-          last ? [artifactId] : [],
+          ver.version,
+          ver.summary,
+          ver.carriesFile ? [artifactId] : [],
           owner.id,
-          at(2 + i + (finalV - v) * 4),
-          last && accepted ? at(1 + i) : null,
-          last ? null : v === 1 && finalV === 3
-            ? "The Fairview hours are wrong here too — can you check all four practices before this goes out?"
-            : "Can you put the number we agreed in the summary rather than only in the table?",
-          last ? null : at(2 + i + (finalV - v) * 4 - 1),
+          ver.author,
+          at(ver.daysAgo),
+          ver.carriesFile && accepted ? at(1 + i) : null,
+          ver.changeRequest,
+          ver.changeRequestedDaysAgo === null ? null : at(ver.changeRequestedDaysAgo),
         ],
       );
     }
@@ -893,8 +939,8 @@ async function main() {
     // Touch count rises with stage: somebody at dm2 has been written to more than somebody queued.
     const touches = Math.max(0, STAGE_ORDER.indexOf(p.stage));
     await db.query(
-      `INSERT INTO public.cases (id, project_id, wedge, title, stage, status, data, due_at, history, created_at, updated_at)
-       VALUES ($1,$2,'gtm-operator',$3,$4,$5,$6::jsonb,$7,'[]'::jsonb,$8,$8)`,
+      `INSERT INTO public.cases (id, project_id, wedge, title, stage, status, data, due_at, meeting_at, history, created_at, updated_at)
+       VALUES ($1,$2,'gtm-operator',$3,$4,$5,$6::jsonb,$7,$9,'[]'::jsonb,$8,$8)`,
       [
         id, PROJECT, p.name, p.stage, open ? "open" : "closed",
         JSON.stringify({
@@ -908,12 +954,113 @@ async function main() {
         // Only live prospects are due anything. A won or lost case with a due date reads as a bug.
         open ? at(-1 - Math.floor(rnd(`due:${p.slug}`) * 6)) : null,
         at(30 - i % 28),
+        /**
+         * A BOOKED CALL HAS AN HOUR ON IT.
+         *
+         * `contract.ts` says it plainly — *"a `booked` case with no `meeting_at` is a genuine
+         * defect, and the calendar surfaces it rather than hiding it"* — and the demo was proving
+         * the point on itself: two booked prospects under "No time set · Booked, with no hour on
+         * it. This is the one that gets missed." That heading is correct behaviour and a terrible
+         * shop window, because the only meetings in the demo were the broken kind.
+         *
+         * Spread across the next few working days at plausible hours, derived from the slug so a
+         * re-seed puts the same call in the same slot. In production this comes from the Cal.com
+         * webhook; the demo has no webhook, which is exactly why it had no times.
+         */
+        p.stage === "booked" ? meetingSlot(p.slug) : null,
       ],
     );
     caseIds.set(p.slug, id);
     prospected++;
   }
   console.log(`  prospects    ${prospected} gtm-operator cases across ${CAMPAIGNS.length} campaigns`);
+
+  /**
+   * ═══ THE SHOP WINDOW IS NOT ON A TRIAL IT NEVER STARTED ═══
+   *
+   * Home's plan card read "No plan · Nothing runs until a plan is behind it · Start the trial" —
+   * on the demo. So a prospect clicking through a working business was told, in the one card about
+   * money, that this business cannot run anything. It is the correct sentence for an org with no
+   * subscription and the wrong thing to show somebody being sold to, because the demo is meant to
+   * be what a CUSTOMER sees.
+   *
+   * `growth` + `active` + a billing_ref, which is what `hasPaidPlan` actually asks for — it checks
+   * for a subscription rather than trusting the status column, and a demo that satisfies the status
+   * and not the reference would still show the wrong card in half the places that ask.
+   *
+   * SAFE, because a showroom org is refused at the door anyway: `isShowroomOrg` blocks task
+   * creation with its own 403 before any limit is consulted. The plan here buys a correct SCREEN,
+   * not permission to spend.
+   */
+  const planned = await db.query(
+    `UPDATE public.orgs SET plan = 'growth', plan_status = 'active',
+            billing_ref = COALESCE(NULLIF(billing_ref, ''), 'cus_demo_showroom'),
+            plan_renews_at = $2
+     WHERE id = (SELECT org_id FROM public.projects WHERE id = $1)`,
+    [PROJECT, at(-18)],
+  );
+  console.log(`  plan         ${planned.rowCount ? "growth, active" : "unchanged"}`);
+
+  /**
+   * ═══ THE STANDING APPROVALS THAT EXPLAIN THE FALLING LINE ═══
+   *
+   * The involvement chart's own caption tells a founder where the fall comes from: *"It falls when
+   * you allow a kind of thing outright, in Standing approvals."* The seed now writes auto-approved
+   * decisions that make the line fall, so the demo has to hold the rules that would have produced
+   * them — otherwise a visitor follows the caption and finds an empty screen, which teaches them the
+   * number is decoration.
+   *
+   * Two grants, narrow on purpose, and they are the two a real business grants first: the status
+   * update nobody needs to read, and the reminder for a document already asked for. Neither moves
+   * money and neither is a first contact — `matchStanding` would refuse a `high` verdict anyway.
+   *
+   * Written as `records` rows because that is where `grantStanding` puts them; the route cannot be
+   * used here, and correctly so — it refuses a product key, because "an API key could write a
+   * permission and sign a human's name to it".
+   */
+  const GRANTS = [
+    { action: "email:send_status_update", per_day: 5 },
+    { action: "email:send_document_reminder", per_day: 3 },
+  ];
+  let granted = 0;
+  for (const g of GRANTS) {
+    const id = randomUUID();
+    await db.query(
+      /*
+        `observed_at` is '' — the point-in-time form. A grant is a CURRENT fact about what this
+        business allows, not a sample in a series, and the unique index includes the column, so a
+        timestamp here would let a re-seed stack duplicate permissions.
+      */
+      `INSERT INTO public.records (id, project_id, wedge, collection, key, data, observed_at)
+       VALUES ($1,$2,'standing','standing_grant',$3,$4::jsonb,'')
+       ON CONFLICT (COALESCE(project_id,'-'), wedge, collection, key, observed_at) DO NOTHING`,
+      [
+        randomUUID(),
+        PROJECT,
+        id,
+        JSON.stringify({
+          v: 1,
+          id,
+          action: g.action,
+          max_per_day: g.per_day,
+          /*
+            `at()` takes DAYS AGO, so a negative argument is the future. Granted 56 days ago and live
+            for another 30 — a demo whose permissions all lapsed last month shows the gate closed,
+            which is the opposite of the thing being demonstrated.
+
+            86 days apart, and that is deliberate: `MAX_GRANT_DAYS` is 90, so this is a grant the
+            product could actually have minted. A seeded 116-day grant would read as live to
+            `isLive` and be a thing no route in the kernel can produce.
+          */
+          expires_at: at(-30).toISOString(),
+          granted_at: at(56).toISOString(),
+          granted_by: "demo-founder",
+        }),
+      ],
+    );
+    granted++;
+  }
+  console.log(`  standing     ${granted} grants, which is what makes the involvement line fall`);
 
   // Give every seeded person a campaign, so the board groups instead of sprawling.
   const spread = await db.query(

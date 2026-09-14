@@ -230,6 +230,7 @@ export function scoreMemory(doc: Pick<MemoryDoc, "title" | "body" | "path">, que
 
 import { databaseUrl } from "./config";
 import { getPool } from "./pool";
+import { withSchemaLock } from "./schema-lock";
 
 export interface MemoryStore {
   /** Upsert by (project, path). Writing the same path twice is an edit, never a second document. */
@@ -294,9 +295,36 @@ function memoryStorePg(url: string): MemoryStore {
     updated_at: new Date(String(r.updated_at)).toISOString(),
     updated_by: String(r.updated_by ?? "agent"),
   });
-  return {
-    async init() {
-      await pool.query(`
+  /**
+   * ═══════════════════════════════════════════════════════════════════════════════════════════════
+   * THE TABLE WAS NEVER CREATED, SO NOTHING WAS EVER REMEMBERED
+   * ═══════════════════════════════════════════════════════════════════════════════════════════════
+   *
+   * Checked against production on 13 September: `relation "memory" does not exist`. Not an empty
+   * table — no table. `init()` was declared here and called from NOWHERE, so every `rememberFromRun`
+   * threw on its INSERT and the vault has been empty since the day it shipped.
+   *
+   * Which makes this the second half of a pair. `59f1dd83` deleted the nightly self-improvement jobs
+   * on 6 September after measuring them honestly — 216 runs, 261 sandbox-hours, four proposals, zero
+   * adopted — and the argument for deleting them was that memory is written inline by the run that
+   * is already open. That argument was right. The replacement had no writer that could reach a
+   * table, so the product spent a week with neither: the old loop deleted, the new one throwing.
+   *
+   * Every other pg store in this kernel awaits `init()` from an async `connect()`. This one cannot:
+   * `getMemoryStore()` is synchronous and called from request handlers. So the init is LAZY and
+   * memoised — first use pays for it, every later call awaits the same settled promise.
+   *
+   * Under the schema lock, like every other `CREATE TABLE IF NOT EXISTS` here: the statement is not
+   * concurrency-safe and four kernel containers boot together on every deploy.
+   *
+   * NOT memoised on failure. A transient outage during the first write would otherwise cache a
+   * rejected promise for the life of the process and turn a blip into "memory is off until someone
+   * restarts the kernel" — which is indistinguishable from the bug this is fixing.
+   */
+  let ready: Promise<void> | undefined;
+  const ensure = (): Promise<void> =>
+    (ready ??= withSchemaLock(pool, async (client) => {
+      await client.query(`
         CREATE TABLE IF NOT EXISTS memory (
           project_id text NOT NULL,
           path text NOT NULL,
@@ -306,8 +334,17 @@ function memoryStorePg(url: string): MemoryStore {
           updated_at timestamptz NOT NULL DEFAULT now(),
           PRIMARY KEY (project_id, path)
         )`);
+    }).catch((e) => {
+      ready = undefined;
+      throw e;
+    }));
+
+  return {
+    async init() {
+      await ensure();
     },
     async write(doc) {
+      await ensure();
       const r = await pool.query(
         `INSERT INTO memory (project_id, path, title, body, updated_by, updated_at)
          VALUES ($1,$2,$3,$4,$5, now())
@@ -320,10 +357,12 @@ function memoryStorePg(url: string): MemoryStore {
       return row(r.rows[0]!);
     },
     async read(projectId, path) {
+      await ensure();
       const r = await pool.query(`SELECT * FROM memory WHERE project_id=$1 AND path=$2`, [projectId, path]);
       return r.rows[0] ? row(r.rows[0]) : undefined;
     },
     async forget(projectId, path) {
+      await ensure();
       const r = await pool.query(`DELETE FROM memory WHERE project_id=$1 AND path=$2 RETURNING path`, [
         projectId,
         path,
@@ -331,6 +370,7 @@ function memoryStorePg(url: string): MemoryStore {
       return r.rows.length > 0;
     },
     async list(projectId, drawer) {
+      await ensure();
       const r = drawer
         ? await pool.query(`SELECT * FROM memory WHERE project_id=$1 AND path LIKE $2 ORDER BY updated_at DESC`, [projectId, `${drawer}/%`])
         : await pool.query(`SELECT * FROM memory WHERE project_id=$1 ORDER BY updated_at DESC`, [projectId]);

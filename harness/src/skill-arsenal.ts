@@ -461,6 +461,22 @@ export function stagedArsenalForBrief(task: {
   return { files, index, staged: rest.length, shelf };
 }
 
+/**
+ * The capabilities handed to `draft_service` as data.
+ *
+ * ═══ A LIST, NOT A MENU ═══
+ *
+ * This is the eleven the kernel implements itself, and it is right that the author sees them: those
+ * are the ones where the kernel PARSES the answer and COMPOSES the call, which beats being handed a
+ * vendor's raw tools. A bookkeeping service should say `read_bank_transactions`, not invent
+ * `read_ledger`.
+ *
+ * But a list handed to a model with no note reads as a closed menu, and `service-authoring-contract`
+ * used to say so outright: "do not invent one ... an unknown name is a promise nothing can fulfil."
+ * That reason was true until a connection could declare what it provides. Now a need the author
+ * names is answered by whatever the founder connects, and the skill says so — this note exists so
+ * the DATA does not silently contradict the instruction.
+ */
 function authorableCapabilities(): Array<{ capability: string; title: string; question: string }> {
   return ALL_CAPABILITIES.map((c) => ({
     capability: c,

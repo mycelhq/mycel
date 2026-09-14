@@ -46,6 +46,7 @@ import { getAuthoredStore, loadProjectWedge } from "./authored";
 import { onChildFinished } from "./batches";
 import { assertSendPromiseKept, readPromises, releaseClaimFor } from "./promises";
 import { wrapFulfillmentDeliverable } from "./deliverables.wrap";
+import { ensureProjectMailbox } from "./mailbox-ensure";
 import { reviewVersion } from "./review-version";
 import { shippedPageFaults } from "./pages";
 import {
@@ -204,12 +205,94 @@ async function openMaterialRequests(task: Task, needs: string[]): Promise<void> 
       open.length + wanted.length,
     );
 
+    /**
+     * ═════════════════════════════════════════════════════════════════════════════════════════════
+     * AN ASK WITH NOWHERE TO GO IS NOT AN ASK
+     * ═════════════════════════════════════════════════════════════════════════════════════════════
+     *
+     * Measured in production, 12 September: 54 client requests raised since 13 August, `thread_id`
+     * NULL on every single one, zero answered. Alongside them, 1,470 runs ended in `ask` — the run
+     * correctly said it could not finish without something only the client has — and 1,950
+     * monthly_close runs produced an artifact that nobody outside the business has ever seen. The
+     * fulfilment loop does not stall on quality. It stalls here.
+     *
+     * `mailbox-ensure.ts` was written for exactly this and is wired to ENGAGEMENT OPEN, whose header
+     * argues that opening is "the first moment the address is certainly needed". True, and too late
+     * for a business whose engagements were opened before that shipped: 16 engagements opened in the
+     * last five weeks, and the only project in the entire system holding a channel is the QA one.
+     *
+     * Raising an ask is a MORE certain moment than opening an engagement. Opening might yet need
+     * nothing from the client; this run has already discovered that it does. So the same idempotent
+     * call happens here, at the point where the absence actually costs something.
+     *
+     * Cheap and safe: keyed on the channel rather than a flag, so a project that has one is a read;
+     * never fatal, because a request answerable in the portal beats no request at all; and only when
+     * there is something to ask, so it never mints an inbox for a run with nothing to say.
+     */
+    if (toOpen.length > 0 && task.wedge) {
+      const mailbox = await ensureProjectMailbox({
+        project_id: task.project_id,
+        wedge: task.wedge,
+        task_type: task.task_type,
+        project_name: getIdentityStore().getProject(task.project_id)?.name,
+      }).catch((e: unknown) => ({ ok: false as const, reason: String(e) }));
+      if (!mailbox.ok) {
+        // Logged, never raised — and logged loudly, because a silent version of this is how fifty-four
+        // questions were asked of clients who were never asked anything.
+        console.warn(`[mycel] ${task.project_id} is about to ask a client and has no mailbox: ${mailbox.reason}`);
+      } else if (mailbox.created) {
+        console.log(`[mycel] ${task.project_id} can now reach clients from ${mailbox.address}`);
+      }
+    }
+
+    /**
+     * ═════════════════════════════════════════════════════════════════════════════════════════════
+     * AND THE ASK NEEDS A THREAD, OR THE ADDRESS WAS POINTLESS
+     * ═════════════════════════════════════════════════════════════════════════════════════════════
+     *
+     * Ensuring a mailbox above is half a fix, and shipping only that half would have looked like a
+     * closed loop while changing nothing. `kickoff.ts` already does this properly — it finds the
+     * project's channel, opens a thread, and puts `thread_id` on every request it raises, with a
+     * note explaining that `blocked.tsx` only shows the client an uploader when that field is set.
+     *
+     * This path never did. So every one of the 1,470 asks a RUN raised arrived with `thread_id`
+     * null: nothing to email it through, and a portal that could not offer the client anywhere to
+     * put the file. 54 requests in production, every one of them null, none answered.
+     *
+     * The same three calls as kickoff, in the same order, for the same reason. Never fatal: a
+     * request the client can at least see beats no request, which is what the catch below protects.
+     */
+    let askThreadId: string | undefined;
+    if (toOpen.length > 0) {
+      try {
+        const channels = (await getDomainStore().listChannels()).filter(
+          (ch) => !ch.project_id || ch.project_id === task.project_id,
+        );
+        if (channels[0]) {
+          const thread = await getDomainStore().findOrCreateThread(
+            task.client_id,
+            channels[0].id,
+            task.project_id,
+            // The engagement's own name, so a client sees one conversation per job rather than one
+            // per question. `findOrCreateThread` keys on the case, so repeated asks join it.
+            kase?.title ? `${kase.title}` : "Your project",
+            task.case_id,
+          );
+          askThreadId = thread.id;
+        }
+      } catch (e) {
+        console.error("[mycel] could not open a thread for a client ask:", e);
+      }
+    }
+
     for (const ask of toOpen) {
       const detail = wanted.find((w) => w.ask === ask)?.detail ?? "";
       await requests.createRequest({
         project_id: task.project_id,
         client_id: task.client_id,
         case_id: task.case_id,
+        // Without this the portal shows no uploader and nothing can be emailed — see the note above.
+        ...(askThreadId ? { thread_id: askThreadId } : {}),
         // `document` so the portal offers an uploader. An answer is still typeable, so this is the
         // strictly wider door — asking for a file and receiving a sentence loses nothing, while
         // asking with `answer` and needing a statement leaves them nowhere to put it.
@@ -1811,6 +1894,24 @@ export async function handOffWorkspace(args: {
         name: path.split("/").pop() ?? "screenshot.png",
         content_type: "image/png",
         content: backend.inline ? b64 : "",
+        /**
+         * ═══ SAY THAT IT IS BASE64, OR THE BYTES ARE SERVED AS TEXT ═══
+         *
+         * `serveArtifact` decodes only when `encoding === "base64"`; absent means utf8, which
+         * `Artifact.encoding` states plainly — *"rows written before uploads existed are all text"*
+         * — and *"a PDF read as UTF-8 is silently corrupt rather than loudly broken."*
+         *
+         * Both writes in this file stored base64 and said nothing, so a founder downloading their
+         * own site's `app.tar.gz` got an ASCII file of base64 named `.tar.gz`, and every build
+         * screenshot was an `image/png` whose body was text. Found by opening the Code tab on the
+         * live product and watching gunzip refuse the bytes.
+         *
+         * `size_bytes` matters for the same reason twice: it is what a human means by "how big is
+         * that file", and `withContent` uses it to detect an artifact backend mismatch — a row with
+         * no size can never trip that check, so a misconfigured backend stays invisible.
+         */
+        encoding: "base64",
+        size_bytes: Math.floor((b64.length * 3) / 4),
       });
       if (!backend.inline) await backend.put(art.id, b64);
       await emit("artifact.created", {
@@ -1831,6 +1932,10 @@ export async function handOffWorkspace(args: {
     name: dir.name,
     content_type: dir.content_type,
     content: backend.inline ? dir.base64 : "",
+    // See the note on the screenshot above. Without this the tarball is served as base64 TEXT, and
+    // `tar xzf` on the founder's own download fails.
+    encoding: "base64",
+    size_bytes: dir.bytes,
   });
   if (!backend.inline) await backend.put(wsArt.id, dir.base64);
   await emit("artifact.created", {

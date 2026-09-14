@@ -165,6 +165,27 @@ export class PortalPg {
   }
 
   /** Revoke everything for a client: sessions, and any link still sitting unexchanged in an inbox. */
+  /**
+   * Which of these clients has ever been let in — a link minted for them, at any time.
+   *
+   * BATCHED, and that is not an optimisation. The caller is `proposeMoves`, which runs on every load
+   * of the founder's home screen with every open ask in hand; one query per client would make the
+   * morning screen slower exactly as a business acquires customers, which is the shape of bug this
+   * repo has already paid for once on the client page.
+   *
+   * Links, not sessions. A client who was sent a link and has not opened it yet HAS been let in —
+   * the founder did their part. What this answers is "could they see it if they wanted to", and a
+   * client who never received a link cannot.
+   */
+  async clientsEverLinked(clientIds: readonly string[]): Promise<Set<string>> {
+    if (!clientIds.length) return new Set();
+    const r = await this.pool.query<{ client_id: string }>(
+      `SELECT DISTINCT client_id FROM portal_links WHERE client_id = ANY($1)`,
+      [clientIds as string[]],
+    );
+    return new Set(r.rows.map((x) => String(x.client_id)));
+  }
+
   async revokeClient(clientId: string): Promise<number> {
     const s = await this.pool.query(`DELETE FROM portal_sessions WHERE client_id=$1`, [clientId]);
     await this.pool.query(`DELETE FROM portal_links WHERE client_id=$1 AND used=false`, [clientId]);

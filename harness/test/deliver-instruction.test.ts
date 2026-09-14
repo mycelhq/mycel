@@ -21,7 +21,7 @@ import { join } from "node:path";
  */
 const RUNTIME = readFileSync(join(import.meta.dirname, "..", "src", "runtime.ts"), "utf8");
 const CRAFT = readFileSync(
-  join(import.meta.dirname, "..", "..", "craft", "presenting-work.md"),
+  join(import.meta.dirname, "..", "..", "library", "craft", "presenting-work.md"),
   "utf8",
 );
 

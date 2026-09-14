@@ -43,9 +43,9 @@ interface Template {
 
 function templates(): Template[] {
   const out: Template[] = [];
-  for (const f of readdirSync(join(ROOT, "blueprints"))) {
+  for (const f of readdirSync(join(ROOT, "library", "blueprints"))) {
     if (!f.endsWith(".json")) continue;
-    const b = JSON.parse(readFileSync(join(ROOT, "blueprints", f), "utf8"));
+    const b = JSON.parse(readFileSync(join(ROOT, "library", "blueprints", f), "utf8"));
     const wedge = b.wedge ?? f.replace(/\.json$/, "");
     for (const s of b.schedules ?? []) {
       out.push({ blueprint: f, wedge, task_type: s.task_type, name: s.name ?? s.task_type, input: s.input });

@@ -31,6 +31,7 @@ import { join } from "node:path";
 import type { DomainStore } from "./domain";
 import type { WedgeFile, WedgeManifest } from "./wedge";
 import { GLOBAL_SKILL_SCOPE, SKILLS_WEDGE, skillScales, type SkillScale } from "./skill-scales";
+import { libraryPath } from "./library";
 
 const LIBRARY_COLLECTION = "library_skill";
 const MAX_LIBRARY_ROWS = 2000;
@@ -156,7 +157,7 @@ export async function listLibrarySkills(
  * `kernel/service-skills/` like it ships `kernel/workflows/`, or the library is empty in production.
  */
 export function skillsSeedDir(): string {
-  return process.env.MYCEL_SERVICE_SKILLS_DIR ?? join(process.cwd(), "service-skills");
+  return libraryPath("service-skills", process.env.MYCEL_SERVICE_SKILLS_DIR);
 }
 
 /**

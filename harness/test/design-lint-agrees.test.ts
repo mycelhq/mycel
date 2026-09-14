@@ -17,7 +17,7 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { lintArtifact } from "../src/design-lint";
 
-const craft = () => readFileSync(new URL("../../craft/anti-ai-slop.md", import.meta.url), "utf8");
+const craft = () => readFileSync(new URL("../../library/craft/anti-ai-slop.md", import.meta.url), "utf8");
 
 /** One document per rule, chosen to trip exactly that rule. */
 const P0_CASES: Array<{ id: string; html: string; statedAs: RegExp }> = [

@@ -7,7 +7,7 @@
 # opencode install below and the one there are deliberately identical.
 FROM node:22-bookworm-slim
 
-ARG OPENCODE_VERSION=1.17.6
+ARG OPENCODE_VERSION=1.18.30
 ENV DEBIAN_FRONTEND=noninteractive
 
 RUN apt-get update && apt-get install -y --no-install-recommends \

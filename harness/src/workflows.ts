@@ -56,7 +56,7 @@ export async function runWorkflow(
   const declared = wedge?.manifest.workflows ?? [];
   const spec = declared.find((w) => w.name === name);
   if (!spec) {
-    return { ok: false, error: `wedge "${wedgeSlug}" does not declare a workflow named "${name}"` };
+    return { ok: false, error: `the "${wedgeSlug}" service ships no step called "${name}"` };
   }
 
   // Validate the agent's arguments before running the founder's code.

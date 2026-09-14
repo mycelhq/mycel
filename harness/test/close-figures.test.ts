@@ -12,7 +12,7 @@
 // wrong.
 import test from "node:test";
 import assert from "node:assert/strict";
-import closeFigures from "../../workflows/close-figures.mjs";
+import closeFigures from "../../library/workflows/close-figures.mjs";
 
 /** The July ledger the loop has been running on, in the shape the workflow takes. */
 const TX = [

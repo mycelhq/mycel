@@ -66,18 +66,18 @@ message before approving, that becomes the house tone. Do not retry a rejected a
 
 Illustrative throughout — **match the reasoning and the register, never the facts.**
 
-Input: invoice #218, £1,850, 19 days overdue. History: paid the last six invoices, average 8 days
+Input: invoice #218, $1,850, 19 days overdue. History: paid the last six invoices, average 8 days
 late, no reply to the day-10 `reminder`. No promised date on file.
 
 Step choice: `firm_reminder`. Not `reminder` — one was sent and ignored. Not `final_notice` — a
 client who has paid six in a row and runs a week late has a payment habit, not a payment problem,
 and a threat here would spend the relationship to accelerate money that is probably coming anyway.
 
-> Subject: Invoice #218 — £1,850, now 19 days past due
+> Subject: Invoice #218 — $1,850, now 19 days past due
 >
 > Hi Dana,
 >
-> Following up on invoice #218 for £1,850, which was due on the 9th — I sent a note last week and
+> Following up on invoice #218 for $1,850, which was due on the 9th — I sent a note last week and
 > wanted to make sure it reached you. If it's already on its way, ignore me.
 >
 > If something about the invoice is holding it up — a PO number missing, a query on the line items —

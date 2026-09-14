@@ -52,7 +52,7 @@ and was not discussed.
 Never invent a discount. Never invent a deposit. If they asked for either and it was not settled,
 that goes in `assumptions` as an open question, and the covering note asks about it in one sentence.
 
-`price_minor` is in minor units: £1,200 is `120000`, not `1200`. Nothing anywhere in this system
+`price_minor` is in minor units: $1,200 is `120000`, not `1200`. Nothing anywhere in this system
 divides money.
 
 ## What it does NOT include

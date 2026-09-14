@@ -40,7 +40,7 @@
 // finishes; the decision outlives it. That is strictly stronger than a blocking call, because a
 // blocking call is a promise about the order in which functions happen to be invoked and this is a
 // property of the row.
-import { distillFromApprovalEdit } from "./knowledge";
+import { applyDistilled, distillFromApprovalEdit, distillFromChangeRequest } from "./knowledge";
 import { getKnowledgeStore } from "./knowledge.store";
 import type { Hono } from "hono";
 import type { Artifact, Case, Deliverable, DeliverableVersion, TaskSource, VersionEdit } from "./contract";
@@ -93,6 +93,22 @@ export interface DeliverableRouteDeps {
   getActionGrant(token: string): Promise<{ task_id: string } | undefined>;
   /** Pull an artifact's bytes from whichever backend holds them. Injected — see server.ts. */
   withContent(a: Artifact): Promise<Artifact>;
+  /**
+   * TELL THE CLIENT THE WORK IS READY.
+   *
+   * Injected for the same reason `spawnTask` is: reaching a customer means the connection planner,
+   * the action executor and the tenant's portal address, all of which live in `server.ts`. A route
+   * that reached for them directly would drag the server graph in here.
+   *
+   * OPTIONAL, and that is deliberate rather than lazy. Every test in this file constructs these deps
+   * by hand, and a required field would have meant fifty call sites growing a stub that announces
+   * nothing — which is precisely the state this was added to fix, written down fifty times.
+   * `announceOnRelease.test.ts` pins that `server.ts` supplies it.
+   */
+  announceRelease?(
+    d: { project_id: string; client_id: string; title: string },
+    version: { summary?: string },
+  ): Promise<{ sent: boolean; detail: string; to?: string }>;
   /** Stream an artifact with the download headers that are already correct. Injected, never re-derived. */
   serveArtifact(a: Artifact): Response;
   /**
@@ -1096,7 +1112,8 @@ export function mountDeliverableRoutes(app: Hono, deps: DeliverableRouteDeps): v
     await deliverables.releaseVersion(pid, d.id, submitted.version.version, at);
     const moved = await deliverables.transitionDeliverable(pid, d.id, "with_client", ["in_review"], at);
     if (!moved) return c.json({ error: "someone else moved this while you were editing it" }, 409);
-    return c.json({ ok: true, released: true, deliverable: moved, version: submitted.version });
+    const told = await tellClient(moved, submitted.version);
+    return c.json({ ok: true, released: true, deliverable: moved, version: submitted.version, told });
   });
 
 
@@ -1117,6 +1134,36 @@ export function mountDeliverableRoutes(app: Hono, deps: DeliverableRouteDeps): v
    * Fail-soft everywhere. A founder's release must never fail because a scoreboard could not be
    * written, and the release has already happened by the time this is called.
    */
+
+  /**
+   * ═══════════════════════════════════════════════════════════════════════════════════════════════
+   * EVERY RELEASE TELLS THE CLIENT, OR SAYS WHY IT COULD NOT
+   * ═══════════════════════════════════════════════════════════════════════════════════════════════
+   *
+   * Three routes move a deliverable to `with_client` — release, release-with-edit, and the document
+   * editor's save-and-send. All three used to return `ok` and stop. Measured in production on
+   * 14 September: fifteen of fifteen released deliverables, across every tenant, with zero outbound
+   * messages to that client within a day. `THE-BAR.md` gate 1 — "0 of 8 accepted", "the single most
+   * important number in this document" — had been read as a quality problem for weeks.
+   *
+   * ONE HELPER, so a fourth release route cannot be written that forgets. `every-door-learns.test.ts`
+   * exists because the same class of omission has already happened three times with the lesson
+   * capture; this is the same shape and gets the same treatment.
+   *
+   * THE OUTCOME RIDES BACK ON THE RESPONSE. A founder who releases work to a client with no email
+   * address needs to know that in the second they are looking at it, not on a sweep tomorrow, and
+   * `announceRelease` returns a sentence for every outcome including success.
+   */
+  const tellClient = async (
+    moved: { project_id: string; client_id: string; title: string },
+    version: { summary?: string },
+  ): Promise<{ sent: boolean; detail: string; to?: string } | undefined> => {
+    if (!deps.announceRelease) return undefined;
+    return deps
+      .announceRelease(moved, version)
+      .catch((e) => ({ sent: false, detail: e instanceof Error ? e.message : String(e) }));
+  };
+
   const weighFounder = (
     projectId: string,
     version: { task_id?: string; author?: string } | undefined,
@@ -1182,7 +1229,13 @@ export function mountDeliverableRoutes(app: Hono, deps: DeliverableRouteDeps): v
       parked = armed.ok ? "we will chase them if they go quiet" : `not chasing automatically — ${armed.error}`;
     }
     await note(moved, timelineNote("released", moved, parked));
-    return c.json({ ok: true, deliverable: await toOperator(store, moved, await deliverables.listVersions(pid, d.id)), parked });
+    const told = await tellClient(moved, releasing ?? {});
+    return c.json({
+      ok: true,
+      deliverable: await toOperator(store, moved, await deliverables.listVersions(pid, d.id)),
+      parked,
+      told,
+    });
   });
 
   /**
@@ -1731,7 +1784,8 @@ export function mountDeliverableRoutes(app: Hono, deps: DeliverableRouteDeps): v
     await deliverables.releaseVersion(pid, d.id, saved.version.version, at);
     const moved = await deliverables.transitionDeliverable(pid, d.id, "with_client", ["in_review"], at);
     if (!moved) return c.json({ error: "someone else moved this while you were editing it" }, 409);
-    return c.json({ ok: true, changed: true, released: true, deliverable: moved, version: saved.version });
+    const told = await tellClient(moved, saved.version);
+    return c.json({ ok: true, changed: true, released: true, deliverable: moved, version: saved.version, told });
   });
 
   // ── client plane ───────────────────────────────────────────────────────────────────────────────
@@ -1979,6 +2033,66 @@ export function mountDeliverableRoutes(app: Hono, deps: DeliverableRouteDeps): v
     }
 
     await note(moved, timelineNote(kind === "accepted" ? "accepted" : "changes", moved, kind === "changes_requested" ? brief : undefined));
+
+    /**
+     * ═══════════════════════════════════════════════════════════════════════════════════════════
+     * AND THE LESSON, WHICH THIS ROUTE HAS BEEN THROWING AWAY SINCE IT WAS WRITTEN
+     * ═══════════════════════════════════════════════════════════════════════════════════════════
+     *
+     * The brief went three places: the version verdict, the timeline, and the redraft's input. All
+     * three are about THIS deliverable. Nothing carried it forward, so the next one of the same kind
+     * for the same client began from nothing and the same complaint could arrive every month.
+     *
+     * This is the third time the capture has followed the mechanism instead of the decision.
+     * `every-door-learns.test.ts` records the first two — inside the waiting run, then only on the
+     * approvals route while campaigns decided through their own — and the pattern each time is that
+     * a new door opened and the lesson stayed at the old one. A client sending work back is a door.
+     * It is also the best one: everything else here learns from a founder guessing what the customer
+     * wants, and this is the customer saying it.
+     *
+     * Fail-soft, like every other capture. The client has decided and the redraft is already moving;
+     * failing their request because a rule could not be filed would trade the job for the note.
+     */
+    if (kind === "changes_requested") {
+      void (async () => {
+        const store = getKnowledgeStore();
+        /*
+          THE WEDGE COMES FROM THE ENGAGEMENT. `Deliverable` carries no wedge and no task type — it
+          knows its case, and the case knows the service. `task_types` is left empty on purpose,
+          which this module documents as "the whole wedge": the complaint is about the KIND of thing
+          the client received, and that kind is already the discriminating half of the subject.
+          Guessing a task type to narrow it would make the lesson unreachable from the job that
+          actually produces the next one.
+        */
+        const kase = await domain.getCase(moved.case_id).catch(() => undefined);
+        const rule = distillFromChangeRequest({
+          project_id: sc.project_id,
+          wedge: kase?.wedge ?? "",
+          task_type: "",
+          client_id: d.client_id,
+          deliverable_kind: d.kind ?? d.title ?? "",
+          request: brief,
+          deliverable_id: d.id,
+          at,
+        });
+        if (rule) await applyDistilled(store, [rule], at);
+        /*
+          The observation goes in WHETHER OR NOT a rule was stored. `feedback_bad` is the measurement
+          of "the agent got it wrong", and a change request with no client attached is still the
+          agent getting it wrong — suppressing the count because the lesson could not be scoped would
+          make the quality metric flattering for exactly the rows we understand least.
+        */
+        await store.recordObservation({
+          project_id: sc.project_id,
+          wedge: kase?.wedge ?? "",
+          task_type: "",
+          client_id: d.client_id,
+          kind: "feedback_bad",
+          subject: rule?.subject,
+          at,
+        });
+      })().catch((e) => console.error("[mycel] could not learn from a change request:", e));
+    }
 
     /**
      * THE FIRST TIME A CLIENT SIGNED OFF THE WORK — the moment the loop closed on quality rather

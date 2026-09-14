@@ -7,7 +7,7 @@
 // The test that matters most is the bookkeeper.
 import test from "node:test";
 import assert from "node:assert/strict";
-import goingQuiet from "../../workflows/going-quiet.mjs";
+import goingQuiet from "../../library/workflows/going-quiet.mjs";
 
 /** Every `every` days, `n` times, ending `endedDaysAgo` before `now`. */
 const rhythm = (every: number, n: number, endedDaysAgo: number, now = "2026-09-30"): string[] => {

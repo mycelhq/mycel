@@ -397,6 +397,13 @@ const KIND_NOUN: Record<MoveKind, string> = {
   // granting an agent the right to close or re-scope an engagement whose client stopped answering,
   // and a founder reading the exposure sentence should feel exactly how large that is.
   unblock_wait: "decide what happens to an engagement whose wait gave up",
+  // The noticing, again, and there is nothing here to grant: answering a stranger who took the
+  // trouble to reply is the least delegable thing the product touches. `takeability` refuses it for
+  // the same reason the carrier is empty — see `handedToYouMove`.
+  handed_to_you: "answer a prospect who replied",
+  // Nothing to grant. The portal link is minted once and shown once — that is what a portal link IS
+  // — so no standing permission could send it on the founder's behalf without changing the thing.
+  client_cannot_see_it: "give a client a way to see what they were asked",
   // Phrased as the noticing it is. There is nothing to grant here — the move is permanently not
   // takeable (see `takeability`) — but the vocabulary is closed and every kind must have a sentence,
   // and an honest one is better than a placeholder that reads like a feature.

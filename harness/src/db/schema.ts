@@ -437,6 +437,9 @@ export const orgs = pgTable("orgs", {
   billingRef: text("billing_ref"),
   planRenewsAt: timestamp("plan_renews_at", { withTimezone: true }),
   lastDigestAt: timestamp("last_digest_at", { withTimezone: true }),
+  referralCode: text("referral_code"),
+  referredBy: text("referred_by"),
+  referralCreditedAt: timestamp("referral_credited_at", { withTimezone: true }),
 });
 
 export const partyLinks = pgTable("party_links", {

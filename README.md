@@ -1,8 +1,5 @@
-<p align="center">
-  <img src="brand/logo-square.png" alt="Mycel" width="72">
-</p>
+<img src="design/brand/banner-readme.png" alt="Mycel — draft, approve, invoice." width="100%">
 
-<h1 align="center">Mycel</h1>
 <p align="center"><strong>The open kernel for AI-native service businesses.</strong></p>
 <p align="center">
   OpenCode in a sandbox. A human on every send.<br>
@@ -10,7 +7,7 @@
 </p>
 
 <p align="center">
-  <img src="brand/next-moves.gif" alt="Ranked next moves on Ridgeline Books: chase overdue invoices with the score shown, a human gate above them." width="820">
+  <img src="design/brand/next-moves.gif" alt="Ranked next moves on Ridgeline Books: chase overdue invoices with the score shown, a human gate above them." width="820">
 </p>
 <p align="center"><sub>
   Ranked next moves on <code>npm run demo:seed</code> (Ridgeline Books). Filmed on Cloud against this kernel.
@@ -90,7 +87,7 @@ console at `:3000` is a separate consumer of the same contract, not part of the 
 the top, and this invoice, are that consumer on this seed:
 
 <p align="center">
-  <img src="brand/money-owed.png" alt="Invoice INV-0001 Harborline Ceramics, overdue, $1,450 still to pay." width="820">
+  <img src="design/brand/money-owed.png" alt="Invoice INV-0001 Harborline Ceramics, overdue, $1,450 still to pay." width="820">
 </p>
 
 ### A business to look at
@@ -248,23 +245,61 @@ need an `opencode` binary and a provider key.
 ```
 harness/      /v1, orchestrator, sandbox, gate, stores
 wedges/       services as config (see table above)
-blueprints/   wedge + connections + schedules
 skills/       procedures the agent reads mid-run
+library/      what the kernel reads off disk while it runs:
+              blueprints (wedge + connections + schedules), packs (sandboxed
+              deterministic helpers), workflows, service-skills, design-systems,
+              craft, templates
+design/       the brand, and the vendored component library builds start from
 docker/       sandbox image
-docs/         contract, wedges, roadmap
+docs/         contract, wedges, open-core, roadmap
+scripts/      one-off tooling; nothing here runs in production
 ```
+
+`library/` is one directory and one `COPY` on purpose. It was seven of each, and the Dockerfile
+forgot six of them one at a time — every one of those resolvers fails soft, so the container stayed
+healthy while a feature was silently absent. `packs/` was missing for the whole life of the feature:
+production had 4,442 `workflow:*` calls and zero `pack:*`, ever, while four shipped wedges declared
+packs in their manifests.
 
 ## License
 
 [Apache-2.0](./LICENSE). Open-core: this kernel is free and self-hostable, with no metering, no seat
 limit and no expiry — bring your own model key.
 
-**What that gets you:** the `/v1` contract, the harness, every gate, every service definition, and an
-operator console to run and approve work from. **What it does not:** clients, engagements, invoices,
-chasing, a client-facing portal, or the machinery for finding clients — that is the hosted product.
+**The engine is open. The interfaces and the hosted operation are paid.**
 
-The line, and the three rules used to decide it, are written down in
-[docs/OPEN-CORE.md](https://github.com/mycelhq/mycel/blob/main/docs/OPEN-CORE.md). Short version: the
-engine is open, the firm is paid.
+You get the whole thing that runs a service business, not a demo of it: the `/v1` contract, the
+harness and every gate, clients, cases, engagements, deliverables, **invoices and the chase ladder**,
+the **client portal contract**, the **machinery for finding clients**, approvals, earned autonomy,
+knowledge and memory, the scheduler, connections, the hash-chained audit log, and every service
+definition. Count the routes if you doubt it — `docs/OPEN-CORE.md` gives the command.
+
+**Mycel is headless** — there is no UI in this repository. There is one, and it is also open:
+[mycelhq/console](https://github.com/mycelhq/console), its own repo, depending on nothing but `/v1`.
+That separation is the claim, not an accident of packaging: anything the console does, your own app
+can do, and a console living inside the kernel would quietly suggest otherwise.
+
+What is genuinely not open: the client-facing portal app, sign-up and billing, and our own
+go-to-market.
+
+The line, and the three rules used to decide it: **[docs/OPEN-CORE.md](./docs/OPEN-CORE.md)**.
+
+## Who is building this
+
+A small team that got here by running a service business on this kernel before selling it to anyone
+— which is why the awkward parts are documented rather than hidden. Most of the long comments in this
+repository are a bug we paid for written down so the next person does not.
+
+If you are running a service firm and something here does not fit your trade, that is the most useful
+issue you can open. The kernel is supposed to take a business nobody here has ever run — see
+[docs/FITTING-A-TRADE.md](./docs/FITTING-A-TRADE.md) — and every trade that does not fit is a hole in
+that claim.
+
+## Star history
+
+<a href="https://star-history.com/#mycelhq/mycel&Date">
+  <img src="https://api.star-history.com/svg?repos=mycelhq/mycel&type=Date" alt="Star history chart" width="620">
+</a>
 
 <p align="center"><sub><a href="https://github.com/mycelhq/mycel">github.com/mycelhq/mycel</a> · <a href="https://mycelai.dev">mycelai.dev</a></sub></p>

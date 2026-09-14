@@ -9,7 +9,7 @@
 // good message — it is evidence nobody was paying attention.
 import test from "node:test";
 import assert from "node:assert/strict";
-import signalScore, { SIGNALS } from "../../workflows/signal-score.mjs";
+import signalScore, { SIGNALS } from "../../library/workflows/signal-score.mjs";
 
 const NOW = "2026-08-30";
 const CO = { name: "Hart's Bakery", domain: "hartsbakery.co.uk", industry: "bakery", location: "Bristol, United Kingdom" };

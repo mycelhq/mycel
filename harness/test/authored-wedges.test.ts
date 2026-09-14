@@ -23,6 +23,7 @@ import { authorWedgeFromOutput, authoredFaults, repairAuthoredManifest, reviewDr
 import { buildWedgeRoleIndex, manifestFaults } from "../src/roles";
 import { HARD_MAX_PER_DAY, HARD_MAX_PER_SWEEP } from "../src/autonomy";
 import { api, freshProjectId, makeFreshApp, waitTask } from "./helpers";
+import { getDomainStore } from "../src/domain";
 
 /**
  * A definition that passes every rule. Every "this is refused" test below is this, broken in ONE
@@ -583,16 +584,32 @@ test("no word a customer must never read reaches the review card", () => {
 
 test("a draft whose capability the kernel no longer offers still renders a readable card", () => {
   // THE BUG: a row stored months ago, read back after `CAPABILITIES` changed, throws and takes the
-  // whole services page down for that tenant. `authoredFaults` has already refused unknown
-  // capabilities at authoring, so this can only happen to stored history — and history must degrade
-  // into a sentence rather than a 500.
+  // whole services page down for that tenant. History must degrade into a sentence, never a 500.
   const card = reviewDraft({
     slug: authoredSlug("old"),
     manifest: { wedge: authoredSlug("old"), title: "Old", capabilities: ["read_carrier_pigeons"] },
     skills: [],
     knowledge: [],
   });
-  assert.match(card.needs[0], /no longer offers/);
+  /**
+   * ═══ THIS ASSERTED `no longer offers`, AND THAT DISTINCTION NO LONGER EXISTS ═══
+   *
+   * While `CAPABILITIES` was the whole vocabulary, a well-formed name it did not contain could only
+   * be one removed from the kernel. Now it is equally likely to be a trade's own declared need —
+   * `read_appointments` and `read_carrier_pigeons` are the same shape, and nothing in the string
+   * tells them apart. Keeping the old wording would mean reading a physiotherapy service's real
+   * requirement back to its founder as something we had withdrawn.
+   *
+   * Losing the distinction costs little, because the connect surface tells the truth either way: a
+   * capability nothing provides gets `whyNoProvider` — "nothing connected here says it can do this,
+   * connect the tool your business uses for it" — which is exactly as true of a withdrawn capability
+   * as of a trade we never shipped.
+   *
+   * What this test is FOR survives unchanged: stored history renders a sentence rather than throwing.
+   */
+  assert.equal(card.needs.length, 1);
+  assert.equal(card.needs[0], "Read carrier pigeons", "stored history no longer renders a readable line");
+  assert.ok(!/undefined|null|\[object/.test(card.needs[0]!), "the line is not readable prose");
 });
 
 test("the promote and reject routes name who decided, and refuse without a project", async () => {
@@ -996,4 +1013,403 @@ test("a workspace is still refused, and now says why", () => {
   );
   assert.ok(out.faults.length > 0);
   assert.match(out.faults.map((f) => f.message).join(" "), /directory of code/);
+});
+
+// ═══════════════════════════ 6. THE CATALOGUE A FOUNDER IS SHOWN ═══════════════════════════
+//
+// ═════════════════════════════════════════════════════════════════════════════════════════════════
+// A SERVICE WRITTEN FOR A BUSINESS WAS INVISIBLE TO EVERY SURFACE THAT ASKS WHAT WE RUN
+// ═════════════════════════════════════════════════════════════════════════════════════════════════
+//
+// `GET /v1/wedges` read the wedges DIRECTORY and nothing else. Its own header says the shaping agent
+// "has to reason against the real list" — and the real list left out the half of the catalogue that
+// exists precisely because the directory does not cover somebody's trade.
+//
+// Measured: `brand-and-website-projects` was authored for a real brand studio on 14 August and
+// promoted. It is live. The shaper is handed eight directory trades and nothing else, so every brand
+// studio shaped since has settled on the nearest miss — four of them on `invoice-chaser`, whose own
+// description is "chases YOUR overdue invoices". The service that fitted them existed the whole time
+// and nothing could see it.
+//
+// A written service is how this product covers a trade nobody packaged. Outside the catalogue, that
+// mechanism runs once per business and never compounds.
+
+test("A PROMOTED WRITTEN SERVICE IS IN THE CATALOGUE", async () => {
+  _resetAuthored();
+  const { app } = await makeFreshApp();
+  // The SESSION's own project. `freshProjectId()` is not in the caller's accessible set, so a route
+  // that scopes correctly resolves no project for it — which is the first way this test was wrong.
+  const p = (await api(app, "me")).json.projects[0].id as string;
+  const slug = authoredSlug("brand-and-website-projects");
+  await getAuthoredStore().createDraft(draftRow(p, slug));
+  await getAuthoredStore().decide(p, slug, "promoted", "founder");
+
+  const cat = (await api(app, "wedges", { headers: { "x-mycel-project": p } })).json as {
+    wedge: string; title: string; jobs: { task_type: string; description: string }[];
+  }[];
+  const mine = cat.find((w) => w.wedge === slug);
+  assert.ok(mine, `a promoted written service is missing from the catalogue. Got: ${cat.map((w) => w.wedge)}`);
+  /*
+    The SAME SHAPE as a directory entry, not a second kind of row. Every consumer — the shaper's
+    catalogue, the services list, onboarding — reads one list, and a caller that has to know which
+    half a trade came from is a caller that will forget.
+  */
+  assert.equal(mine!.title, "Proposals and sign-off", "a written service renders as its slug");
+  assert.ok(mine!.jobs.length > 0, "a written service carries no jobs, so nothing can match on it");
+  assert.ok(
+    mine!.jobs.every((j) => typeof j.description === "string" && j.description.length > 0),
+    "the job descriptions are the only prose a wedge has, and they are what a founder's words match against",
+  );
+  // And the directory half is still there — this adds, it does not replace.
+  assert.ok(cat.some((w) => !isAuthoredSlug(w.wedge)), "the packaged trades fell out of the catalogue");
+});
+
+test("a DRAFT is not in it — nothing runs until a human promotes it", async () => {
+  _resetAuthored();
+  const { app } = await makeFreshApp();
+  const p = (await api(app, "me")).json.projects[0].id as string;
+  const slug = authoredSlug("packaging-design");
+  await getAuthoredStore().createDraft(draftRow(p, slug));
+
+  const cat = (await api(app, "wedges", { headers: { "x-mycel-project": p } })).json as { wedge: string }[];
+  assert.ok(
+    !cat.some((w) => w.wedge === slug),
+    "an unpromoted draft is offered as a live service, defeating the one gate this module has",
+  );
+});
+
+test("ANOTHER TENANT'S WRITTEN SERVICE IS NOT IN IT", async () => {
+  /**
+   * The directory half of this route is deliberately not project-scoped — it describes the kernel's
+   * capabilities. A WRITTEN service is the other thing: it belongs to the business it was written
+   * for, and publishing one tenant's service definition to another is a decision about their work
+   * rather than a cache question.
+   *
+   * So this does NOT yet make the catalogue compound across businesses. A trade learned once and
+   * offered to everyone in it afterwards is the growth mechanism, and it is a decision somebody has
+   * to make rather than a refactor. Pinned here so that when it is made, it is made on purpose.
+   */
+  _resetAuthored();
+  const { app } = await makeFreshApp();
+  const mine = (await api(app, "me")).json.projects[0].id as string;
+  const theirs = freshProjectId("other");
+  const slug = authoredSlug("their-brand-service");
+  await getAuthoredStore().createDraft(draftRow(theirs, slug));
+  await getAuthoredStore().decide(theirs, slug, "promoted", "founder");
+  /*
+    ASSERT THE FIXTURE. Both leak assertions below are "this slug is absent", which is exactly what a
+    test proves when its setup silently did nothing — and sabotaging the scope check left this test
+    green, which is how the vacuum was found rather than guessed at.
+  */
+  assert.deepEqual(await promotedSlugs(theirs), [slug], "the fixture never promoted anything to leak");
+
+  const cat = (await api(app, "wedges", { headers: { "x-mycel-project": mine } })).json as { wedge: string }[];
+  assert.ok(!cat.some((w) => w.wedge === slug), "one tenant's written service leaked into another's catalogue");
+
+  /**
+   * AND NAMING THEIR PROJECT IN THE HEADER DOES NOT FETCH IT.
+   *
+   * Caught by sabotage: replacing the scope check with `named ?? [...set][0]` — trusting the header
+   * — left every assertion above green, because they all pass their OWN project id. A header a
+   * caller controls is not a permission, and both of this repo's cross-tenant leaks were a defaulted
+   * or trusted scope on a read.
+   */
+  const asThem = (await api(app, "wedges", { headers: { "x-mycel-project": theirs } })).json as { wedge: string }[];
+  assert.ok(
+    !asThem.some((w) => w.wedge === slug),
+    "naming another tenant's project in the header served their written services",
+  );
+  // The directory half still answers — an unauthorised project scope is not an error, it is no
+  // written services. The kernel's own capabilities are not a tenant's data.
+  assert.ok(asThem.length > 0, "an unrecognised project scope emptied the whole catalogue");
+});
+
+// ═══════════════════════════ 7. WHICH JOB STARTS THE WORK ═══════════════════════════
+//
+// ═════════════════════════════════════════════════════════════════════════════════════════════════
+// A NEW ENGAGEMENT WOULD HAVE BEGUN BY REVISING A WEBSITE THAT DOES NOT EXIST
+// ═════════════════════════════════════════════════════════════════════════════════════════════════
+//
+// `repairAuthoredManifest` derives `fulfillment.production_task_type` for services written before
+// that block was required. It took the LAST non-machinery job, on the reasoning that "a service
+// reads in order and the thing it hands over is what it ends on" — a true sentence about the
+// DELIVERABLE, and the wrong answer to this question. `production_task_type` is what
+// `sweepFulfillmentIgnition` SPAWNS when an engagement is ready to begin.
+//
+// Read from the one written service live in production, a brand studio's, four jobs in order:
+//
+//     shape_brand_strategy      inputs: positioning, competitors, target_audience, goals
+//     develop_brand_identity    inputs: brand_strategy, approved_feedback
+//     build_marketing_website   inputs: brand_guidelines, website_copy
+//     revise_marketing_website  inputs: feedback, website_url          <- was chosen
+//
+// Every later job takes a previous step's output; only the first takes facts about the client. A
+// single-job service makes first and last the same name, which is why this went unseen.
+
+test("PRODUCTION STARTS AT THE FIRST JOB, NOT THE LAST", () => {
+  const manifest = {
+    wedge: authoredSlug("brand-and-website"),
+    title: "Brand and website projects",
+    task_types: {
+      shape_brand_strategy: { description: "Turn positioning and audience into a brand strategy." },
+      develop_brand_identity: { description: "Develop the logo and visual system from the approved strategy." },
+      build_marketing_website: { description: "Build the marketing site from the approved identity." },
+      revise_marketing_website: { description: "Apply the client's consolidated feedback and prepare handover." },
+    },
+  } as unknown as Record<string, unknown>;
+  repairAuthoredManifest(manifest);
+  const f = (manifest.fulfillment ?? {}) as { production_task_type?: string };
+  assert.equal(
+    f.production_task_type,
+    "shape_brand_strategy",
+    `ignition would start an engagement with "${f.production_task_type}"`,
+  );
+});
+
+test("a job that names what the client receives still wins", () => {
+  /*
+    An author who declares `deliverable_kind` has answered this directly, and that beats any
+    positional guess. Declared SECOND here on purpose — if position were still deciding, this test
+    would pass for the wrong reason.
+  */
+  const manifest = {
+    wedge: authoredSlug("claims"),
+    title: "Claims and denials",
+    task_types: {
+      gather_claim_facts: { description: "Collect the facts a claim needs." },
+      file_claim: { description: "File the claim and report the outcome.", deliverable_kind: "document" },
+      chase_denial: { description: "Chase a denied claim." },
+    },
+  } as unknown as Record<string, unknown>;
+  repairAuthoredManifest(manifest);
+  assert.equal((manifest.fulfillment as { production_task_type?: string }).production_task_type, "file_claim");
+});
+
+test("the repair is idempotent and never overwrites a real fulfillment block", () => {
+  // It runs on every LOAD, not just at authoring — so a service that already answered must be left
+  // exactly as it is, or every read would rewrite the founder's own service.
+  const manifest = {
+    wedge: authoredSlug("kept"),
+    title: "Kept",
+    task_types: { first_job: { description: "One." }, second_job: { description: "Two." } },
+    fulfillment: { production_task_type: "second_job", intake_asks: [{ kind: "answer", ask: "Which brand?" }] },
+  } as unknown as Record<string, unknown>;
+  repairAuthoredManifest(manifest);
+  const f = manifest.fulfillment as { production_task_type?: string; intake_asks?: unknown[] };
+  assert.equal(f.production_task_type, "second_job", "the repair overwrote a declared production job");
+  assert.equal(f.intake_asks?.length, 1, "the repair flattened intake the founder had filled in");
+});
+
+// ═══════════════════════════ 8. THE NEED REACHES THE FOUNDER ═══════════════════════════
+//
+// ═════════════════════════════════════════════════════════════════════════════════════════════════
+// A DECLARATION NOBODY IS ASKED TO MEET IS NOT A FRAMEWORK
+// ═════════════════════════════════════════════════════════════════════════════════════════════════
+//
+// A written service can now name a need this kernel has never heard of, and a connection the founder
+// brings can answer it. `GET /v1/capabilities` is the surface where a founder LEARNS that a service
+// needs something — it feeds the apps page's "needs" section — and it enumerated `ALL_CAPABILITIES`
+// and nothing else.
+//
+// So the loop had a hole in the middle: the service declares, nobody is asked, nothing is connected,
+// `resolveCapability` reports it missing forever. Reachable in theory, unreachable in practice.
+
+test("A WRITTEN SERVICE'S OWN NEED IS SOMETHING THE FOUNDER IS ASKED TO CONNECT", async () => {
+  _resetAuthored();
+  const { app } = await makeFreshApp();
+  const p = (await api(app, "me")).json.projects[0].id as string;
+  const slug = authoredSlug("physio-recalls-and-claims");
+  const row = draftRow(p, slug);
+  // The whole point: a trade this kernel has never heard of, naming what it runs on.
+  (row.manifest as unknown as { capabilities: string[] }).capabilities = ["read_appointments", "send_email"];
+  await getAuthoredStore().createDraft(row);
+  await getAuthoredStore().decide(p, slug, "promoted", "founder");
+  // A schedule is what makes a wedge THIS PROJECT'S — same rule `app-suggestions.ts` uses.
+  await getDomainStore().createSchedule({
+    project_id: p, name: "recalls", wedge: slug, task_type: "draft_scope", input: {},
+    cadence: { kind: "every", seconds: 86_400 }, enabled: true, next_run_at: new Date().toISOString(),
+  });
+
+  const caps = (await api(app, "capabilities", { headers: { "x-mycel-project": p } })).json as {
+    items: { capability: string; title: string; question: string; implementation: string; needed_by: string[] }[];
+  };
+  const mine = caps.items.find((i) => i.capability === "read_appointments");
+  assert.ok(mine, `the declared need is not on the connect surface. Got: ${caps.items.map((i) => i.capability)}`);
+
+  /*
+    Its own name, said plainly. There is no hand-written title for a trade we do not know, and
+    inventing one would be inventing knowledge — the service that declared it chose these words.
+  */
+  assert.equal(mine!.title, "read appointments");
+  assert.match(mine!.question, /Which tool does your business use to read appointments\?/);
+  /*
+    BROKERED, and the founder is told. `resolveCapability` hands the agent the vendor's own tools for
+    a declared capability; a green row that looked like the kernel-parsed kind would be the same lie
+    `brokeredCaveat` exists to prevent one layer down.
+  */
+  assert.equal(mine!.implementation, "brokered");
+  assert.match(mine!.needed_by.join(" "), /Proposals and sign-off/, "the row does not say which service wants it");
+
+  // And the eleven are still all there — this adds, it does not replace.
+  for (const known of ["read_payments", "send_email"]) {
+    assert.ok(caps.items.some((i) => i.capability === known), `${known} fell off the connect surface`);
+  }
+});
+
+test("a need from a service this project does NOT run is not asked about", async () => {
+  /**
+   * The founder's own complaint, verbatim, when this surface listed what the SOFTWARE can do rather
+   * than what THIS business asked for: *"I'm not a bookkeeping company, for fuck's sake."* A
+   * declared need inherits that rule — it is drawn from the wedges this project runs, so a physio's
+   * appointment question never reaches a design studio.
+   */
+  _resetAuthored();
+  const { app } = await makeFreshApp();
+  const p = (await api(app, "me")).json.projects[0].id as string;
+  const theirs = freshProjectId("other");
+  const slug = authoredSlug("someone-elses-service");
+  const row = draftRow(theirs, slug);
+  (row.manifest as unknown as { capabilities: string[] }).capabilities = ["read_matters"];
+  await getAuthoredStore().createDraft(row);
+  await getAuthoredStore().decide(theirs, slug, "promoted", "founder");
+
+  const caps = (await api(app, "capabilities", { headers: { "x-mycel-project": p } })).json as {
+    items: { capability: string }[];
+  };
+  assert.ok(
+    !caps.items.some((i) => i.capability === "read_matters"),
+    "another tenant's declared need is being asked of this founder",
+  );
+});
+
+// ═══════════════════════════ 9. WHAT THE FOUNDER READS ABOUT THEIR OWN SERVICE ═══════════════════════════
+//
+// ═════════════════════════════════════════════════════════════════════════════════════════════════
+// A CORRECT DRAFT USED TO DESCRIBE ITS OWN NEED AS SOMETHING WE NO LONGER OFFER
+// ═════════════════════════════════════════════════════════════════════════════════════════════════
+//
+// `reviewDraft` builds the "What it needs from you first" list on the screen where a founder first
+// meets the service written for them. It had two branches: a known capability got its title, and
+// anything else got `something called "X", which this kernel no longer offers`.
+//
+// That was right while `CAPABILITIES` was the whole vocabulary — an unrecognised name could only be
+// one removed from the kernel between authoring and review. It became wrong the moment a service
+// could declare a trade's own need: a physiotherapy practice's `read_appointments` would have been
+// read back to its founder as something we NO LONGER OFFER, which is about the only sentence that
+// could make a correct draft look broken.
+
+test("A DECLARED NEED IS READ BACK PLAINLY, NOT AS A REMOVED CAPABILITY", () => {
+  const slug = authoredSlug("physio-recalls");
+  const manifest = goodManifest(slug) as Record<string, unknown>;
+  manifest.capabilities = ["read_appointments", "send_email"];
+  const review = reviewDraft({ slug, manifest: manifest as never, skills: [], knowledge: [], described_as: "physio" } as never);
+
+  assert.ok(
+    review.needs.includes("Read appointments"),
+    `the declared need is not said plainly. Got: ${JSON.stringify(review.needs)}`,
+  );
+  assert.ok(
+    !review.needs.some((n) => /no longer offers/.test(n)),
+    "a correct draft still describes its own need as something we removed",
+  );
+  // The known one keeps its hand-written title — that is the half worth having.
+  assert.ok(review.needs.some((n) => /email/i.test(n)), "the known capability lost its title");
+});
+
+test("a name that is neither known nor well-formed is still reported as gone", () => {
+  /*
+    The third case is real and still says so: a capability genuinely removed from the kernel between
+    authoring and review must degrade to a readable line rather than crash the page, and must not be
+    mistaken for a trade-specific declaration.
+  */
+  const slug = authoredSlug("stale");
+  const manifest = goodManifest(slug) as Record<string, unknown>;
+  manifest.capabilities = ["Read Appointments"];
+  const review = reviewDraft({ slug, manifest: manifest as never, skills: [], knowledge: [], described_as: "x" } as never);
+  assert.ok(
+    review.needs.some((n) => /no longer offers/.test(n)),
+    `a malformed capability name was read as a trade need. Got: ${JSON.stringify(review.needs)}`,
+  );
+});
+
+// ═══════════════════════════ 10. A QUESTION THAT REACHES NO TOOL ═══════════════════════════
+//
+// ═════════════════════════════════════════════════════════════════════════════════════════════════
+// "WHICH PRACTICE MANAGEMENT SYSTEM DO YOU USE?" IS A TEXTAREA
+// ═════════════════════════════════════════════════════════════════════════════════════════════════
+//
+// The founder types "Cliniko" and nothing connects to Cliniko. The answer is stored as prose, the
+// service still has no way into the system it was written for, and both sides believe setup is done.
+//
+// STRIPPED, NOT REFUSED — and the placement was measured, not chosen. It was a blocking fault first.
+// Authoring four real trades against the live model with that fault in place:
+//
+//     physio       REFUSED   "Which practice management system do you use?"
+//     immigration  shippable
+//     cleaning     shippable
+//     dental       REFUSED   "Which practice management system do you use?"
+//
+// Two of four, and both of them mainstream. A fault becomes `service.draft_refused` with no retry
+// behind it, so the founder's outcome was "we could not write your service". A guard that turns half
+// of ordinary trades away is worse than the question it prevents.
+//
+// Dropping it loses nothing real: the answer reached no tool either way. The capability is where the
+// need belongs, and the notice says so.
+
+test("A SETUP QUESTION THAT ASKS THE FOUNDER TO NAME A PRODUCT IS REMOVED, NOT REFUSED", () => {
+  const slug = authoredSlug("physio-recalls");
+  const manifest = goodManifest(slug) as Record<string, unknown>;
+  manifest.intake = [
+    { id: "which-system", ask: "Which practice management system do you use?" },
+    { id: "recall", ask: "What is the standard recall interval for patients?" },
+  ];
+  const notices: { message: string }[] = [];
+  repairAuthoredManifest(manifest, notices as never);
+
+  const asks = (manifest.intake as { ask: string }[]).map((q) => q.ask);
+  assert.deepEqual(asks, ["What is the standard recall interval for patients?"], "the dead-end question survived");
+
+  // THE DRAFT STILL SHIPS. This is the whole reason it is a repair: a fault here refused two of four
+  // real trades, and a refusal is the end of that founder's visit.
+  assert.deepEqual(authoredFaults(slug, manifest).map((f) => f.message), [], "the draft is still refused");
+
+  // And the founder is told why a question vanished, with the way out named.
+  const told = notices.find((n) => /connects to nothing/.test(n.message));
+  assert.ok(told, `no notice explained the removal. Got: ${JSON.stringify(notices)}`);
+  assert.match(told!.message, /capability/, "the notice does not say what to do instead");
+});
+
+test("the questions worth asking are untouched", () => {
+  /**
+   * NARROW ON PURPOSE. This matches the IDENTITY question — a system-ish noun AND "... do you use" —
+   * not any sentence containing the word "system". A service's real intake is trade knowledge with
+   * prose answers, and stripping those would take away the questions that make a deliverable good.
+   */
+  const slug = authoredSlug("physio-recalls");
+  const manifest = goodManifest(slug) as Record<string, unknown>;
+  const real = [
+    { id: "recall", ask: "What is the standard recall interval for patients?" },
+    { id: "policy", ask: "What is your booking system's cancellation policy?" },
+    { id: "insurers", ask: "Which insurers do you work with?" },
+    { id: "rate", ask: "What do you charge, and what sits outside the monthly fee?" },
+  ];
+  manifest.intake = [...real];
+  repairAuthoredManifest(manifest, [] as never);
+  assert.deepEqual(manifest.intake, real, "a real trade question was stripped as a dead end");
+});
+
+test("every spelling of the identity question is caught", () => {
+  // Four phrasings, all observed from the real author across four trades.
+  for (const ask of [
+    "Which practice management system do you use?",
+    "What case management system do you use?",
+    "What practice management software do you use?",
+    "Which scheduling tool are you using?",
+  ]) {
+    const slug = authoredSlug("identity-question");
+    const manifest = goodManifest(slug) as Record<string, unknown>;
+    manifest.intake = [{ id: "which-system", ask }];
+    repairAuthoredManifest(manifest, [] as never);
+    assert.deepEqual((manifest.intake as unknown[]), [], `not stripped: ${ask}`);
+  }
 });

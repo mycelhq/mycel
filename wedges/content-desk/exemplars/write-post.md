@@ -46,7 +46,7 @@ Expect it to do very little on the day and to be the thing a prospect mentions s
 
 ## Grounded in
 
-- Hart's Bakery site rebuild, delivered 4 weeks, invoiced £8,400
+- Hart's Bakery site rebuild, delivered 4 weeks, invoiced $8,400
 - Online orders 12/week → 60/week in the six weeks after launch
 - 80% of their sessions were mobile (their analytics, shared 3 October)
 - Permission to name them: confirmed by Ellie Hart, 11 October

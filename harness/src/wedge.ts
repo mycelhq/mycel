@@ -13,6 +13,7 @@ import type { Risk } from "./contract";
 import type { HarnessProfileSpec } from "./harness";
 import type { IntakeQuestion } from "./intake";
 import type { WorkspaceSpec } from "./workspace";
+import { libraryPath } from "./library";
 
 export interface WedgeTaskType {
   /**
@@ -490,7 +491,7 @@ export function wedgesDir(): string {
  * per-business directory.
  */
 export function workflowLibDir(): string {
-  return process.env.MYCEL_WORKFLOW_LIB_DIR ?? join(process.cwd(), "workflows");
+  return libraryPath("workflows", process.env.MYCEL_WORKFLOW_LIB_DIR);
 }
 
 /**
@@ -793,7 +794,7 @@ export function _resetWedgeDeclarations(): void {
  * that is missing on exactly the runs nobody watches.
  */
 function sharedSkillDirs(): string[] {
-  const root = process.env.MYCEL_SERVICE_SKILLS_DIR ?? join(process.cwd(), "service-skills");
+  const root = libraryPath("service-skills", process.env.MYCEL_SERVICE_SKILLS_DIR);
   if (!existsSync(root)) return [];
   try {
     return readdirSync(root)

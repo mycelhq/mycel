@@ -11,7 +11,7 @@
 // awkward email. A wrong merge costs the relationship and the record of it.
 import test from "node:test";
 import assert from "node:assert/strict";
-import crmHygiene from "../../workflows/crm-hygiene.mjs";
+import crmHygiene from "../../library/workflows/crm-hygiene.mjs";
 
 const NOW = "2026-08-30";
 

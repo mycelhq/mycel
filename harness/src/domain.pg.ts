@@ -14,6 +14,21 @@ const { Pool } = pg;
 const iso = (v: unknown) => new Date(v as string).toISOString();
 /** Postgres uuid columns throw 22P02 on junk like `prod-probe`. Treat that as a miss, not a 500. */
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+/**
+ * ═══ EVERY `id` COLUMN IN THIS SCHEMA IS A uuid, SO A BAD ID IS A 500 AND NOT A MISS ═══
+ *
+ * `SELECT … WHERE id=$1` with `""` does not return zero rows. Postgres answers `invalid input syntax
+ * for type uuid: ""` and the throw surfaces as a 500 in whatever was asking — which on 12 September
+ * was `POST /v1/chat` walking a case whose `client_id` is legally null (`graph.ts`).
+ *
+ * The in-memory store cannot show this: it filters arrays, so a malformed id misses and returns
+ * nothing, which is what the caller wanted. The entire suite is green on the backend that is not in
+ * production. `pg-casts.test.ts` makes the same argument about array casts.
+ *
+ * So every single-id read guards. "Not found" is the honest answer for an id no row can have, and it
+ * cannot mask a bug the way a silent catch would: the caller still gets `undefined`, and a caller that
+ * needed a row still fails — it just fails as a 404 rather than a 500.
+ */
 function isUuid(id: string): boolean {
   return UUID_RE.test(id);
 }
@@ -360,6 +375,7 @@ export class PostgresDomainStore implements DomainStore {
     return this.toConn(r.rows[0]);
   }
   async getConnection(id: string): Promise<Connection | undefined> {
+    if (!isUuid(id)) return undefined;
     const r = await this.pool.query(`SELECT * FROM connections WHERE id=$1`, [id]);
     return r.rows[0] ? this.toConn(r.rows[0]) : undefined;
   }
@@ -558,6 +574,7 @@ export class PostgresDomainStore implements DomainStore {
     return this.toSub(r.rows[0]);
   }
   async getTriggerSub(id: string): Promise<TriggerSub | undefined> {
+    if (!isUuid(id)) return undefined;
     const r = await this.pool.query(`SELECT * FROM trigger_subs WHERE id=$1`, [id]);
     return r.rows[0] ? this.toSub(r.rows[0]) : undefined;
   }
@@ -607,6 +624,7 @@ export class PostgresDomainStore implements DomainStore {
     return r.rows[0] ? this.toSub(r.rows[0]) : undefined;
   }
   async deleteTriggerSub(id: string): Promise<boolean> {
+    if (!isUuid(id)) return false;
     const r = await this.pool.query(`DELETE FROM trigger_subs WHERE id=$1`, [id]);
     return (r.rowCount ?? 0) > 0;
   }
@@ -625,6 +643,7 @@ export class PostgresDomainStore implements DomainStore {
     return this.toChan(r.rows[0]);
   }
   async getChannel(id: string): Promise<Channel | undefined> {
+    if (!isUuid(id)) return undefined;
     const r = await this.pool.query(`SELECT * FROM channels WHERE id=$1`, [id]);
     return r.rows[0] ? this.toChan(r.rows[0]) : undefined;
   }
@@ -653,6 +672,7 @@ export class PostgresDomainStore implements DomainStore {
     return this.toClient(r.rows[0]);
   }
   async getClient(id: string): Promise<Client | undefined> {
+    if (!isUuid(id)) return undefined;
     const r = await this.pool.query(`SELECT * FROM clients WHERE id=$1`, [id]);
     return r.rows[0] ? this.toClient(r.rows[0]) : undefined;
   }
@@ -704,6 +724,7 @@ export class PostgresDomainStore implements DomainStore {
     return this.toThread(r.rows[0]);
   }
   async getThread(id: string): Promise<Thread | undefined> {
+    if (!isUuid(id)) return undefined;
     const r = await this.pool.query(`SELECT * FROM threads WHERE id=$1`, [id]);
     return r.rows[0] ? this.toThread(r.rows[0]) : undefined;
   }
@@ -744,8 +765,40 @@ export class PostgresDomainStore implements DomainStore {
     );
     return r.rows[0] ? this.toThread(r.rows[0]) : undefined;
   }
+  /**
+   * `threads.client_id` is a uuid, so an EMPTY id is a type error rather than a miss.
+   *
+   * Postgres answers `invalid input syntax for type uuid: ""` and the throw becomes a 500 in whatever
+   * was asking — on 12 September that was `POST /v1/chat`, walking a case whose `client_id` is legally
+   * null (see `graph.ts`). The in-memory store filters an array and returns `[]`, so every test passed.
+   *
+   * An empty id means "no client", and no client has no threads. Returning `[]` is the answer the
+   * caller wanted and it cannot hide a real bug: a non-empty id that is not a uuid still throws, which
+   * is correct, because that one IS a bug — something built an id rather than reading one.
+   */
   async listThreadsForClient(clientId: string): Promise<Thread[]> {
+    if (!clientId) return [];
     const r = await this.pool.query(`SELECT * FROM threads WHERE client_id=$1 ORDER BY created_at`, [clientId]);
+    return r.rows.map(this.toThread);
+  }
+  async listThreadsForProject(
+    projectId: string,
+    opts?: { caseIds?: string[]; limit?: number },
+  ): Promise<Thread[]> {
+    // Fails closed on an absent scope. A project-wide read that answered "all of them" for an empty
+    // string is one forgotten argument away from being a cross-tenant leak, and this codebase has
+    // shipped that shape twice.
+    if (!projectId) return [];
+    const cases = opts?.caseIds;
+    if (cases && cases.length === 0) return [];
+    const limit = Math.min(Math.max(1, Math.floor(opts?.limit ?? 200)), 500);
+    const r = await this.pool.query(
+      cases
+        ? `SELECT * FROM threads WHERE project_id=$1 AND case_id = ANY($2::uuid[])
+           ORDER BY updated_at DESC LIMIT $3`
+        : `SELECT * FROM threads WHERE project_id=$1 ORDER BY updated_at DESC LIMIT $2`,
+      cases ? [projectId, cases, limit] : [projectId, limit],
+    );
     return r.rows.map(this.toThread);
   }
   async addMessage(m: Omit<Message, "id" | "created_at">): Promise<Message> {
@@ -759,6 +812,37 @@ export class PostgresDomainStore implements DomainStore {
       id: row.id, thread_id: row.thread_id, direction: row.direction, author: row.author, body: row.body,
       status: row.status ?? undefined, task_id: row.task_id ?? undefined, created_at: iso(row.created_at),
     };
+  }
+  /**
+   * One row per thread, in one query.
+   *
+   * `DISTINCT ON` with a matching `ORDER BY` is Postgres's own answer to "the latest per group" and
+   * it uses the same index a per-thread read would. The alternative — a `listMessages` call per
+   * thread — is the N+1 this method exists to kill, and it is the one that made the client page get
+   * slower exactly as a customer became valuable.
+   */
+  async lastMessages(threadIds: string[]): Promise<Map<string, Message>> {
+    const out = new Map<string, Message>();
+    if (threadIds.length === 0) return out;
+    const r = await this.pool.query(
+      `SELECT DISTINCT ON (thread_id) * FROM messages
+        WHERE thread_id = ANY($1::uuid[])
+        ORDER BY thread_id, created_at DESC`,
+      [threadIds],
+    );
+    for (const row of r.rows) {
+      out.set(row.thread_id, {
+        id: row.id,
+        thread_id: row.thread_id,
+        direction: row.direction,
+        author: row.author,
+        body: row.body,
+        status: row.status ?? undefined,
+        task_id: row.task_id ?? undefined,
+        created_at: iso(row.created_at),
+      });
+    }
+    return out;
   }
   async listMessages(threadId: string): Promise<Message[]> {
     const r = await this.pool.query(`SELECT * FROM messages WHERE thread_id=$1 ORDER BY created_at`, [threadId]);
@@ -792,6 +876,7 @@ export class PostgresDomainStore implements DomainStore {
     return this.toRec(res.rows[0]);
   }
   async getRecord(id: string): Promise<Record_ | undefined> {
+    if (!isUuid(id)) return undefined;
     const r = await this.pool.query(`SELECT * FROM records WHERE id=$1`, [id]);
     return r.rows[0] ? this.toRec(r.rows[0]) : undefined;
   }
@@ -848,6 +933,7 @@ export class PostgresDomainStore implements DomainStore {
     return r.rows[0] ? this.toRec(r.rows[0]) : undefined;
   }
   async deleteRecord(id: string): Promise<boolean> {
+    if (!isUuid(id)) return false;
     const r = await this.pool.query(`DELETE FROM records WHERE id=$1`, [id]);
     return (r.rowCount ?? 0) > 0;
   }
@@ -1238,6 +1324,7 @@ export class PostgresDomainStore implements DomainStore {
     return this.toSched(r.rows[0]);
   }
   async getSchedule(id: string): Promise<Schedule | undefined> {
+    if (!isUuid(id)) return undefined;
     const r = await this.pool.query(`SELECT * FROM schedules WHERE id=$1`, [id]);
     return r.rows[0] ? this.toSched(r.rows[0]) : undefined;
   }
@@ -1320,6 +1407,7 @@ export class PostgresDomainStore implements DomainStore {
     return r.rows[0] ? this.toSched(r.rows[0]) : undefined;
   }
   async deleteSchedule(id: string): Promise<boolean> {
+    if (!isUuid(id)) return false;
     const r = await this.pool.query(`DELETE FROM schedules WHERE id=$1`, [id]);
     return (r.rowCount ?? 0) > 0;
   }
@@ -1338,6 +1426,7 @@ export class PostgresDomainStore implements DomainStore {
     return this.toK(r.rows[0]);
   }
   async getKnowledge(id: string): Promise<KnowledgeItem | undefined> {
+    if (!isUuid(id)) return undefined;
     const r = await this.pool.query(`SELECT * FROM knowledge WHERE id=$1`, [id]);
     return r.rows[0] ? this.toK(r.rows[0]) : undefined;
   }
@@ -1378,6 +1467,7 @@ export class PostgresDomainStore implements DomainStore {
     return r.rows[0] ? this.toK(r.rows[0]) : undefined;
   }
   async deleteKnowledge(id: string): Promise<boolean> {
+    if (!isUuid(id)) return false;
     const r = await this.pool.query(`DELETE FROM knowledge WHERE id=$1`, [id]);
     return (r.rowCount ?? 0) > 0;
   }

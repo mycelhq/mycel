@@ -1,5 +1,5 @@
 // A small, dependency-free validator for task output against a wedge's output_schema (a JSON
-// Schema subset: type, required, properties, enum, items). Enough to make output.validated an
+// Schema subset: type, required, properties, enum, items, minItems, if/then). Enough to make output.validated an
 // honest signal — not a hardcoded { ok: true }. Not a full JSON Schema implementation.
 export interface ValidationResult {
   ok: boolean;
@@ -267,6 +267,49 @@ function check(value: unknown, schema: unknown, path: string, errors: string[]):
     for (let i = 0; i < (value as unknown[]).length; i++) {
       check((value as unknown[])[i], s.items, `${path}[${i}]`, errors);
     }
+  }
+
+  /**
+   * `minItems`, and it only means anything next to `if`/`then` below.
+   *
+   * Added with the conditional because "this list must not be empty" is never an unconditional
+   * truth about a task's output — an empty list is the correct answer most of the time. It is the
+   * COMBINATION that is worth expressing.
+   */
+  if (type === "array" && typeof s.minItems === "number" && (value as unknown[]).length < s.minItems) {
+    errors.push(`${path}: needs at least ${s.minItems} item${s.minItems === 1 ? "" : "s"}`);
+  }
+
+  /**
+   * ═══════════════════════════════════════════════════════════════════════════════════════════════
+   * `if` / `then` — A REQUIREMENT THAT DEPENDS ON ANOTHER ANSWER
+   * ═══════════════════════════════════════════════════════════════════════════════════════════════
+   *
+   * The subset here was type/required/properties/enum/items, and none of those can express the rule
+   * that actually mattered: `draft_shape` answers `runs_as.fit: "none"` — nothing we ship is this
+   * business's work — and `runs_as.to_author` is the list of services to write for them. Nothing
+   * could require the second when the first was true, so "we cannot run your business, and here is
+   * nothing to do about it" was a schema-clean answer. Twelve production shapes said `none`; NINE
+   * proposed nothing.
+   *
+   * I first wrote this as a `ship_checks` entry, which was dead twice over: the manifest key is
+   * `ship_checks` and I wrote `checks`, and `client-ready.ts` only evaluates checks for task types
+   * that declare `ship_requires` — which is for CLIENT-FACING jobs, and shaping a business is not
+   * one. The schema is the enforcement a decide task actually has.
+   *
+   * AND IT IS A RETRY, NOT A FAILURE, which is the whole reason this is the right layer.
+   * `runtime.ts` polls `output/result.txt` and ends the run the moment it validates; an answer that
+   * does not validate simply does not finish the run, so the agent keeps working within its eight
+   * steps. The founder gets a better answer rather than an error.
+   *
+   * DELIBERATELY NARROW. `if` is evaluated for its own errors only — no `else`, no nesting beyond
+   * what `check` already does — because a validator nobody can predict is worse than one that
+   * cannot express everything. If the `if` matches, `then` is applied to the same value.
+   */
+  if (s.if && s.then) {
+    const probe: string[] = [];
+    check(value, s.if, path, probe);
+    if (probe.length === 0) check(value, s.then, path, errors);
   }
 }
 

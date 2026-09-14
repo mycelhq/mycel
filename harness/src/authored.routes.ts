@@ -29,7 +29,7 @@ import { ensureUpkeepQuietly } from "./upkeep";
 import { fireSchedule, firstRun, scheduleKey } from "./scheduler";
 import { recurringJob, reviewDraft, type DraftReview } from "./wedgeauthor";
 import { RESEARCH_SERVICE_TASK_TYPE } from "./skill-arsenal";
-import { gradeDeliverables, type Grade } from "./deliverable-grade";
+import { collapseForFounder, gradeDeliverables, type Grade } from "./deliverable-grade";
 import { audit } from "./audit";
 import { exemplarSkills } from "./exemplar";
 import { composioConfig, listAllToolkits } from "./composio";
@@ -221,7 +221,16 @@ export function toDraftView(
     notices: row.notices ?? [],
     created_at: row.created_at,
     decided_at: row.decided_at,
-    grade: gradeDeliverables(row.manifest, { exemplars, knownToolkits: toolkits }),
+    /*
+      COLLAPSED FOR THE SCREEN. `blocking` and `weak` still count every job, because those are the
+      numbers the card leads with and "4 things need attention" is true; `findings` is one row per
+      KIND of problem, because four sentences differing only in a job title is one fact rendered four
+      times — see `collapseForFounder` for the measurement that produced it.
+    */
+    grade: (() => {
+      const g = gradeDeliverables(row.manifest, { exemplars, knownToolkits: toolkits });
+      return { ...g, findings: collapseForFounder(g.findings) };
+    })(),
   };
 }
 

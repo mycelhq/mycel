@@ -10,8 +10,11 @@ import {
   ALL_CAPABILITIES,
   CAPABILITIES,
   assertCapabilityTableValid,
+  brokeredCaveat,
+  capabilityAdapter,
   capabilityFault,
   capabilityProviders,
+  connectionProvides,
   isCapability,
   projectWedgeSlugs,
   readToolsFor,
@@ -62,8 +65,41 @@ test("capabilities: the vocabulary is closed, and a mistyped one is refused rath
   assert.match(capabilityFault("read_payment")!, /did you mean "read_payments"/);
   assert.match(capabilityFault("READ_PAYMENTS")!, /did you mean "read_payments"/);
   assert.match(capabilityFault("send_mail")!, /did you mean "send_email"/, "an anagram is still a typo");
-  // Nothing anyone could have meant gets the whole vocabulary rather than a confident wrong guess.
+  /**
+   * ═══ AND A NAME THAT RESEMBLES NOTHING WE SHIP IS A TRADE, NOT A TYPO ═══
+   *
+   * This asserted that `book_a_courier` was refused, on the reasoning that the vocabulary is closed.
+   * The vocabulary being closed is most of why this platform could not cover a trade nobody
+   * packaged: eleven names, against 1,540 connectable toolkits. A physiotherapy practice cannot say
+   * `read_appointments`, a law firm cannot say `read_matters`, and being made to pick the nearest of
+   * eleven is how a brand studio ended up declared as `invoice-chaser`.
+   *
+   * The two cases are told apart by `looksLike`, which this test still pins above. A near miss is a
+   * slip and naming the intended capability is worth more than accepting it — the kernel PARSES
+   * those, and a typo would quietly downgrade a normalised read to a raw vendor call. A name
+   * resembling nothing is answered by whatever the founder connects and marks as providing it.
+   *
+   * The paragraph at the top of this test still holds and is the reason a MALFORMED name is still
+   * refused: a silently-ignored capability is worse than a hardcode, because a dropped one produces
+   * a run with no hands that reports a clean finish. Nothing is dropped now — `runtime.ts` pushes a
+   * `missing` sentence for a name it cannot resolve, rather than `continue`.
+   */
+  const declarable = { declarable: true } as const;
+  assert.equal(capabilityFault("book_a_courier", declarable), undefined, "a trade we do not ship cannot be declared");
+  assert.equal(capabilityFault("read_appointments", declarable), undefined);
+  assert.equal(capabilityFault("read_matters", declarable), undefined);
+  /*
+    And OURS stays closed. `fly_to_mars` in a packaged wedge or blueprint is a typo, not a trade, and
+    the strict answer is the one a caller gets by forgetting to ask for the other.
+  */
   assert.match(capabilityFault("book_a_courier")!, /known capabilities: /);
+  // A typo is a typo either way — the kernel PARSES the eleven, so accepting a near miss would
+  // quietly downgrade a normalised read to a raw vendor call.
+  assert.match(capabilityFault("read_payment", declarable)!, /did you mean "read_payments"/);
+  // Malformed is still a fault, and it names the shape rather than guessing an intent.
+  assert.match(capabilityFault("Read Appointments", declarable)!, /snake_case/);
+  assert.match(capabilityFault("read-appointments", declarable)!, /snake_case/);
+  assert.match(capabilityFault("", declarable)!, /snake_case/);
 
   // Every capability carries the sentence for a founder when nothing provides it, and it says what
   // STOPS — not "not configured". Same contract as `whyNoWedge` in roles.ts.
@@ -479,4 +515,93 @@ test("capabilities: a trade-specific app is never proposed to a business that di
     }),
     [],
   );
+});
+
+// ── a trade this kernel has never heard of ────────────────────────────────────────────────────────
+//
+// ═════════════════════════════════════════════════════════════════════════════════════════════════
+// THE CUSTOMER BRINGS THE INTEGRATION, AND THE INTEGRATION SAYS WHAT IT CAN DO
+// ═════════════════════════════════════════════════════════════════════════════════════════════════
+//
+// `CAPABILITIES` is eleven names. The broker underneath never was: `readComposio` takes a free-form
+// capability string, reaches any of 1,540 Composio toolkits, and a connection can map a capability
+// to a raw vendor API path and carry the call on its own OAuth. So the runtime was already a
+// framework and the DECLARATION was the ceiling.
+//
+// That ceiling is what stopped this covering a trade nobody packaged. A physiotherapy practice runs
+// on Cliniko or Jane, a law firm on Clio, a plumber on ServiceTitan. None of it is `read_crm`, none
+// of it was expressible, and `runtime.ts` skipped an unknown name with no grant and no sentence — so
+// a service written for that business asked for what it needed and was handed nothing, silently.
+//
+// The chain was `capability (our eleven) -> providers (our vendor table) -> the founder's
+// connection`, which requires this kernel to know what Cliniko is. It now runs the other way.
+
+const byo = (over: Partial<Connection> & { provides?: unknown }): Connection =>
+  ({
+    id: `c-${Math.random().toString(36).slice(2, 8)}`,
+    project_id: "p1",
+    kind: "composio",
+    name: "Cliniko",
+    owner: { kind: "founder", id: "founder" },
+    config: { toolkit: "cliniko", verified_at: "2026-09-13T00:00:00Z", provides: over.provides },
+    created_at: "2026-09-13T00:00:00Z",
+    ...over,
+  }) as Connection;
+
+test("A DECLARED CAPABILITY BINDS TO WHATEVER THE FOUNDER CONNECTED", () => {
+  const c = byo({ provides: { read_appointments: { reads: ["CLINIKO_LIST_APPOINTMENTS"] } } });
+  const b = resolveCapability("read_appointments", [c], "p1");
+  assert.equal(b.ok, true, `a connected tool that says it reads appointments did not bind: ${b.detail}`);
+  assert.equal(b.bound.length, 1);
+  assert.equal(b.bound[0]!.connection.id, c.id);
+  /*
+    NEVER `unreadable`/`unactionable`. Those report that the KERNEL has no parser or composer, which
+    is true of every declared capability by construction — it is the point, not a defect, and
+    reporting it would print the "connected but unimplemented" refusal at a working connection.
+  */
+  assert.equal(b.bound[0]!.unreadable, false);
+  assert.equal(b.bound[0]!.unactionable, false);
+  // And the agent is TOLD it is getting raw vendor tools rather than a kernel verb.
+  assert.equal(capabilityAdapter("read_appointments"), "brokered");
+  assert.match(brokeredCaveat("read_appointments"), /read what they take before planning/);
+});
+
+test("nothing claiming it gets a sentence naming the fix, not silence", () => {
+  const b = resolveCapability("read_matters", [byo({ provides: {} })], "p1");
+  assert.equal(b.ok, false);
+  assert.match(b.detail, /Nothing connected here says it can read matters/);
+  assert.match(b.detail, /mark it as providing "read_matters"/);
+  // It must not name a vendor. Naming one would be the hardcoding this exists to remove.
+  assert.ok(!/cliniko|clio|xero|quickbooks/i.test(b.detail), "the sentence invented a product");
+});
+
+test("A CLAIM WITH NOTHING BEHIND IT IS NOT A CLAIM", () => {
+  /**
+   * `provides: { read_appointments: {} }` — no reads, no actions. Recording it would make
+   * `resolveCapability` report a working binding for a connection that cannot do the thing, which is
+   * the "connected but unimplemented" failure the eleven already have a loud sentence for.
+   */
+  const b = resolveCapability("read_appointments", [byo({ provides: { read_appointments: {} } })], "p1");
+  assert.equal(b.ok, false, "a capability claimed with no tool behind it bound anyway");
+  assert.deepEqual(connectionProvides(byo({ provides: { read_appointments: {} } })), {});
+  // Junk in the config is ignored rather than thrown over — a bad row must not take down a resolve.
+  assert.deepEqual(connectionProvides(byo({ provides: "appointments" })), {});
+  assert.deepEqual(connectionProvides(byo({ provides: { "Read Appointments": { reads: ["X"] } } })), {});
+});
+
+test("it is scoped, like every other read in this module", () => {
+  const theirs = byo({ project_id: "p2", provides: { read_appointments: { reads: ["X"] } } });
+  assert.equal(resolveCapability("read_appointments", [theirs], "p1").ok, false, "another tenant's tool bound");
+
+  // A CLIENT's connection is not the business's — same filter the eleven apply, same reason.
+  const clientOwned = byo({ owner: { kind: "client", id: "cl1" }, provides: { read_appointments: { reads: ["X"] } } });
+  assert.equal(resolveCapability("read_appointments", [clientOwned], "p1").ok, false, "a client's tool bound as the firm's");
+});
+
+test("the eleven are untouched — they still parse and compose", () => {
+  // The known path is worth more than a raw tool where it exists: normalised money, a real send. A
+  // declared capability must not be able to shadow or weaken it.
+  assert.equal(capabilityAdapter("read_payments"), "kernel");
+  assert.match(whyNoProvider("read_payments"), /[a-z]{4}/);
+  assert.ok(isCapability("read_payments") && !isCapability("read_appointments"));
 });

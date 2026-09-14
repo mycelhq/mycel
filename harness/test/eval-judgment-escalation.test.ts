@@ -23,7 +23,7 @@ import { capabilitiesForConnection, guardSend } from "../src/outreach/guard";
 import { evaluatePolicy, resetPolicyCounters } from "../src/policy";
 import { permits, type AutonomyPolicy } from "../src/autonomy";
 import { loadWedge } from "../src/wedge";
-import dunningLadder from "../../workflows/dunning-ladder.mjs";
+import dunningLadder from "../../library/workflows/dunning-ladder.mjs";
 import type { Move } from "../src/moves";
 
 const linkedin = capabilitiesForConnection({ kind: "linkedin", config: {} } as never);

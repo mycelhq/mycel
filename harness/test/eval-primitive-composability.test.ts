@@ -19,7 +19,7 @@ import { dirname, join } from "node:path";
 // and standalone from kernel/harness. loadWedge / runWorkflow read these before falling back to cwd.
 const HERE = dirname(fileURLToPath(import.meta.url));
 process.env.MYCEL_WEDGES_DIR ??= join(HERE, "..", "..", "wedges");
-process.env.MYCEL_WORKFLOW_LIB_DIR ??= join(HERE, "..", "..", "workflows");
+process.env.MYCEL_WORKFLOW_LIB_DIR ??= join(HERE, "..", "..", "library", "workflows");
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { manifestFaults } from "../src/roles";
@@ -27,9 +27,9 @@ import { loadWedge } from "../src/wedge";
 import { runWorkflow, SHARED_WORKFLOWS, isSharedWorkflow } from "../src/workflows";
 import { authoredFaults } from "../src/wedgeauthor";
 import { authoredSlug } from "../src/wedge";
-import dunningLadder from "../../workflows/dunning-ladder.mjs";
-import reconcile from "../../workflows/reconcile.mjs";
-import nextTouch from "../../workflows/next-touch.mjs";
+import dunningLadder from "../../library/workflows/dunning-ladder.mjs";
+import reconcile from "../../library/workflows/reconcile.mjs";
+import nextTouch from "../../library/workflows/next-touch.mjs";
 
 // ─────────────────────────── 1. THE SHIPPED VERTICALS ARE COMPOSED, NOT HARDCODED ───────────────────────────
 //

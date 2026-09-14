@@ -8,7 +8,7 @@
 // Commonality is not evidence. The tests that matter here are the ones where it declines.
 import test from "node:test";
 import assert from "node:assert/strict";
-import lookalike, { type ProvenPattern } from "../../workflows/lookalike.mjs";
+import lookalike, { type ProvenPattern } from "../../library/workflows/lookalike.mjs";
 
 /** What `win_patterns` hands back once there is enough book to judge. */
 const PATTERNS: ProvenPattern[] = [

@@ -655,3 +655,61 @@ test("ship_checks: a malformed ratio_of is dropped, not half-applied", () => {
   assert.deepEqual(readShipChecks([{ kind: "ratio_of", numerator: "a", pct: "c" }]), []);
   assert.deepEqual(readShipChecks([{ kind: "ratio_of", numerator: "a", denominator: "b" }]), []);
 });
+
+// ── required_when ─────────────────────────────────────────────────────────────────────────────────
+//
+// ═════════════════════════════════════════════════════════════════════════════════════════════════
+// "WE CANNOT RUN YOUR BUSINESS, AND HERE IS NOTHING TO DO ABOUT IT" WAS A LEGAL ANSWER
+// ═════════════════════════════════════════════════════════════════════════════════════════════════
+//
+// `draft_shape` answers `runs_as.fit: none` — nothing we ship is the work this business sells — and
+// `runs_as.to_author` is the list of services to write for them. Nothing required the second when
+// the first was true, and `runs_as.required` was `["fit"]` alone.
+//
+// Measured across every shaping run in production: TWELVE answered `none`, and NINE of those
+// proposed nothing. "Texas Payroll and Contractor Compliance" was shaped three separate times and
+// proposed nothing on all three. Those nine are precisely the businesses the written-service path
+// exists to serve, and it is precisely the businesses it never fired for — the whole "works for any
+// service business" claim died in an unrequired array.
+//
+// The inverse of `not_when`, and conditional rather than a plain `min_items` because when the
+// catalogue DOES cover the delivery an empty list is correct and demanding an entry invents work.
+
+test("REQUIRED_WHEN: fit=none with nothing to author is a fault", () => {
+  const checks = [{ kind: "required_when", field: "runs_as.to_author", when: "runs_as.fit", equals: "none", n: 1 }] as never;
+  const faults = shipFaults({ runs_as: { fit: "none", to_author: [] } }, checks);
+  assert.equal(faults.length, 1, "a business we cannot serve, with nothing proposed, passed");
+  assert.match(faults[0]!.message, /at least 1 entr/);
+  // The sentence has to carry the reasoning, because it is fed back to the model as the retry.
+  assert.match(faults[0]!.message, /all of it is something to write/);
+
+  // Absent entirely is the same fault as empty — that is how nine of the twelve actually answered.
+  assert.equal(shipFaults({ runs_as: { fit: "none" } }, checks).length, 1);
+});
+
+test("it is silent when the catalogue covers the work", () => {
+  const checks = [{ kind: "required_when", field: "runs_as.to_author", when: "runs_as.fit", equals: "none", n: 1 }] as never;
+  /*
+    `direct` and `adjacent` mean we already run this. Demanding a service to write there would invent
+    work and put a draft in front of a founder who needs none — which is why this is conditional and
+    not `min_items`.
+  */
+  assert.deepEqual(shipFaults({ runs_as: { fit: "direct", wedge: "books-keeper" } }, checks), []);
+  assert.deepEqual(shipFaults({ runs_as: { fit: "adjacent", to_author: [] } }, checks), []);
+  // And satisfied when the answer is what it should have been all along.
+  assert.deepEqual(
+    shipFaults({ runs_as: { fit: "none", to_author: [{ title: "Payroll and contractor compliance" }] } }, checks),
+    [],
+  );
+});
+
+test("a non-array, a string and a missing trigger are all handled without throwing", () => {
+  const checks = [{ kind: "required_when", field: "runs_as.to_author", when: "runs_as.fit", equals: "none", n: 1 }] as never;
+  // A model that answers the array as prose has produced zero entries, not one.
+  assert.equal(shipFaults({ runs_as: { fit: "none", to_author: "payroll" } }, checks).length, 1);
+  // No `fit` at all: this check has nothing to say. The schema's own `required` covers that.
+  assert.deepEqual(shipFaults({ runs_as: {} }, checks), []);
+  assert.deepEqual(shipFaults({}, checks), []);
+});
+
+

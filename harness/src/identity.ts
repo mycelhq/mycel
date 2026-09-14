@@ -13,6 +13,7 @@ import { isSuperAdminEmail } from "./superadmin";
 import { asSurveyLog, emptySurveyLog, promptById, SURVEY_IDS, type SurveyLog } from "./surveys";
 import { audit } from "./audit";
 import type { DomainProvisioning } from "./domains.aws";
+import { mintReferralCode } from "./referrals";
 
 /** A stable, deterministic UUID from a name (UUIDv5-style). The default org/project/owner use
  *  these so their ids survive a restart — otherwise durable rows would be scoped to a dead
@@ -411,6 +412,24 @@ export interface Org {
    * Absent means never sent — the first digest is due as soon as the weekday rule matches.
    */
   last_digest_at?: string;
+  /**
+   * THIS ORG'S OWN REFERRAL CODE — the thing a founder shares.
+   *
+   * Stored rather than derived from the id, and `referrals.ts` gives the reason: a derived code
+   * cannot be rotated, and a referral link ends up in a tweet, an email footer and a Slack. Minted
+   * lazily, so every org that predates this gets one the first time anybody asks.
+   */
+  referral_code?: string;
+  /** The org whose code brought this one in. Set once, at sign-up, and never changed after. */
+  referred_by?: string;
+  /**
+   * When the referrer was credited for this org — i.e. when this org actually started paying.
+   *
+   * Absent means "not yet", which covers both "never subscribed" and "subscribed before this
+   * existed". A reward that pays on SIGNUP is a reward that gets farmed in a week; see
+   * `REFERRAL_REWARD_MONTHS`.
+   */
+  referral_credited_at?: string;
 }
 export interface Project {
   id: string;
@@ -556,6 +575,24 @@ export interface MemberPrefs {
    * session cannot forge the scores the super-admin dashboard aggregates.
    */
   surveys?: SurveyLog;
+  /**
+   * The business this person was last looking at.
+   *
+   * On the MEMBER rather than in a cookie, and the reason is that the cookie is deleted on purpose:
+   * `logout()` clears `PROJECT_COOKIE` so a stale selection cannot survive into somebody else's
+   * session on a shared machine. Signing back in then re-derived the choice from the project list,
+   * which for a founder with one business is right and invisible and for one with fifteen is a
+   * stable arbitrary answer — they arrive in a business they were not working in.
+   *
+   * Same argument as `nav_seen` two fields up: it follows the person across devices, which a cookie
+   * cannot do either.
+   *
+   * NOT AUTHORITATIVE. `prefs` is free-form and written by whoever holds the session, so this is a
+   * claim. `openOnProject` in the console checks it against `GET /v1/me`'s own project list before
+   * using it, and every kernel read re-checks the project header independently — so a forged value
+   * names a project the session cannot see and is simply dropped.
+   */
+  last_project?: string;
   [key: string]: unknown;
 }
 
@@ -2088,6 +2125,92 @@ class IdentityStore {
 
   getOrg(id: string): Org | undefined {
     return this.orgs.get(id);
+  }
+
+  // ─── Referrals ─────────────────────────────────────────────────────────────────────────────────
+  //
+  // A founder who has just watched this close a month's books is the most credible salesperson this
+  // product will ever have, and until now there was nothing to hand them. `milestones.ts` already
+  // asks at the right moment — three days after the first invoice is paid — and asked for goodwill,
+  // because goodwill was all there was to ask for.
+  //
+  // The whole mechanism is three fields on an org and the rule that a reward lands on a PAID
+  // conversion. See `referrals.ts` for why the code is minted rather than derived.
+
+  /**
+   * This org's code, minted on first use.
+   *
+   * Lazy rather than at creation, so every org that predates this gets one the moment somebody opens
+   * the screen — no backfill, no migration that has to run before the feature works.
+   *
+   * The collision retry is not theatre: the unique index is the only thing stopping two orgs from
+   * owning one link, and the founder who loses that race would have their referrals silently land on
+   * a stranger's account. Ten draws from 10^11 is past any plausible failure.
+   */
+  referralCode(orgId: string): string | undefined {
+    const org = this.orgs.get(orgId);
+    if (!org) return undefined;
+    if (org.referral_code) return org.referral_code;
+
+    const taken = new Set([...this.orgs.values()].map((o) => o.referral_code).filter(Boolean));
+    let code = mintReferralCode();
+    for (let i = 0; i < 10 && taken.has(code); i++) code = mintReferralCode();
+    if (taken.has(code)) return undefined;
+
+    org.referral_code = code;
+    this.persistOrg(org);
+    return code;
+  }
+
+  /** The org that owns a code, or undefined. Codes are compared exactly; see `normaliseReferralCode`. */
+  orgByReferralCode(code: string): Org | undefined {
+    if (!code) return undefined;
+    return [...this.orgs.values()].find((o) => o.referral_code === code);
+  }
+
+  /**
+   * Record who brought this org in.
+   *
+   * ONCE, and never onto itself. Both refusals are silent — a signup must not fail because somebody
+   * pasted their own link, and a second attribution attempt is either a retry or an attack, and
+   * neither deserves a different answer.
+   */
+  attributeReferral(orgId: string, referrerOrgId: string): boolean {
+    const org = this.orgs.get(orgId);
+    if (!org || org.referred_by || orgId === referrerOrgId) return false;
+    if (!this.orgs.has(referrerOrgId)) return false;
+    org.referred_by = referrerOrgId;
+    this.persistOrg(org);
+    return true;
+  }
+
+  /**
+   * The referred org started paying — credit the referrer, once.
+   *
+   * Returns the referrer's org id when this call is the one that credited it, so the caller can
+   * emit exactly one event. Idempotent: called on every plan write, and a plan that goes active,
+   * lapses and comes back must not pay twice.
+   */
+  creditReferral(orgId: string): string | undefined {
+    const org = this.orgs.get(orgId);
+    if (!org?.referred_by || org.referral_credited_at) return undefined;
+    org.referral_credited_at = new Date().toISOString();
+    this.persistOrg(org);
+    return org.referred_by;
+  }
+
+  /** Orgs this one brought in, newest first. The referrer's own list; nothing else may ask. */
+  referredBy(orgId: string): Org[] {
+    return [...this.orgs.values()]
+      .filter((o) => o.referred_by === orgId)
+      .sort((a, b) => (a.created_at < b.created_at ? 1 : -1));
+  }
+
+  /** Write-through, matching how every other org mutation here persists. */
+  private persistOrg(org: Org): void {
+    if (!this.pg) return;
+    const pg = this.pg;
+    void pg.upsertOrg(org).catch((e) => console.error("[mycel] persist org error:", e));
   }
 
   /**

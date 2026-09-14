@@ -21,6 +21,9 @@ const rowToOrg = (r: any): Org => ({
   billing_ref: r.billing_ref ?? undefined,
   plan_renews_at: r.plan_renews_at ? iso(r.plan_renews_at) : undefined,
   last_digest_at: r.last_digest_at ? iso(r.last_digest_at) : undefined,
+  referral_code: r.referral_code ?? undefined,
+  referred_by: r.referred_by ?? undefined,
+  referral_credited_at: r.referral_credited_at ? iso(r.referral_credited_at) : undefined,
 });
 const rowToProject = (r: any): Project => ({
   id: r.id, org_id: r.org_id, name: r.name, wedges: r.wedges ?? [], created_at: iso(r.created_at),
@@ -127,6 +130,20 @@ export class IdentityPg {
         ALTER TABLE orgs ADD COLUMN IF NOT EXISTS billing_ref text;
         ALTER TABLE orgs ADD COLUMN IF NOT EXISTS plan_renews_at timestamptz;
         ALTER TABLE orgs ADD COLUMN IF NOT EXISTS last_digest_at timestamptz;
+        ALTER TABLE orgs ADD COLUMN IF NOT EXISTS referral_code text;
+        ALTER TABLE orgs ADD COLUMN IF NOT EXISTS referred_by text;
+        ALTER TABLE orgs ADD COLUMN IF NOT EXISTS referral_credited_at timestamptz;
+        /*
+          UNIQUE, and it is the only thing stopping two orgs from owning one link. Codes are drawn
+          from about 10^11, so a collision is a rounding error - but "a rounding error" is not a
+          guarantee, and the row that loses is a founder whose referrals silently land on somebody
+          else account. The index makes the insert fail instead, which the caller retries.
+
+          Partial, because every org created before this has NULL and NULLs are not distinct in a
+          plain unique index on some engines. This one says what it means.
+        */
+        CREATE UNIQUE INDEX IF NOT EXISTS orgs_referral_code_key
+          ON orgs (referral_code) WHERE referral_code IS NOT NULL;
         /**
          * ARCHIVED, NOT DELETED — and the difference is the client, not us.
          *
@@ -307,11 +324,18 @@ export class IdentityPg {
 
   async upsertOrg(o: Org): Promise<void> {
     await this.pool.query(
-      `INSERT INTO orgs (id, name, plan, plan_status, billing_ref, plan_renews_at, last_digest_at) VALUES ($1,$2,$3,$4,$5,$6,$7)
+      `INSERT INTO orgs (id, name, plan, plan_status, billing_ref, plan_renews_at, last_digest_at, referral_code, referred_by, referral_credited_at)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)
        ON CONFLICT (id) DO UPDATE SET name=EXCLUDED.name, plan=EXCLUDED.plan,
          plan_status=EXCLUDED.plan_status, billing_ref=EXCLUDED.billing_ref,
-         plan_renews_at=EXCLUDED.plan_renews_at, last_digest_at=EXCLUDED.last_digest_at`,
-      [o.id, o.name, o.plan ?? "self_hosted", o.plan_status ?? "active", o.billing_ref ?? null, o.plan_renews_at ?? null, o.last_digest_at ?? null],
+         plan_renews_at=EXCLUDED.plan_renews_at, last_digest_at=EXCLUDED.last_digest_at,
+         referral_code=EXCLUDED.referral_code, referred_by=EXCLUDED.referred_by,
+         referral_credited_at=EXCLUDED.referral_credited_at`,
+      [
+        o.id, o.name, o.plan ?? "self_hosted", o.plan_status ?? "active", o.billing_ref ?? null,
+        o.plan_renews_at ?? null, o.last_digest_at ?? null,
+        o.referral_code ?? null, o.referred_by ?? null, o.referral_credited_at ?? null,
+      ],
     );
   }
   async upsertProject(p: Project): Promise<void> {

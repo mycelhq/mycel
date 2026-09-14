@@ -19,6 +19,8 @@
   },
   "task_types": {
     "answer_question": {
+      "internal": true,
+      "_comment_internal": "One item, answered. A child of the batch; fill_questionnaire is the packet that ships.",
       "description": "Answer one questionnaire item from mounted knowledge. If knowledge is silent, mark needs_human and do not guess.",
       "harness": {
         "shape": "decide",
@@ -83,7 +85,9 @@
             "description": "The buyer's own reference for it, so the answer lands in the right row of their form."
           }
         }
-      }
+      },
+      "client_facing": false,
+      "_comment_client_facing": "Answers one row of a questionnaire. The filled questionnaire is the deliverable."
     },
     "fill_questionnaire": {
       "description": "Parse the questionnaire into items, fan out answer_question children, then compile a review packet from the batch.",
@@ -158,6 +162,10 @@
                 }
               }
             }
+          },
+          "cannot_answer": {
+            "type": "boolean",
+            "description": "True when the questionnaire could not be parsed, or mounted knowledge is silent on every item. Then leave `answered` absent."
           }
         }
       },
@@ -171,6 +179,12 @@
           "kind": "each_has",
           "items": "artifacts",
           "field": "name"
+        },
+        {
+          "kind": "not_when",
+          "field": "answered",
+          "unknown_when": "cannot_answer",
+          "_why": "A questionnaire returned with invented answers is the single most expensive document this product could produce: the client forwards it to their buyer's security team."
         }
       ],
       "deliverable_shape": {
@@ -217,6 +231,8 @@
       }
     },
     "desk_run": {
+      "internal": true,
+      "_comment_internal": "The morning sweep across open questionnaires. A schedule, not a piece of work.",
       "description": "The morning sweep across open questionnaires: which packet has no draft, which is waiting on a human, which is ready to send after you approve.",
       "tier": "fast",
       "harness": {

@@ -18,6 +18,7 @@ import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { validateOutput } from "./validate";
 import { wedgesDir } from "./wedge";
+import { libraryPath } from "./library";
 
 export interface PackSpec {
   /** Logical name, e.g. `share_of_voice`. */
@@ -53,7 +54,12 @@ export function parsePackRef(ref: string): { name: string; version: number } | u
 }
 
 function packsRoot(): string {
-  return process.env.MYCEL_PACKS_DIR?.trim() || join(wedgesDir(), "..", "packs");
+  /*
+    Resolved against the LIBRARY, not against `wedgesDir()`. It used to be `<wedges>/../packs`, which
+    silently assumed the two directories were siblings — an assumption that survived only because
+    nothing had ever moved, and that would have broken the moment either one did.
+  */
+  return libraryPath("packs", process.env.MYCEL_PACKS_DIR);
 }
 
 /**

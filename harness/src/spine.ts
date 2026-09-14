@@ -33,6 +33,8 @@ import type { WedgeTaskType } from "./wedge";
 /** The three jobs, from the five-wedge majority variant. */
 export const SPINE_TASK_TYPES: Record<string, WedgeTaskType> = {
     "nudge_client_request": {
+      "client_facing": false,
+      "_comment_client_facing": "A reminder about something WE asked THEM for. The delivery is whatever the answer unblocks.",
       "_comment_input": "PER-REQUEST, and REQUIRED. The description already forbids inventing a new ask or asking for anything the input does not name — this is that sentence made enforceable at the door instead of hoped for at run time. A nudge with no request behind it is a message a client resents and cannot act on.",
       "input_schema": {
         "type": "object",
@@ -98,6 +100,8 @@ export const SPINE_TASK_TYPES: Record<string, WedgeTaskType> = {
       ]
     },
     "check_in_case": {
+      "client_facing": false,
+      "_comment_client_facing": "Keeps an engagement warm. Nothing is handed over.",
       "description": "This engagement has gone quiet. Read where the work actually stands and write the client a short, honest update — where it is, what happens next, and anything you need from them. Never promise a date the engagement's own facts do not already support, and never introduce a new commitment: this is a status update, not a renegotiation.",
       "_comment": "Declared because `check_in_case` is a real next-move kind and a grey button on a ranked list is a reading list. The sibling kind `advance_case` is deliberately NOT declared here: advancing this engagement means doing the work in it, which already has its own task types, and a generic verb with a free-text schema would be an agent handed something nobody taught it. See checkin.ts.",
       "tier": "fast",
@@ -214,6 +218,8 @@ export const SPINE_TASK_TYPES: Record<string, WedgeTaskType> = {
       ]
     },
     "deliverable_verdict": {
+      "client_facing": false,
+      "_comment_client_facing": "Records what the client said about work already delivered.",
       "description": "Your client has come back on something we delivered. Read what they said and either write the next version or wrap the work up.",
       "_comment": "One task type for BOTH verdicts, because the wait that wakes it is armed at release time — before anyone knows which way the client will go. See DELIVERABLE_VERDICT_TASK_TYPE in deliverables.ts. Read the live answer from GET /v1/internal/deliverables/<id> rather than trusting the resume input; a client can accept and then immediately ask for one more thing.",
       "input_schema": {

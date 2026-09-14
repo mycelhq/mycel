@@ -5,7 +5,7 @@
 // nothing inside the page moves it. The request has to come from somewhere a customer could sit.
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { operateEgress, redactProxy, ispSeatIsFree, ISP_HOST } from "../src/operate-egress";
+import { operateEgress, proxyUsername, redactProxy, ispSeatIsFree, ISP_HOST, RESIDENTIAL_HOST_DEFAULT } from "../src/operate-egress";
 
 const RESI = {
   MYCEL_OPERATE_EGRESS: "residential",
@@ -50,7 +50,7 @@ test("the server URL carries NO credentials, because Chromium would drop them", 
    * residential egress and measured exactly as much as before.
    */
   const e = operateEgress(RESI, { country: "gb" })!;
-  assert.equal(e.server, "http://residential.decodo.io:10000");
+  assert.equal(e.server, "http://gate.decodo.com:10000");
   assert.ok(!e.server.includes("@"), "a credential here is silently dropped, then blamed on a captcha");
   assert.ok(!e.server.includes("s3cr3t"));
 });
@@ -129,4 +129,85 @@ test("the password never appears in anything loggable, and the line is named", (
   assert.ok(!safe.includes("s3cr3t"), "a proxy credential in a trace is a credential in a log file");
   // `isp` in the trace, because a borrowed seat is a temporary arrangement somebody has to unwind.
   assert.equal(safe, `isp user-mycel_geo-country-gb@http://${ISP_HOST}:10003`);
+});
+
+/**
+ * ═════════════════════════════════════════════════════════════════════════════════════════════════
+ * EVERY PROVIDER SPELLS THE USERNAME DIFFERENTLY, AND GETTING IT WRONG IS INVISIBLE
+ * ═════════════════════════════════════════════════════════════════════════════════════════════════
+ *
+ * The country travels in the USERNAME for every residential provider, and the format is theirs:
+ *
+ *   Decodo       user-<name>-country-fr
+ *   Bright Data  brd-customer-<id>-zone-<zone>-country-fr
+ *   Oxylabs      customer-<id>-cc-fr
+ *
+ * `operateEgress` hardcoded Decodo's, so pointing it at Bright Data would have produced
+ * `user-brd-customer-…-country-fr` — a username that authenticates as nobody. The result is a 407
+ * on every request, and a 407 reaching the agent is indistinguishable from the captcha wall this
+ * module was deployed to get past. Residential egress configured, billed per gigabyte, measuring
+ * nothing, with the symptom completely unchanged.
+ *
+ * That is the same failure mode the file's header already documents for credentials-in-the-URL,
+ * which is why it is worth a test rather than a careful moment.
+ */
+test("a Decodo name still gets Decodo's prefix", () => {
+  assert.equal(proxyUsername("spqx1a2b3c", "fr"), "user-spqx1a2b3c-country-fr");
+  // Idempotent: a name already carrying the prefix must not get a second one.
+  assert.equal(proxyUsername("user-spqx1a2b3c", "fr"), "user-spqx1a2b3c-country-fr");
+});
+
+test("A BRIGHT DATA USERNAME IS LEFT ALONE", () => {
+  assert.equal(
+    proxyUsername("brd-customer-hl_9f2a-zone-residential", "gb"),
+    "brd-customer-hl_9f2a-zone-residential-country-gb",
+    "Decodo's prefix is being forced onto a Bright Data username",
+  );
+});
+
+test("and so is an Oxylabs one", () => {
+  assert.equal(proxyUsername("customer-acme", "es"), "customer-acme-country-es");
+});
+
+test("A USERNAME THAT ALREADY NAMES A COUNTRY IS NOT SECOND-GUESSED", () => {
+  /**
+   * Somebody has been explicit. Appending a second country would either be rejected outright or —
+   * far worse — honoured, and the probe would go out from somewhere other than the country on the
+   * measurement. The header's rule: a country is never substituted, because a substituted
+   * measurement is indistinguishable from a real one.
+   */
+  assert.equal(proxyUsername("user-spqx-country-gb", "fr"), "user-spqx-country-gb");
+  assert.equal(proxyUsername("brd-customer-x-zone-res-country-us", "fr"), "brd-customer-x-zone-res-country-us");
+});
+
+test("whitespace around a pasted credential does not become part of it", () => {
+  // These arrive by copy-paste from a provider's dashboard, which is where trailing spaces live.
+  assert.equal(proxyUsername("  spqx1a2b3c  ", "fr"), "user-spqx1a2b3c-country-fr");
+});
+
+// ── the vendor's own domain ───────────────────────────────────────────────────────────────────────
+
+test("BOTH HOSTS ARE THE SAME VENDOR, SPELLED THE SAME WAY", () => {
+  /**
+   * `RESIDENTIAL_HOST_DEFAULT` was `residential.decodo.io` — a hostname with NO DNS record — while
+   * `ISP_HOST` two lines below it was `isp.decodo.com`, which resolves. A `.io` next to a `.com`,
+   * same vendor, same file.
+   *
+   * It survived because the feature is off. Flipping `MYCEL_OPERATE_EGRESS` to `residential`, the
+   * exact step the infra comment tells the next person to take, would have failed to connect — and
+   * a probe that returns nothing is indistinguishable from the blocking this module exists to get
+   * past. The plan would have been bought and the symptom unchanged.
+   *
+   * A DNS lookup would be the direct test and would make this suite depend on the network. The
+   * property that actually catches the typo is offline: two hosts for one vendor must share a
+   * registrable domain.
+   */
+  const domain = (h: string) => h.split(".").slice(-2).join(".");
+  assert.equal(
+    domain(RESIDENTIAL_HOST_DEFAULT),
+    domain(ISP_HOST),
+    `two hosts for one vendor disagree about its domain: ${RESIDENTIAL_HOST_DEFAULT} vs ${ISP_HOST}`,
+  );
+  // And neither is the dead one, named so a revert is loud rather than quiet.
+  assert.notEqual(RESIDENTIAL_HOST_DEFAULT, "residential.decodo.io", "the host with no DNS record is back");
 });

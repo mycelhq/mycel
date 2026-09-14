@@ -31,11 +31,42 @@ const OPERATIONAL_TASK =
   /^(chase_|nudge_|check_in|send_receipt|daily_sync|outreach_|propose_|find_prospects|advance_)/;
 
 /**
- * Exported so the ignition sweep and this wrapper share ONE definition of "operational" — the sweep
- * must never pick an operational type as the thing to produce, for the same reason the wrapper never
- * turns one into a deliverable. Two copies of this regex would drift; see the shared-lookup argument.
+ * ═════════════════════════════════════════════════════════════════════════════════════════════════
+ * ONE QUESTION: DOES THIS TASK TYPE PRODUCE WORK A CLIENT RECEIVES?
+ * ═════════════════════════════════════════════════════════════════════════════════════════════════
+ *
+ * Exported so the ignition sweep and this wrapper share ONE definition — the sweep must never pick
+ * an operational type as the thing to produce, for the same reason the wrapper never turns one into
+ * a deliverable. That was the original note, and it was half the problem.
+ *
+ * THERE WERE THREE VOCABULARIES FOR THIS, each read by a different module:
+ *
+ *   · this name-prefix regex           — `deliverables.wrap`, `fulfillment-ignite`
+ *   · `internal: true`                 — `deliverable-grade`
+ *   · `client_facing: false`           — `delivery-precondition`
+ *
+ * So three modules gave three answers about the same task type. `geo-monitor/probe_surface` is the
+ * measured case: it declares `internal: true`, it is one measurement that feeds `weekly_report`, and
+ * because THIS function saw only the name it came all the way to the client-ready gate and put "not
+ * delivered — the summary is written for an operator, not a client" on a founder's timeline. The
+ * wedge had already said so. Nobody asked it.
+ *
+ * `deliverable_verdict` is the same shape from the other direction: the SPINE declares
+ * `client_facing: false` on it, and the wrapper wrapped it anyway.
+ *
+ * So the predicate takes the spec and reads all three. A declaration beats a name — a prefix is a
+ * guess about what an author meant, a flag is the author saying it. The regex stays for the types
+ * that declare nothing.
+ *
+ * `spec` is optional so the ignition sweep, which has only a name at the point it asks, keeps
+ * working exactly as before.
  */
-export function isOperationalTaskType(taskType: string): boolean {
+export function isOperationalTaskType(
+  taskType: string,
+  spec?: { internal?: unknown; client_facing?: unknown } | null,
+): boolean {
+  if (spec?.internal === true) return true;
+  if (spec?.client_facing === false) return true;
   return OPERATIONAL_TASK.test(taskType);
 }
 
@@ -202,9 +233,35 @@ export async function wrapFulfillmentDeliverable(args: {
 
   // Chases, nudges, check-ins and receipts are operational — wrapping them as something the client
   // must "accept" fills Deliverables with mail the founder already sent and never becomes an invoice.
+  // Checked on the NAME first so the common case costs no manifest read; the spec-aware check below
+  // catches the ones that declare it instead of spelling it.
   if (OPERATIONAL_TASK.test(task.task_type)) return undefined;
 
   const loaded = await loadProjectWedge(projectId, task.wedge).catch(() => null);
+
+  /**
+   * ═════════════════════════════════════════════════════════════════════════════════════════════
+   * A TASK TYPE THAT SAYS IT IS INTERNAL IS INTERNAL
+   * ═════════════════════════════════════════════════════════════════════════════════════════════
+   *
+   * `internal: true` already exists on the manifest and `deliverable-grade.ts` already honours it —
+   * `clientFacing()` there reads `spec.internal || isOperationalTaskType(name)`. This function read
+   * only the name prefix, so the two consumers of "is this operational" disagreed, which is exactly
+   * the drift the export comment above `isOperationalTaskType` was written to prevent.
+   *
+   * `geo-monitor/probe_surface` is the measured case: it declares `internal: true`, it is a single
+   * measurement that feeds `weekly_report`, and every run of it came here, failed the client-ready
+   * gate and put "not delivered — the summary is written for an operator, not a client" on a
+   * founder's timeline. The wedge had already said so and nobody asked.
+   *
+   * The prefix regex stays, because it covers types that never declared anything. Declaration wins
+   * where it exists, which is the right precedence: a name is a guess, a flag is an author's
+   * statement.
+   */
+  if (isOperationalTaskType(task.task_type, loaded?.manifest.task_types?.[task.task_type])) {
+    return skip("this task type is internal — it feeds other work rather than going to a client");
+  }
+
   const spec = fulfillmentOf(task.wedge, loaded?.manifest);
   const declaredKind = loaded?.manifest.task_types?.[task.task_type]?.deliverable_kind;
   let pageUrl = (args.pageUrl ?? "").trim();

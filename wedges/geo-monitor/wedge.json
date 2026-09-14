@@ -90,6 +90,7 @@
         }
       },
       "internal": true,
+      "_comment_internal": "One question on one answer engine, recorded. weekly_report is the thing a client reads.",
       "_comment_one_probe": "ONE PROBE, AND IT IS THE ONE THAT CAN REACH A SURFACE. There were two: this, and a `probe_mention` on the `decide` shape. `decide` allows read/grep/glob/skill and nothing else — no browser, no network — and `probe_mention` was the one `run-geo-week` actually fanned out, so every row of the measurement the whole service rests on was a model being asked what ChatGPT would have said. `probe_surface`, the one with the browser, was declared and spawned by nothing. Found by reading the shape table after the GEO pivot; the contract test in wedges.test.ts now refuses an internal task type no skill names.",
       "input_schema": {
         "type": "object",
@@ -115,7 +116,9 @@
             "description": "ISO 3166-1 alpha-2, lowercase — the market the CLIENT sells into, not where we are. Answer engines personalise by geography: 'best bookkeeper for creative agencies' returns a different answer in London than in Austin, and a client selling to London agencies is buying the London answer. GIVEN, not chosen — you do not pick this and you cannot change where the browser is. Report it back in `measured_from` so the number can be compared to next month's."
           }
         }
-      }
+      },
+      "client_facing": false,
+      "_comment_client_facing": "One measurement. The weekly report is what the client reads."
     },
     "weekly_report": {
       "_comment_ship_requires": "A measured week that names no work is a screenshot, not a report — the agency has to tell THEIR client what happens this week, and a percentage alone does not renew. Declared here rather than special-cased in the kernel: the ship bar is this wedge's knowledge of its own trade.",
@@ -189,6 +192,12 @@
           "kind": "each_has",
           "items": "artifacts",
           "field": "name"
+        },
+        {
+          "kind": "distinct_prose",
+          "items": "recommendations",
+          "field": "why",
+          "_why": "`spread` already stops three recommendations all being Large. This stops three recommendations all being the same recommendation."
         }
       ],
       "description": "Fan out probe_surface children for the client's query set, wait for the batch, then call share_of_voice@1 and write the series sample. Never estimate the percentage yourself.",
@@ -343,7 +352,7 @@
           },
           "artifacts": {
             "type": "array",
-            "description": "THE WORK ITSELF, not a description of it.\n\nEvery deliverable task in this system produced a summary and nothing else, and a client scored one 3/10 partly for that reason: they were sent an account of work rather than the work. A service business does not sell reports about bookkeeping, it sells reconciled books; it does not sell a note about a questionnaire, it sells the questionnaire answered.\n\nSo this carries the artifact. A file you wrote to ./output/ and its name, or a URL to something live, or a repository. The `client_summary` is the covering note that goes WITH this — it is not a substitute for it, and a deliverable with an empty `artifacts` array is a deliverable that did not deliver.\n\nSay so plainly in the summary if you genuinely could not produce the artifact, and why. That is a real outcome. Pretending the summary is the work is not.\n\nFor this job: The report itself as a document the client can forward, and a link to any page shipped for them this period.",
+            "description": "THE WORK ITSELF, not a description of it.\n\nEvery deliverable task in this system produced a summary and nothing else, and a client scored one 3/10 partly for that reason: they were sent an account of work rather than the work. A service business does not sell reports about bookkeeping, it sells reconciled books; it does not sell a note about a questionnaire, it sells the questionnaire answered.\n\nSo this carries the artifact. A file you wrote to ./output/ and its name, or a URL to something live, or a repository. The `client_summary` is the covering note that goes WITH this — it is not a substitute for it, and a deliverable with an empty `artifacts` array is a deliverable that did not deliver.\n\nSay so plainly in the summary if you genuinely could not produce the artifact, and why. That is a real outcome. Pretending the summary is the work is not.\n\nFor this job: your findings as MARKDOWN (`.md`) and the measured rows as `.csv` — plus a link to any page shipped for them this period.\n\nDO NOT AUTHOR THE CLIENT-FACING DOCUMENT. This job is declared `deck: true`, so the harness turns your markdown into a branded deck with this business's own colours, its chart, and a layout check, and that is what the client forwards. Measured on a real run of this exact job: the agent wrote an 8,391-character HTML report of which 37% was hand-rolled CSS — a `:root` block, `clamp()` typography, a box-sizing reset — beside the deck the harness had already rendered from the same content. The client would have received the same report twice in two designs, and the independent reviewer failed the run on \"it is the thing they asked for\" and \"every number is traceable\" — both analysis faults, in the attention that went into the stylesheet.",
             "items": {
               "type": "object",
               "required": [
@@ -666,9 +675,21 @@
               "type": "string"
             },
             "description": "What this run needs from the CLIENT before the page can be finished, in their words. Populate when status is `needs_facts`. At most four."
+          },
+          "needs_facts_flag": {
+            "type": "boolean",
+            "description": "True when the page cannot be written truthfully from what is known about this business. Mirrors `status: needs_facts`, and is the field the ship check reads. Then leave `html` absent."
           }
         }
-      }
+      },
+      "ship_checks": [
+        {
+          "kind": "not_when",
+          "field": "html",
+          "unknown_when": "needs_facts_flag",
+          "_why": "A page shipped without the facts is a live commercial page on the client's domain making claims nobody checked. `status: needs_facts` already said so and nothing enforced it, because a ship check reads a boolean rather than an enum value."
+        }
+      ]
     },
     "publish_page": {
       "_comment": "THE LAST OPEN LINK IN THE LOOP.\n\n`ship_page` writes the page a client would put on their domain, and then the product stops. The founder logs into the client's CMS and publishes it by hand — the one step between a report and a result, done manually, every time, for every client.\n\nThat is also where the money is. A GEO report is a diagnosis and nobody renews a retainer for a diagnosis. A page that went live and then got cited is the renewal conversation.\n\n── WHY IT IS A SEPARATE TASK ──\n\nIt could have been the tail of `ship_page`. It is not, for the same reason `draft_engagement` writes a proposal and sends nothing: the shape that WRITES the work and the shape that PUTS IT IN FRONT OF SOMEBODY are different acts, and a human belongs between them. `ship_page` runs on `decide` with no network. This runs on `operate`, in a browser, holding a session for the client's live website, and it should be started by a person who has read the page.\n\n── AND IT REFUSES A READ-ONLY CONNECTION ──\n\n`browser_writes` is what makes `browser-work.ts` check the connection's declared access. A founder who connected a portal for reading gets a refusal naming the mismatch, rather than discovering it by changing something in a client's live system.",

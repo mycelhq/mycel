@@ -54,7 +54,7 @@ test("the values are the system's own, never invented", () => {
   // in the source system means the bridge made one up, and an invented colour is how a set of
   // surfaces stops looking like one system.
   const src = readFileSync(
-    join(dirname(fileURLToPath(import.meta.url)), "..", "..", "design-systems", "systems", "editorial", "tokens.css"),
+    join(dirname(fileURLToPath(import.meta.url)), "..", "..", "library", "design-systems", "systems", "editorial", "tokens.css"),
     "utf8",
   );
   const t = declared(shadcnFromDesignSystem("editorial"));

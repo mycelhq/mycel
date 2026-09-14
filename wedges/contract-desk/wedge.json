@@ -203,7 +203,6 @@
       },
       "ship_requires": [
         "artifacts",
-        "client_summary",
         "summary"
       ],
       "ship_checks": [
@@ -253,7 +252,10 @@
             "description": "YYYY-MM-DD, the Sunday the week closed on. Absent means the last complete week."
           }
         }
-      }
+      },
+      "client_facing": false,
+      "_comment_client_facing": "The desk's own sweep over live contracts.",
+      "_comment_ship_requires_client": "The Monday sweep is for the FOUNDER — whose timesheet is missing, what is ready to bill. A summary addressed to a client is not what it produces, and requiring one made it claim to be something it is not."
     },
     "chase_timesheet": {
       "description": "One assignment, one missing week. Work out who is actually holding it up and write the nudge to that person.",
@@ -349,7 +351,9 @@
       "ship_requires": [
         "message",
         "reasoning"
-      ]
+      ],
+      "client_facing": false,
+      "_comment_client_facing": "Asks a contractor for hours. An ask is not a delivery."
     },
     "prepare_invoice": {
       "description": "One client, one week of approved timesheets, one invoice. The arithmetic is the bill_lines workflow's; the covering note is yours.",
@@ -491,7 +495,9 @@
           "field": "covering_note",
           "vocabulary": "placeholder"
         }
-      ]
+      ],
+      "client_facing": false,
+      "_comment_client_facing": "Drafts a bill for the founder to send. The invoice is the delivery, not this."
     },
     "confirm_extension": {
       "description": "An assignment is inside its notice window. Draft the conversation with the client's hiring manager that either extends it or gets a straight answer.",
@@ -574,7 +580,9 @@
       "ship_requires": [
         "ask",
         "message"
-      ]
+      ],
+      "client_facing": false,
+      "_comment_client_facing": "Confirms a renewal internally before anybody is asked to sign."
     }
   },
   "tools": [],
@@ -961,10 +969,11 @@
         }
       ]
     },
+    "production_task_type": "weekly_run",
     "deliverable_shapes": [
       "document"
     ],
-    "production_task_type": "weekly_run"
+    "_comment_deliverable_shapes": "KEPT, AND THE GRADE IS BLOCKING BECAUSE OF IT — deliberately left for the founder to settle. Every task type here carries `client_facing: false` with a reason written on 12 September: the Monday sweep is the desk's own, chase_timesheet asks a contractor for hours, prepare_invoice drafts a bill the founder sends, confirm_extension settles a renewal internally. So the service claims to hand a client a document and has no job that does, which `deliverable-grade` reports as 'neither a trade nor machinery'. That is TRUE and worth seeing. Resolving it means deciding whether a contractor desk sends its client a weekly status — a product question, not a manifest tidy-up. The wrong fix is relabelling the founder's own sweep as client work."
   },
   "requires": [
     "dunning"

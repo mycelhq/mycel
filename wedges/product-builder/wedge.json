@@ -72,7 +72,59 @@
             "description": "How the founder will know it worked. Absent means state your own and verify against it."
           }
         }
-      }
+      },
+      "_comment_output_contract": "ADDED 12 September. `deliverable-grade` graded this BLOCKING: \"build_feature is what a client receives, and nothing says the work has to contain anything.\" It had no ship_requires and no output_schema, so a run could report success on an empty result and the deliverable wrapper would ship it. Its sibling `design_identity` in this same wedge already declares both, and geo-monitor's `publish_page` is the exemplar for the refusal half.",
+      "ship_requires": [
+        "client_summary",
+        "changed"
+      ],
+      "_comment_ship_requires": "NOT the URL. `hostedAt` is derived by handOffWorkspace after the run — the platform deploys and names the address, the model never states it — so requiring it here would demand a field this task type cannot produce. What the model owes is what it CHANGED and a sentence the founder can forward.",
+      "ship_checks": [
+        {
+          "kind": "not_when",
+          "field": "changed",
+          "unknown_when": "could_not_build",
+          "_why": "A list of changes stated beside 'I could not build it' is the worst available output: the founder reads the summary, believes the work landed, and finds out from the staging URL that it did not. Same rule publish_page applies to published_url, for the same reason."
+        }
+      ],
+      "output_schema": {
+        "type": "object",
+        "required": [
+          "status",
+          "client_summary",
+          "changed"
+        ],
+        "properties": {
+          "status": {
+            "type": "string",
+            "enum": [
+              "built",
+              "could_not_build"
+            ],
+            "description": "'built' only when the change was made AND verified running. 'could_not_build' when anything stopped you — a missing credential, a failing build, an instruction you could not safely carry out. Refusing is a correct outcome and is never worse than a plausible-looking change nobody asked for. Must agree with `could_not_build`, which is the field the ship check reads."
+          },
+          "client_summary": {
+            "type": "string",
+            "description": "Two to four sentences a FOUNDER could forward to their client without editing. What is different now and what they can do with it — never file names, commits, commands or framework nouns. If status is could_not_build, say plainly what is not there yet."
+          },
+          "changed": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "One line per thing that is now different from a USER's point of view — a page, a flow, a behaviour. ABSENT when status is could_not_build; an empty list there reads as 'nothing needed changing', which is a different and untrue claim."
+          },
+          "blocked_by": {
+            "type": "string",
+            "description": "Only when status is could_not_build: the one thing that would unblock this, named so a person can go and get it."
+          },
+          "could_not_build": {
+            "type": "boolean",
+            "description": "True when the change was not made, or was made and did not verify. Then leave `changed` absent: a ship check refuses an output that states both. Refusing is a correct outcome and is never worse than a plausible-looking change nobody asked for."
+          }
+        }
+      },
+      "_comment_not_when": "`unknown_when` names a BOOLEAN on the output, never an enum value — `shipFaults` evaluates it as `at(parsed, unknown_when) === true`. Pointing it at `status` looked right and could never fire, which is a gate that runs and does nothing. Caught by reading the evaluator rather than the type."
     },
     "design_identity": {
       "_comment_ship_requires": "A palette and an archetype with no sections and no rationale is a mood board. What the client is buying is the decision about their own pages, stated so the next run can build against it.",
@@ -254,6 +306,10 @@
               "type": "string"
             },
             "description": "What this run needs from the CLIENT before it can produce the work, in the client’s own words — one plain item per entry. Name the thing THEY would name: the document, the answer, the decision, the access. Populate this WHENEVER the run cannot finish because something only the client has is missing. Each entry becomes a request in their portal with an upload box; what they send is mounted into the next run’s ./inputs/, so an accurate ask here is what unblocks the work. Never use our nouns — a request naming a case, a schema or a connection id is unanswerable by the person receiving it. At most four, most important first. Leave absent when the work completed — an empty ask sent to a client is worse than silence."
+          },
+          "insufficient_brand": {
+            "type": "boolean",
+            "description": "True when the brand configuration and the business's own material give nothing to derive a bespoke identity from. Then leave `sections` absent rather than returning a default."
           }
         }
       },
@@ -273,9 +329,25 @@
             "description": "Their existing site, when there is one. Measured colours beat remembered ones."
           }
         }
-      }
+      },
+      "ship_checks": [
+        {
+          "kind": "not_when",
+          "field": "sections",
+          "unknown_when": "insufficient_brand",
+          "_why": "An identity derived from nothing is the average of the training data wearing the client's name — which is precisely what opendesign's 'real over remembered' rule exists to refuse."
+        },
+        {
+          "kind": "distinct_prose",
+          "items": "sections",
+          "field": "intent",
+          "_why": "Every section sharing one intent is a template wearing the client's name — the exact thing opendesign's 'real over remembered' rule refuses."
+        }
+      ]
     },
     "review_diff": {
+      "internal": true,
+      "_comment_internal": "Reads a proposed change and says whether it is safe, 'without touching anything'.",
       "description": "Read a proposed change to the product and say whether it is safe to ship, without touching anything.",
       "harness": {
         "shape": "decide",
@@ -320,7 +392,9 @@
             "description": "What the change is meant to achieve, so 'safe' can be judged against intent rather than style."
           }
         }
-      }
+      },
+      "client_facing": false,
+      "_comment_client_facing": "Reads our own change before it ships. Nobody outside sees it."
     }
   },
   "connections": [],
@@ -363,5 +437,24 @@
       "document"
     ],
     "production_task_type": "build_feature"
-  }
+  },
+  "_comment_intake": "A build with no declared intake guesses at every judgement the brief is silent about — and the brief is always silent about something. Same `needs-nothing` finding, same cause.",
+  "intake": [
+    {
+      "id": "what-it-is",
+      "ask": "What is this product, and who opens it?",
+      "why": "Decides every judgement the build makes when the brief is silent — and the brief is always silent about something.",
+      "example": "A booking tool for a two-van removals firm. The people who open it are the owner on a phone in a cab, and customers on mobile from a Google search.",
+      "kind": "fact",
+      "weight": 10
+    },
+    {
+      "id": "done-means",
+      "ask": "What has to be true before you would show it to a customer?",
+      "why": "So a run can tell finished from working-on-my-machine, and refuse rather than hand over something that merely compiles.",
+      "example": "Loads under two seconds on 4G, works on a phone in portrait, and a booking that fails says why rather than spinning.",
+      "kind": "fact",
+      "weight": 9
+    }
+  ]
 }

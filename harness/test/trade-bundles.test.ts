@@ -11,7 +11,7 @@ import { readdirSync, statSync } from "node:fs";
 import { join } from "node:path";
 import { TRADE_BUNDLES } from "../src/skill-arsenal";
 
-const SHELF = new URL("../../service-skills/", import.meta.url).pathname;
+const SHELF = new URL("../../library/service-skills/", import.meta.url).pathname;
 
 /**
  * Domains with skills on disk that no desk sells YET, each with the reason. An entry here is a

@@ -568,3 +568,75 @@ test("mapper: tool.called and tool.result carry the call_id the stall tracker ke
   assert.equal(call!.data.call_id, "call_x");
   assert.equal(call!.data.tool, "glob");
 });
+
+// ── what the run says it is doing ─────────────────────────────────────────────────────────────────
+//
+// ═════════════════════════════════════════════════════════════════════════════════════════════════
+// A FOUNDER DOES NOT HAVE A /root, AND THE RUN'S SCRATCH FILE IS NOT A STEP
+// ═════════════════════════════════════════════════════════════════════════════════════════════════
+//
+// Counted over every `progress` note ever emitted, the top of the list was:
+//
+//     1,028  edited /root/output/result.txt
+//       846  edited /root/output/monthly-close-inputs-needed.md
+//       236  edited /root/output/2026-09-close-status.md
+//
+// Two faults in one line. The most-repeated sentence this product has ever said to a customer was
+// the machine announcing that it had written down its own return value — `deliverables.wrap.ts`
+// already refuses to hand `result.txt` to a client, calling it "not a thing a customer opens", and
+// it is not a thing a founder opens either. And every one of them carried a path rooted in a
+// container the reader has no concept of.
+//
+// Verified against all 215 distinct `file` values in production: 2 dropped as scratch, 213
+// rendered, 0 still showing a root.
+
+function notesFor(file: unknown): string[] {
+  const mapper = new OpenCodeEventMapper(SID);
+  const m = mapper.map({
+    type: "file.edited",
+    properties: { file },
+  } as unknown as OpenCodeEvent);
+  return (m.emissions ?? [])
+    .filter((e: MycelEmission) => e.type === "progress")
+    .map((e: MycelEmission) => String((e.data as Record<string, unknown>).note));
+}
+
+test("THE SANDBOX ROOT IS NOT PART OF THE FILE'S NAME", () => {
+  assert.deepEqual(notesFor("/root/app/app/page.tsx"), ["edited app/page.tsx"]);
+  assert.deepEqual(notesFor("/root/app/content/marketing.ts"), ["edited content/marketing.ts"]);
+  // A deliverable written outside the app workspace keeps its shape, minus the container.
+  assert.deepEqual(notesFor("/root/output/2026-09-close-status.md"), ["edited output/2026-09-close-status.md"]);
+  // Nothing to strip, nothing stripped.
+  assert.deepEqual(notesFor("notes.md"), ["edited notes.md"]);
+});
+
+test("THE RUN'S OWN OUTPUT OBJECT IS NOT ANNOUNCED", () => {
+  assert.deepEqual(notesFor("/root/output/result.txt"), [], "1,028 notes about the machine's return value");
+  assert.deepEqual(notesFor("/root/app/output/result.txt"), []);
+  assert.deepEqual(notesFor("/root/output/result.json"), []);
+  /*
+    Matched on the BASENAME, so a real deliverable that merely lives near one is safe. This is the
+    same line `authoredIds` walks in `deliverables.wrap.ts`, and the failure it guards against is a
+    client receiving the machine's scratch file — one register worse than a founder seeing it.
+  */
+  assert.deepEqual(notesFor("/root/output/results.txt"), ["edited output/results.txt"]);
+  assert.deepEqual(notesFor("/root/output/result-summary.md"), ["edited output/result-summary.md"]);
+});
+
+test("the absolute path survives as data, for anything that has to resolve it", () => {
+  const mapper = new OpenCodeEventMapper(SID);
+  const m = mapper.map({
+    type: "file.edited",
+    properties: { file: "/root/app/app/page.tsx" },
+  } as unknown as OpenCodeEvent);
+  const note = (m.emissions ?? []).find((e: MycelEmission) => e.type === "progress");
+  // The note is prose for a person; `file` is the fact. Shortening the fact would break every
+  // consumer that opens the file, which is the opposite trade from the one being made here.
+  assert.equal((note!.data as Record<string, unknown>).file, "/root/app/app/page.tsx");
+});
+
+test("a file.edited with no file is still nothing", () => {
+  assert.deepEqual(notesFor(undefined), []);
+  assert.deepEqual(notesFor(42), []);
+  assert.deepEqual(notesFor(""), []);
+});

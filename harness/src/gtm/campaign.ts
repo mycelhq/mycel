@@ -242,6 +242,79 @@ const campaignKey = (id: string) => `campaign:${id}`;
  * Propose a campaign: write the record, the artifact and ONE approval. Does not block, does not
  * wait, does not send. The founder decides in their own time — up to 7 days.
  */
+/**
+ * ═════════════════════════════════════════════════════════════════════════════════════════════════
+ * THIRTEEN NAMES OVER ONE PARAGRAPH IS A LIE ABOUT THE WORK
+ * ═════════════════════════════════════════════════════════════════════════════════════════════════
+ *
+ * This printed `### Name` and then that prospect's copy, for every prospect. Read out of production
+ * on 13 September: a real campaign artifact, 7,386 bytes, headed "Every message, in full", thirteen
+ * `### Name` sections, and under every one of them the SAME paragraph — `{first_name}` not even
+ * interpolated. Twenty-six copies of one sentence.
+ *
+ * Nothing was broken. Sequence copy is a template by design, and the renderer faithfully printed the
+ * template once per recipient. But a heading per person PROMISES that what follows is about that
+ * person, and the founder approving it is reading the wrong decision: "thirteen messages, check
+ * them" rather than "one message, going to thirteen people".
+ *
+ * Those are genuinely different decisions. One message to thirteen people is a template to review
+ * once and a recipient list to scan; thirteen written messages is a half-hour of reading. Printing
+ * the first as the second buries the fact that nothing here is personalised, at the exact moment
+ * somebody is deciding whether it is good enough to send.
+ *
+ * So the document groups by the copy itself. Identical copy is stated once with its recipients named
+ * underneath; genuinely different copy still gets a section per person, which is what that heading
+ * was always meant to mean.
+ */
+function messageSections(prospects: readonly ProspectDraft[]): string[] {
+  const groups = new Map<string, { copy: Record<string, string>; who: string[] }>();
+  for (const p of prospects) {
+    const copy = (p.copy ?? {}) as Record<string, string>;
+    const key = JSON.stringify(Object.entries(copy).sort());
+    const who = p.name ?? p.profile_id;
+    const g = groups.get(key);
+    if (g) g.who.push(who);
+    else groups.set(key, { copy, who: [who] });
+  }
+
+  const all = [...groups.values()];
+  const written = all.filter((g) => g.who.length === 1).length;
+  const out: string[] = [
+    "",
+    all.length === 1 && prospects.length > 1
+      ? `## One message, to all ${prospects.length}`
+      : `## The messages — ${all.length} distinct, across ${prospects.length} prospects`,
+  ];
+  if (all.length === 1 && prospects.length > 1) {
+    out.push(
+      "",
+      "Nothing below is personalised. Read it once: every prospect receives exactly this.",
+    );
+  } else if (written < all.length) {
+    // The sentence agrees with its own count. "1 of these go to" is the tell that nobody read the
+    // output — the same argument `each_has` makes about its singular message.
+    const shared = all.length - written;
+    out.push(
+      "",
+      shared === 1
+        ? "One of these goes to more than one person. Names are listed under it."
+        : `${shared} of these go to more than one person. Names are listed under each.`,
+    );
+  }
+
+  for (const g of all) {
+    out.push("");
+    // A single recipient keeps the name as its heading — the original shape, now meaning what it says.
+    out.push(g.who.length === 1 ? `### ${g.who[0]}` : `### To ${g.who.length} prospects`);
+    for (const [step, text] of Object.entries(g.copy)) out.push(`- **${step}**: ${text}`);
+    if (g.who.length > 1) {
+      // Named rather than counted: a founder scans this list for somebody who should not be on it.
+      out.push("", `Going to: ${g.who.join(", ")}`);
+    }
+  }
+  return out;
+}
+
 export async function proposeCampaign(
   store: Store,
   domain: DomainStore,
@@ -278,12 +351,7 @@ export async function proposeCampaign(
     "## Sequence",
     ...steps.map((s) => `- at **${s.from}** → \`${s.action}\` → ${s.advance_to}${s.only_if ? ` _(only if ${s.only_if})_` : ""}${s.wait_days ? ` _(after ${s.wait_days}d)_` : ""}`),
     "",
-    "## Every message, in full",
-    ...input.prospects.flatMap((p) => [
-      "",
-      `### ${p.name ?? p.profile_id}`,
-      ...Object.entries(p.copy ?? {}).map(([step, text]) => `- **${step}**: ${text}`),
-    ]),
+    ...messageSections(input.prospects),
   ];
   const artifact = await store.addArtifact({
     task_id: input.task_id,

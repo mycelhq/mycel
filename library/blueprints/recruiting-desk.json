@@ -1,0 +1,45 @@
+{
+  "blueprint": "recruiting-desk",
+  "title": "Recruiting desk — source and screen",
+  "summary": "Turn a role brief into a longlist with a written screen on every candidate. Sources them into your CRM, reads each one against the brief, and ranks them with the reasoning attached so you can argue with it. Nothing reaches a candidate without your approval.",
+  "wedge": "recruiting-desk",
+  "sells_as": "Recruiting ops retainer, $1,000–3,000/mo",
+  "requires_connections": [
+    {
+      "name": "crm",
+      "capability": "read_crm",
+      "why": "See who is already in the pipeline so you do not re-source the same person twice."
+    },
+    {
+      "name": "crm-write",
+      "capability": "write_crm",
+      "why": "File new candidates and stage changes without a second spreadsheet."
+    },
+    {
+      "name": "desk-email",
+      "capability": "send_email",
+      "why": "Chase candidates and hiring managers from an address they already know."
+    }
+  ],
+  "schedules": [
+    {
+      "name": "Recruiting desk",
+      "task_type": "source_candidates",
+      "cadence": {
+        "kind": "daily",
+        "hour": 8,
+        "minute": 0
+      },
+      "input": {
+        "_why_daily": "An open role that sat overnight is still on the desk in the morning. Look at open cases; if there is no brief, say the desk is empty — never invent people."
+      }
+    }
+  ],
+  "seed_knowledge": [
+    {
+      "name": "role-template.md",
+      "kind": "fact",
+      "content": "# Role brief template\n\nFill this in per Case. Screening scores against these musts.\n\n## Must-haves\n\n-\n\n## Nice-to-haves\n\n-\n\n## Disqualifiers\n\n-\n"
+    }
+  ]
+}

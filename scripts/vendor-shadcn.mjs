@@ -4,7 +4,7 @@
  *
  * The founder-site builder should never spend a turn running `npx shadcn add <thing>` — the
  * primitives are commodity and the ceremony is cognitive load. This copies every harvested shadcn
- * item (kernel/component-library/shadcn, from harvest-components.mjs) into
+ * item (kernel/design/component-library/shadcn, from harvest-components.mjs) into
  * business-template/components/ui and merges their npm dependencies into package.json.
  *
  * EXISTING FILES ARE NEVER OVERWRITTEN: button.tsx (and anything else already customised for the
@@ -16,7 +16,7 @@ import { join, dirname, basename } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
-const LIB = join(HERE, "..", "component-library", "shadcn");
+const LIB = join(HERE, "..", "design/component-library", "shadcn");
 const TEMPLATE = join(HERE, "..", "..", "business-template");
 
 const pkgPath = join(TEMPLATE, "package.json");

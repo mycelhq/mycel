@@ -8,6 +8,7 @@
     ".": "./src/index.ts",
     "./address": "./src/address.ts",
     "./ramp": "./src/ramp.ts",
+    "./linkedin-ramp": "./src/linkedin-ramp.ts",
     "./rotation": "./src/rotation.ts",
     "./suppression": "./src/suppression.ts",
     "./verdict": "./src/verdict.ts"

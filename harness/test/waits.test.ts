@@ -185,7 +185,10 @@ test("waits: an unknown resume task_type is refused at the ROUTE, when a human c
     }),
   });
   assert.equal(res.status, 400);
-  assert.match(res.json.error, /unknown task_type/);
+  // The sentence names the service and the thing it cannot do. It stopped saying "unknown
+  // task_type" when the kernel's refusals were put into the founder's language — see
+  // `a-founder-never-reads-our-words.test.ts`; this is read on a screen, not only by a client.
+  assert.match(res.json.error, /does not do "no_such_task"/);
 });
 
 test("waits: arming defaults an expiry, so no wait can outlive the cap", async () => {

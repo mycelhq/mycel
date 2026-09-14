@@ -20,7 +20,7 @@ import { renderWorkbook } from "../src/render/xlsx";
  * does it generically. Only `close_figures` ever did, because only books-keeper wrote the plumbing.
  * Production has produced ZERO `.xlsx` files, ever.
  */
-const WORKFLOWS = join(import.meta.dirname, "..", "..", "workflows");
+const WORKFLOWS = join(import.meta.dirname, "..", "..", "library", "workflows");
 const WEDGES = join(import.meta.dirname, "..", "..", "wedges");
 
 const run = async (args: unknown) => {

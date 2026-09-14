@@ -245,6 +245,32 @@ export async function resolveClientSession(token: string): Promise<ClientScope |
 }
 
 /** Sign a client out of every device. Used when a founder revokes access. */
+/**
+ * Which of these clients could reach the portal if they tried — a link has been minted for them.
+ *
+ * ═══ THE QUESTION NOTHING COULD ASK ═══
+ *
+ * Measured on 13 September: 52 open asks across 22 clients, and TWO of those clients had ever been
+ * given a link. Twenty businesses were being asked for documents by a product that had given them no
+ * way to see the question — and `nudge_client_request` was happily proposing that the founder chase
+ * them for it.
+ *
+ * The mailbox is not what is missing there. AgentMail caps this account at three inboxes, but the
+ * portal never needed one: `portal-access.tsx` mints a one-time link the founder copies and sends
+ * however they like, and `portal/requests/[request]/attachments` takes the answer with no thread at
+ * all. What was missing is anything that noticed the link had never been sent.
+ */
+export async function clientsWithPortalAccess(clientIds: readonly string[]): Promise<Set<string>> {
+  if (!clientIds.length) return new Set();
+  if (pg) return pg.clientsEverLinked(clientIds);
+  // In-memory: the same question over the same rows. Used by the whole test suite, so it must agree
+  // with the Postgres answer rather than approximate it.
+  const want = new Set(clientIds);
+  const out = new Set<string>();
+  for (const l of links.values()) if (want.has(l.client_id)) out.add(l.client_id);
+  return out;
+}
+
 export async function revokeClientSessions(clientId: string): Promise<number> {
   let n = 0;
   for (const [token, s] of sessions) {

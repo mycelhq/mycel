@@ -52,6 +52,23 @@ const KIND_VERBS: Record<MoveKind, RegExp> = {
   gtm_next_touch: /\b(email|outreach|touch|sequence|prospect|linkedin)\b/i,
   rewrite_losing_arm: /\b(rewrite|experiment|arm|hero)\b/i,
   unblock_wait: /\b(wait|unblock)\b/i,
+  /*
+    A founder's rule about replies. "stop chasing people who replied" and "don't reply to prospects
+    yourself" both have to land here — the words a person reaches for are `reply`, `replied`,
+    `respond`, `answer`, and for the no-show half, `reschedule` and `no.show`.
+
+    NOT `prospect` or `outreach` on their own: those are `gtm_next_touch`'s words, and a rule saying
+    "no outreach this week" must hold the sequencer's touches without also silencing the card that
+    says a stranger is waiting for an answer. Two kinds matching one rule is how a founder mutes
+    something they never meant to.
+  */
+  handed_to_you: /\b(reply|replies|replied|respond|responding|answer|reschedule|no.?show)\b/i,
+  /*
+    A founder's rule about letting clients in: "stop sending portal links", "don't invite clients".
+    NOT `client` alone — that word appears in half the rules anyone would write, and matching it here
+    would mute the one card that says a client cannot see the question.
+  */
+  client_cannot_see_it: /\b(portal|invite|invitation|access|sign.?in|log.?in|link)\b/i,
 };
 
 export interface RuleMatch {

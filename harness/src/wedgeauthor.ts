@@ -44,7 +44,7 @@ import {
 } from "./trade-identities";
 import { plainChecks, readShipChecks } from "./ship-checks";
 import { SHARED_WORKFLOWS, isSharedWorkflow } from "./workflows";
-import { ALL_CAPABILITIES, CAPABILITIES, isCapability, type CapabilityName } from "./capabilities";
+import { ALL_CAPABILITIES, CAPABILITIES, isCapability, isDeclarableCapability, type CapabilityName } from "./capabilities";
 import { authoredSlug, isAuthoredSlug, type WedgeFile, type WedgeManifest } from "./wedge";
 import { isTier } from "./models";
 import { SHAPE_DEFAULTS } from "./harness";
@@ -512,6 +512,37 @@ export function authoredFaults(slug: string, raw: unknown): ManifestFault[] {
   return faults;
 }
 
+/**
+ * "Which X do you use?" — the identity question, whose only honest answer is a product name.
+ *
+ * Requires BOTH a system-ish noun and the "do you use" shape, so it catches the dead end without
+ * touching the questions worth asking. `What is your booking system's cancellation policy?` has the
+ * noun and not the shape; `Which practice management system do you use?` has both.
+ */
+const NAMES_A_PRODUCT =
+  /\b(which|what)\b[^?]*\b(system|software|tool|platform|provider|app|suite)\b[^?]*\b(do|are)\s+you\s+(use|using|on|run|running)\b/i;
+
+/** The field a job reports a refusal through. One name, so `not_when` and the grader agree. */
+const COULD_NOT = "could_not_complete";
+
+/**
+ * Does this job already have a way to say it could not do the work?
+ *
+ * Mirrors `hasRefusal` in `deliverable-grade.ts` deliberately — the grader decides whether the
+ * finding fires and this decides whether to fix it, and two different answers would mean a service
+ * repaired into a state the grade still complains about.
+ */
+function hasRefusalPath(properties: Record<string, unknown>, checks: unknown): boolean {
+  if (Array.isArray(checks) && checks.some((c) => isRecord(c) && c.kind === "not_when")) return true;
+  for (const prop of Object.values(properties)) {
+    if (!isRecord(prop) || !Array.isArray(prop.enum)) continue;
+    if (prop.enum.some((v) => typeof v === "string" && /^(not_|no_|none|unavailable|blocked|insufficient|cannot)/i.test(v))) {
+      return true;
+    }
+  }
+  return false;
+}
+
 const RISKS: readonly Risk[] = ["low", "medium", "high"];
 
 const isRecord = (v: unknown): v is Record<string, unknown> =>
@@ -734,18 +765,81 @@ export function repairAuthoredManifest(manifest: Record<string, unknown>, notice
    * transact as soon as it has a job that produces something, which is a state the manifest can
    * reach on its own. A gate whose only door is "reject and start again" is not a gate.
    */
+  /**
+   * ═══════════════════════════════════════════════════════════════════════════════════════════════
+   * A SETUP QUESTION WHOSE ONLY HONEST ANSWER IS A PRODUCT NAME
+   * ═══════════════════════════════════════════════════════════════════════════════════════════════
+   *
+   * "Which practice management system do you use?" is a textarea. The founder types "Cliniko",
+   * nothing connects to Cliniko, the service still has no way into the system it was written for,
+   * and both sides believe setup is done.
+   *
+   * STRIPPED HERE RATHER THAN REFUSED, and that placement is the whole decision. It was a fault
+   * first, and measured: authoring four real trades, it refused TWO — a physiotherapy clinic and a
+   * dental practice. Those are about as mainstream as service businesses get, and the founder's
+   * outcome was `service.draft_refused`, which is "we could not write your service" with no retry
+   * behind it. A guard that turns half of ordinary trades away is worse than the question it
+   * prevents.
+   *
+   * Dropping it loses nothing REAL: the answer reached no tool. What the service actually needs is a
+   * capability the founder can connect something to, and the contract says so — this notice tells
+   * them why a question disappeared rather than leaving it to be noticed.
+   *
+   * DELIBERATELY NOT INFERRING THE CAPABILITY. "Which practice management system do you use?" does
+   * not map to a name without guessing, and a guessed capability appears on the founder's setup
+   * screen as a thing to connect, forever, with nothing able to satisfy it. Same rule as
+   * `intake_asks` and `money_plan` above: structure is derived, trade knowledge never is.
+   */
+  const intakeList = manifest.intake;
+  if (Array.isArray(intakeList)) {
+    const kept = intakeList.filter((q) => !(isRecord(q) && typeof q.ask === "string" && NAMES_A_PRODUCT.test(q.ask)));
+    if (kept.length !== intakeList.length) {
+      for (const q of intakeList) {
+        if (isRecord(q) && typeof q.ask === "string" && NAMES_A_PRODUCT.test(q.ask)) {
+          note(
+            `The draft asked "${q.ask.trim().slice(0, 70)}" as a setup question. A typed answer ` +
+              `connects to nothing, so it was removed — name what the service needs to DO as a ` +
+              `capability and the founder connects the system that provides it.`,
+          );
+        }
+      }
+      manifest.intake = kept;
+    }
+  }
+
   if (isRecord(taskTypes) && !isRecord(manifest.fulfillment)) {
     const names = Object.keys(taskTypes).filter((n) => {
       const spec = (taskTypes as Record<string, unknown>)[n];
       return isRecord(spec) && spec.internal !== true && !isOperationalTaskType(n);
     });
-    // The one that names what a client receives, else the LAST non-machinery job — a service reads
-    // in order and the thing it hands over is what it ends on.
+    /**
+     * ═══ THE JOB THAT STARTS THE WORK, NOT THE ONE THAT ENDS IT ═══
+     *
+     * This took the LAST non-machinery job, on the reasoning that "a service reads in order and the
+     * thing it hands over is what it ends on". That is a true sentence about the DELIVERABLE and the
+     * wrong answer to this question: `production_task_type` is what `sweepFulfillmentIgnition`
+     * SPAWNS when an engagement is ready to begin.
+     *
+     * Read from the one written service live in production — a brand studio's, four jobs in order:
+     *
+     *     shape_brand_strategy      inputs: positioning, competitors, target_audience, goals
+     *     develop_brand_identity    inputs: brand_strategy, approved_feedback
+     *     build_marketing_website   inputs: brand_guidelines, website_copy
+     *     revise_marketing_website  inputs: feedback, website_url          <- was chosen
+     *
+     * So a brand-new engagement would have begun by REVISING a website that does not exist, from
+     * feedback nobody has given. Every later job takes a previous step's output as input; only the
+     * first takes facts about the client. A single-job service makes first and last the same name,
+     * which is why this went unseen.
+     *
+     * A job carrying `deliverable_kind` still wins — an author who says which job hands something
+     * over has answered the question directly, and `authoredFaults` keeps that honest.
+     */
     const declared = names.find((n) => {
       const spec = (taskTypes as Record<string, unknown>)[n];
       return isRecord(spec) && typeof spec.deliverable_kind === "string";
     });
-    const production = declared ?? names[names.length - 1];
+    const production = declared ?? names[0];
     if (production) {
       const kinds = new Set(
         names
@@ -867,7 +961,148 @@ export function repairAuthoredManifest(manifest: Record<string, unknown>, notice
       }
     }
   }
+
+  /**
+   * ═══════════════════════════════════════════════════════════════════════════════════════════════
+   * EVERY JOB A CLIENT RECEIVES CAN SAY "I COULD NOT"
+   * ═══════════════════════════════════════════════════════════════════════════════════════════════
+   *
+   * A job with no way to report that it had nothing to work from produces something anyway. Measured
+   * by authoring four real trades — a physiotherapy clinic, an immigration practice, a cleaning
+   * company, a dental practice — and grading the output: every single job of every single one came
+   * back `no-refusal-path`. A run with no source data writes a plausible recall list, and the grade's
+   * own note says why it matters: zero is a measurement, absence is the truth, and a client reading
+   * "no mentions this week" believes you looked.
+   *
+   * ═══ IT LIVES HERE, AND THAT COST A PRODUCTION MEASUREMENT TO LEARN ═══
+   *
+   * It was added in `authorWedgeFromOutput`, which runs ONCE — when the model's output is first
+   * parsed. On 14 September the three services the meta-agent has ever written in production were
+   * dated 9 August, 14 August and 6 September, all before that code existed, and all eleven of their
+   * client-facing jobs still graded `no-refusal-path`. The fix had shipped and not one already-written
+   * service would ever receive it, because nothing re-runs authoring. A repair that only reaches
+   * services authored after the repair was written is a repair for a population of zero.
+   *
+   * This function runs on EVERY LOAD through `toLoaded`. That is what it is for, and it is why the
+   * derivation is pure structure: "this job must be able to report that it could not do the work" is
+   * equally true of a dental recall, a visa application and a cleaning rota. Nothing here guesses
+   * anything about a trade, which is the rule every other repair in this function obeys.
+   *
+   * ═══ A BOOLEAN, AND THAT IS NOT COSMETIC ═══
+   *
+   * `shipFaults` evaluates `not_when` as `at(parsed, unknown_when) === true`, so a check pointed at
+   * an enum VALUE can never fire. A gate that silently never runs is worse than no gate, because the
+   * service ships believing it is held to something.
+   *
+   * OPTIONAL, never added to `required`: this runs on services that are already promoted and already
+   * running, and making a new field mandatory would fail every run in flight for not setting a flag
+   * it had never been told about.
+   *
+   * DECLARED WINS, like everything else here — a job whose author already gave it a refusal is left
+   * alone. And idempotent by construction: the second pass finds the key and writes nothing.
+   *
+   * SILENT, for the reason the rest of this function is silent. `authoring-notices.test.ts` puts it
+   * in one line — a notice on every service is a notice nobody reads. This is structure every job
+   * needs, not news about this one.
+   */
+  for (const spec of Object.values((manifest.task_types ?? {}) as Record<string, unknown>)) {
+    if (!isRecord(spec)) continue;
+    const tt = spec as { output_schema?: unknown; internal?: boolean; ship_checks?: unknown[] };
+    if (tt.internal || !isRecord(tt.output_schema)) continue;
+    const properties = (tt.output_schema as { properties?: unknown }).properties;
+    if (!isRecord(properties)) continue;
+    /*
+      AN EMPTY `properties` IS NOT A SCHEMA, AND MUST NOT BE REPAIRED INTO ONE.
+
+      `authoredFaults` refuses `{ type: "object", properties: {} }` with "does not say what it
+      produces" — a schema that validates everything is the thin failure that looks configured. The
+      first version of this loop did not check, so it wrote one property into that empty object and
+      `isObjectSchema` then passed it: a job with no declared output became a stored draft whose only
+      field is its own refusal flag. `eval-generation-quality.test.ts` caught it on the first run.
+
+      Adding a field to a schema that has none is not repair, it is invention — the same line every
+      other branch of this function stays on.
+    */
+    if (!Object.keys(properties).length) continue;
+    if (properties[COULD_NOT] !== undefined) continue;
+    if (hasRefusalPath(properties, tt.ship_checks)) continue;
+    properties[COULD_NOT] = {
+      type: "boolean",
+      description:
+        "True when the work could not be done — no source data, an unreachable system, nothing " +
+        "to report. Say so here rather than producing an empty or invented answer, and leave " +
+        "every measurement below ABSENT rather than zero: a client reading a zero believes you " +
+        "looked.",
+    };
+  }
+
+  /**
+   * ═══════════════════════════════════════════════════════════════════════════════════════════════
+   * AN EVIDENCE FIELD NOBODY ENFORCES IS A COLUMN, NOT A GATE
+   * ═══════════════════════════════════════════════════════════════════════════════════════════════
+   *
+   * business-shaper's own research job carries the argument, and it is the best one in this repo:
+   *
+   *   > Every finding carries `source`, and `each_has` refuses the output without one. Not because a
+   *   > URL proves a claim — it does not — but because a model asked to cite is a model that had to
+   *   > go and look, and the difference between reading three real agencies' service pages and
+   *   > recalling what such a page usually says is invisible in the prose and total in the result.
+   *
+   * We apply that to our own meta-agent and to nothing the meta-agent writes. Measured across every
+   * service written in production, 14 September: six lists of objects, and FIVE of them already
+   * declared an evidence field — `evidence`, `citations`, `source_urls`, `citation_urls`. The author
+   * asked for the provenance. Nothing ever refused an entry that omitted it, so a run could return
+   * five findings with `evidence` blank and ship.
+   *
+   * ═══ ONLY WHERE THE FIELD ALREADY EXISTS ═══
+   *
+   * This never ADDS a source field, and that is the line the whole function runs on. Deciding that a
+   * list of proposed actions ought to cite something is a judgement about the trade; noticing that
+   * the author already said each entry carries `evidence` and then making that binding is structure.
+   * A job whose list has no evidence field keeps its `claims-without-evidence` finding, and a founder
+   * reading "nothing makes each entry name where it came from" is being told something true.
+   *
+   * Arrays of OBJECTS only, for the reason `ship-checks.ts` records in its own header: an `each_has`
+   * pointed at a string array does nothing, and a gate that silently never runs is worse than no gate
+   * because the service ships believing it is held to something.
+   */
+  for (const spec of Object.values((manifest.task_types ?? {}) as Record<string, unknown>)) {
+    if (!isRecord(spec)) continue;
+    const tt = spec as { output_schema?: unknown; internal?: boolean; ship_checks?: unknown[] };
+    if (tt.internal || !isRecord(tt.output_schema)) continue;
+    const properties = (tt.output_schema as { properties?: unknown }).properties;
+    if (!isRecord(properties)) continue;
+
+    const existing = Array.isArray(tt.ship_checks) ? tt.ship_checks : [];
+    const already = new Set(
+      existing
+        .filter((c): c is Record<string, unknown> => isRecord(c) && c.kind === "each_has")
+        .map((c) => `${String(c.items)}.${String(c.field)}`),
+    );
+    const derived: Array<{ kind: "each_has"; items: string; field: string }> = [];
+
+    for (const [listName, listSpec] of Object.entries(properties)) {
+      if (!isRecord(listSpec) || listSpec.type !== "array") continue;
+      const items = listSpec.items;
+      if (!isRecord(items) || items.type !== "object" || !isRecord(items.properties)) continue;
+      const field = Object.keys(items.properties).find((k) => SOURCE_FIELD.test(k));
+      if (!field || already.has(`${listName}.${field}`)) continue;
+      derived.push({ kind: "each_has", items: listName, field });
+    }
+    if (derived.length) tt.ship_checks = [...existing, ...derived];
+  }
 }
+
+/**
+ * A field name that means "where this entry came from".
+ *
+ * Deliberately narrow. `source`, `evidence`, `citation` and `reference` are the words a schema uses
+ * for provenance and almost nothing else; `basis` and `origin` are near-misses that also name
+ * ordinary business fields, so they are out. Binding a gate to the wrong field is how a check ends
+ * up refusing correct work, and the cost of missing one is a finding that stays visible — which is
+ * the safe direction.
+ */
+const SOURCE_FIELD = /^(source|sources|source_urls?|source_domains?|evidence|citation|citations|citation_urls?|reference|references|cited_from|quoted_from)$/i;
 
 /** A usable intake id from the question text: lower-case words joined by hyphens, letter-first. */
 function deriveIntakeId(ask: string): string {
@@ -1043,6 +1278,9 @@ export function authorWedgeFromOutput(
     };
     if (!tt.output_schema) continue;
     const clientFacing = !tt.internal;
+    // Read BEFORE anything below writes to it, so "the author declared a bar" stays answerable after
+    // the inferred and learned checks have been merged in.
+    const authorDeclaredChecks = !!tt.ship_checks?.length;
     const inferred = inferChecks(tt.output_schema, { clientFacing });
     if (!tt.ship_requires?.length && inferred.ship_requires.length) tt.ship_requires = inferred.ship_requires;
 
@@ -1076,6 +1314,89 @@ export function authorWedgeFromOutput(
      * argument as the checks, and the same posture: silent whenever the schema is ambiguous, and a
      * declared chart always wins.
      */
+    /**
+     * ═══════════════════════════════════════════════════════════════════════════════════════════════
+     * A WAY TO SAY "I COULD NOT", ON EVERY JOB A CLIENT RECEIVES
+     * ═══════════════════════════════════════════════════════════════════════════════════════════════
+     *
+     * Measured by authoring four real trades — a physiotherapy clinic, an immigration practice, a
+     * cleaning company, a dental practice — and grading the output with `gradeDeliverables`. Every
+     * single job of every single one came back `no-refusal-path`:
+     *
+     *     "patient_recall" has no way to say it could not do the job, so when it has nothing it
+     *     will produce something anyway.
+     *
+     * That is the deliverable-quality failure with the worst consequence, and it is universal rather
+     * than occasional: a run with no source data and no way to report that will write a plausible
+     * recall list, and the grade's own note says why it matters — "zero is a measurement; absence is
+     * the truth. A client reading 'no mentions this week' believes you looked."
+     *
+     * STRUCTURE, NOT TRADE KNOWLEDGE, which is what makes it derivable at all under this function's
+     * rule. "This job must be able to report that it could not do the work" is true of a dental
+     * recall, a visa application and a cleaning rota alike; nothing here guesses anything about the
+     * trade. The same argument `ship_requires` above is derived on.
+     *
+     * A BOOLEAN, and that is not cosmetic. `shipFaults` evaluates `not_when` as
+     * `at(parsed, unknown_when) === true`, so a check pointed at an enum VALUE can never fire — a
+     * gate that silently never runs is worse than no gate, because the service ships believing it is
+     * held to something.
+     *
+     * DECLARED WINS, like everything else here: a job whose author already gave it a refusal — a
+     * `not_when` check or a status enum carrying `none`/`unavailable`/`cannot` — is left alone.
+     *
+     * ═══ AND IT RUNS AFTER THE MERGE ABOVE, WHICH COST FOUR TESTS TO LEARN ═══
+     *
+     * Placed before it first, and `ship_checks` became non-empty — so the "declared still wins"
+     * guard read the guards below as an author's own bar and skipped the inferred and learned checks
+     * entirely. A recruiting service came out holding three `not_when` guards and nothing else: no
+     * `sums_to` on the funnel, no `minor_units` on the figure a client pays from. A repair that
+     * silences the gates it was added beside is worse than the finding it fixes.
+     *
+     * SILENT, for the same reason the `ship_requires` derivation above is: a notice on every service
+     * is a notice nobody reads, and `authoring-notices.test.ts` says so in those words. This is
+     * structure every job needs, not news about this one.
+     */
+    /*
+      THE FIELD IS ADDED BY `repairAuthoredManifest`, WHICH RAN AT THE TOP OF THIS FUNCTION.
+
+      It used to be added here, and here is a place that runs ONCE — when the model's output is first
+      parsed. Measured against production on 14 September: the three services the meta-agent has ever
+      written were authored on 9 August, 14 August and 6 September, all before this code existed, and
+      all three still graded `no-refusal-path` on every client-facing job. Eleven jobs. The fix had
+      shipped and none of them would ever receive it, because nothing re-runs authoring.
+
+      `repairAuthoredManifest` is the one that runs on EVERY LOAD, through `toLoaded`, which is what
+      a deterministic idempotent repair is for. So the field lives there and reaches the services that
+      already exist. What stays here is the ENFORCEMENT below, because it is the only half that needs
+      a fact this function has and a load does not: whether the AUTHOR declared their own bar, or
+      whether the checks now on the task are ones we inferred a moment ago.
+    */
+    if (clientFacing && isRecord(tt.output_schema)) {
+      const schema = tt.output_schema as { properties?: Record<string, unknown>; required?: unknown };
+      const properties = isRecord(schema.properties) ? schema.properties : undefined;
+      if (properties && properties[COULD_NOT] !== undefined) {
+        /*
+          And one `not_when` per measurement, so the refusal is ENFORCED rather than merely offered.
+          Numbers only: a string left in place beside a refusal is a note, while a FIGURE beside one
+          is a client acting on something we have just said we could not establish.
+
+          NOT WHEN THE AUTHOR DECLARED THEIR OWN BAR. "Declared wins whole" is this function's rule
+          and `infer-checks.test.ts` pins it — an author who wrote `ship_checks` keeps exactly those,
+          and appending here would overrule a decision rather than fill a hole. They still get the
+          FIELD above, so the job can say it could not do the work; what they do not get is a gate
+          they did not ask for. The field alone is enough for `gradeDeliverables`, which recognises a
+          boolean refusal as one of three valid shapes.
+        */
+        if (!authorDeclaredChecks) {
+          const measured = Object.entries(properties)
+            .filter(([k, v]) => k !== COULD_NOT && isRecord(v) && (v.type === "number" || v.type === "integer"))
+            .map(([k]) => k);
+          const guards = measured.map((field) => ({ kind: "not_when", field, unknown_when: COULD_NOT }));
+          if (guards.length) tt.ship_checks = [...(tt.ship_checks ?? []), ...guards];
+        }
+      }
+    }
+
     if (!tt.chart) {
       const chart = inferChart(tt.output_schema, { clientFacing });
       if (chart) tt.chart = chart;
@@ -1274,10 +1595,32 @@ export function reviewDraft(draft: AuthoredWedgeDraft): DraftReview {
 
   const needs: string[] = [];
   for (const cap of m.capabilities ?? []) {
-    // Guarded even though `authoredFaults` has already refused unknown capabilities: `reviewDraft`
-    // is also called on rows read back from the store, and a capability removed from the kernel
-    // between authoring and review must degrade to a readable line rather than crash the page.
-    needs.push(isCapability(cap) ? CAPABILITIES[cap as CapabilityName].title : `something called "${cap}", which this kernel no longer offers`);
+    /**
+     * ═══ THREE CASES, AND THE MIDDLE ONE USED TO READ AS AN ERROR ═══
+     *
+     * This was two: a known capability got its title, and anything else got `something called "X",
+     * which this kernel no longer offers`. That was right while `CAPABILITIES` was the whole
+     * vocabulary — an unrecognised name could only be one removed from the kernel between authoring
+     * and review, and saying so is better than crashing the page.
+     *
+     * It is wrong now, and wrong at the worst moment. A service written for a physiotherapy practice
+     * declares `read_appointments` ON PURPOSE, and this is the "What it needs from you first" list
+     * on the screen where the founder first meets their own service. They would read that the thing
+     * their trade runs on is something we NO LONGER OFFER — about the only sentence that could make
+     * a correct draft look broken.
+     *
+     * The third case is still real and still says so: a name that is neither known nor a well-formed
+     * declaration is a capability that genuinely went away.
+     */
+    if (isCapability(cap)) {
+      needs.push(CAPABILITIES[cap as CapabilityName].title);
+    } else if (isDeclarableCapability(cap)) {
+      // Its own words, said as a sentence. The service chose them; we are not translating a vendor.
+      const plain = cap.replace(/_/g, " ");
+      needs.push(plain.charAt(0).toUpperCase() + plain.slice(1));
+    } else {
+      needs.push(`something called "${cap}", which this kernel no longer offers`);
+    }
   }
   for (const q of m.intake ?? []) needs.push(q.ask);
 

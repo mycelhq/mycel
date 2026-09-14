@@ -78,7 +78,7 @@ is the same rule as never plugging a difference, applied to time instead of to m
   drawing money — four different treatments, and getting it wrong is the error that draws attention.
 - **Anything involving the owner personally.** Drawings, director's loan, expense reimbursement,
   personal spend on the business card. Always ask. Always.
-- **A round number to an unfamiliar recipient.** £2,000 to a name that has never appeared before is
+- **A round number to an unfamiliar recipient.** $2,000 to a name that has never appeared before is
   either a genuine supplier or something that needs explaining, and no pattern in the data tells you
   which.
 - **Anything crossing a period boundary.** An annual subscription paid in one month covers twelve,
@@ -93,11 +93,11 @@ is the same rule as never plugging a difference, applied to time instead of to m
 Asking is half of it. The other half is where the money goes in the meantime, and getting that wrong
 undoes the asking.
 
-**An item you would recommend excluding does not sit in operating costs.** A close flagged a £340
+**An item you would recommend excluding does not sit in operating costs.** A close flagged a $340
 card payment as "owner or personal spend, held outside expenses until confirmed" — and then counted
 it inside the expense total anyway. The client read both sentences and said the obvious thing:
 
-> The headline net figure is not decision-useful because it includes £340.00 explicitly labelled
+> The headline net figure is not decision-useful because it includes $340.00 explicitly labelled
 > "owner or personal spend" as an expense. If it is personal, it should be shown as drawings or owner
 > account activity, not operating cost.
 
@@ -116,8 +116,8 @@ resolve it.
 
 **Suspense is a real place, not a hedge.** Anything genuinely unclassifiable — the unidentified card
 payment, the round number to an unknown name — goes to a named suspense line with its amount, so the
-client can see exactly what is unplaced and what it is worth. A suspense balance of £340 with one line
-in it is honest bookkeeping. £340 buried in "software" is not.
+client can see exactly what is unplaced and what it is worth. A suspense balance of $340 with one line
+in it is honest bookkeeping. $340 buried in "software" is not.
 
 ## Entertaining: the VAT answer is not the tax answer
 
@@ -140,7 +140,7 @@ was worth it and one of those numbers is much larger than the other.
 The failure that makes clients hate bookkeeping software is being asked the same question every
 month. So:
 
-- **Ask about the RULE, not the transaction.** Not "how should I categorise this £48 to Acme
+- **Ask about the RULE, not the transaction.** Not "how should I categorise this $48 to Acme
   Supplies?" but "Acme Supplies appears monthly — is that always office supplies?" One answer
   resolves this month and every future one.
 - **Batch the questions.** One message with six questions is a ten-minute job. Six messages across a
@@ -188,6 +188,6 @@ Say so plainly and stop. **A close that balances because something was forced is
 one**, and it is the specific failure that ends the relationship — not because the month was late,
 but because they stop trusting the ones that came before it.
 
-Name the difference, name where you looked, and ask. "Reconciled except for £340 between the bank
+Name the difference, name where you looked, and ask. "Reconciled except for $340 between the bank
 and the ledger, which I think is the two Stripe payouts on the 29th — can you confirm?" is a good
 month's work. A silent plug is not.

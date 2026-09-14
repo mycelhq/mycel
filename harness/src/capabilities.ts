@@ -319,9 +319,104 @@ export const ALL_CAPABILITIES = Object.keys(CAPABILITIES) as CapabilityName[];
 
 export const isCapability = (s: string): s is CapabilityName => Object.hasOwn(CAPABILITIES, s);
 
+/**
+ * ═════════════════════════════════════════════════════════════════════════════════════════════════
+ * A CAPABILITY THIS KERNEL HAS NEVER HEARD OF, SATISFIED BY A CONNECTION THE FOUNDER BROUGHT
+ * ═════════════════════════════════════════════════════════════════════════════════════════════════
+ *
+ * `CAPABILITIES` is eleven names. The broker underneath is not: `readComposio` takes a free-form
+ * capability string, reaches any of 1,540 Composio toolkits, and a connection can even map a
+ * capability to a raw vendor API path and carry the call on its own OAuth. So the RUNTIME was always
+ * a framework and the DECLARATION was the ceiling — a service could only ever ask for one of eleven
+ * things.
+ *
+ * That ceiling is what stops this covering trades nobody packaged. A physiotherapy practice runs on
+ * Cliniko or Jane, a law firm on Clio, a plumber on ServiceTitan or Jobber. None of it is `read_crm`
+ * and none of it is expressible, so a service written for that business could name what it needed
+ * and be handed nothing — `runtime.ts` skipped an unknown name silently, with no grant and no
+ * sentence saying why.
+ *
+ * THE CHAIN IS NOW THE OTHER WAY AROUND. It was `capability (our eleven) -> providers (our vendor
+ * table) -> the founder's connection`, which requires this kernel to already know what Cliniko is.
+ * A connection may now declare what it PROVIDES, so a service states a need in its own words and
+ * whatever the founder connected answers it. Nothing here learns a vendor's name.
+ *
+ * The eleven stay exactly as they are. They are the path where the kernel PARSES the answer and
+ * COMPOSES the call — normalised money, a real send — and that is worth more than a raw tool when it
+ * exists. A declared capability is brokered: the agent gets the vendor's own tools and is told so.
+ */
+export interface DeclaredProvider {
+  /** Composio tool slugs the agent may read through, for this capability. */
+  reads?: readonly string[];
+  /** Composio tool slugs the agent may act through. */
+  actions?: readonly string[];
+}
+
+/** `snake_case`, the shape every name in `CAPABILITIES` already has. Anything else is a typo. */
+const DECLARED_NAME = /^[a-z][a-z0-9]*(_[a-z0-9]+)*$/;
+
+export function isDeclarableCapability(s: string): boolean {
+  return DECLARED_NAME.test(s) && s.length <= 60;
+}
+
+/** What a connection says it can do, as `{ capability: { reads, actions } }`. Never throws. */
+export function connectionProvides(conn: Connection): Record<string, DeclaredProvider> {
+  const raw = (conn.config as Record<string, unknown> | undefined)?.provides;
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) return {};
+  const out: Record<string, DeclaredProvider> = {};
+  for (const [name, v] of Object.entries(raw as Record<string, unknown>)) {
+    if (!isDeclarableCapability(name)) continue;
+    const spec = (v ?? {}) as Record<string, unknown>;
+    const list = (k: string): string[] =>
+      Array.isArray(spec[k]) ? (spec[k] as unknown[]).filter((x): x is string => typeof x === "string" && !!x) : [];
+    const reads = list("reads");
+    const actions = list("actions");
+    /*
+      A capability claimed with NEITHER is a claim with nothing behind it. Recording it would make
+      `resolveCapability` report a working binding for a connection that cannot do the thing — the
+      "connected but unimplemented" failure the eleven already have a loud sentence for.
+    */
+    if (!reads.length && !actions.length) continue;
+    out[name] = { ...(reads.length ? { reads } : {}), ...(actions.length ? { actions } : {}) };
+  }
+  return out;
+}
+
+/**
+ * The connections in this project that say they provide `capability`.
+ *
+ * Founder-owned only, and scoped — the same two filters `resolveCapability` applies for the eleven,
+ * for the same reason: a client's connection is not the business's, and resolving across tenants is
+ * the leak this repo has shipped twice.
+ */
+export function declaredProviders(
+  capability: string,
+  connections: readonly Connection[],
+  projectId: string,
+): { connection: Connection; provides: DeclaredProvider }[] {
+  if (!projectId || !isDeclarableCapability(capability)) return [];
+  const out: { connection: Connection; provides: DeclaredProvider }[] = [];
+  for (const c of connections) {
+    if (c.project_id !== projectId || c.owner?.kind !== "founder") continue;
+    const p = connectionProvides(c)[capability];
+    if (p) out.push({ connection: c, provides: p });
+  }
+  return out;
+}
+
 /** The founder-readable sentence for a capability nothing provides. One wording, every surface. */
-export function whyNoProvider(capability: CapabilityName): string {
-  return CAPABILITIES[capability].absent;
+export function whyNoProvider(capability: string): string {
+  if (isCapability(capability)) return CAPABILITIES[capability].absent;
+  /*
+    A DECLARED capability has no hand-written sentence, and inventing a vendor for it would be the
+    hardcoding this exists to remove. So it names the need in the service's own words and the one
+    action that resolves it — which is also the only honest thing to say about a trade we do not know.
+  */
+  return (
+    `Nothing connected here says it can ${capability.replace(/_/g, " ")}. Connect the tool your ` +
+    `business uses for it and mark it as providing "${capability}" — this kernel does not need to ` +
+    `know which product that is.`
+  );
 }
 
 /**
@@ -340,7 +435,10 @@ export function whyNoProvider(capability: CapabilityName): string {
  * Five of eleven are brokered as this ships: read_bank_transactions, publish_content, read_crm,
  * write_crm, read_ads, write_ads. Each says so, in `resolveCapability`'s detail, on every surface.
  */
-export function capabilityAdapter(capability: CapabilityName): "kernel" | "brokered" {
+export function capabilityAdapter(capability: string): "kernel" | "brokered" {
+  // A declared capability is brokered BY CONSTRUCTION — the kernel has no parser for a trade it has
+  // never heard of, and saying so is the whole honesty of `brokeredCaveat`.
+  if (!isCapability(capability)) return "brokered";
   const spec = CAPABILITIES[capability];
   return spec.kernel_parses || spec.kernel_acts ? "kernel" : "brokered";
 }
@@ -351,7 +449,19 @@ export function capabilityAdapter(capability: CapabilityName): "kernel" | "broke
  * the reason `hasLinkedInExecutor` gives: an agent that plans around a verb nobody built spends a
  * whole run discovering it, and a founder who was shown a green tick never finds out at all.
  */
-export function brokeredCaveat(capability: CapabilityName): string {
+export function brokeredCaveat(capability: string): string {
+  if (!isCapability(capability)) {
+    /*
+      No `spec.title` to quote, and inventing one would be inventing knowledge of a trade this kernel
+      does not have. The sentence says the same true thing the eleven's version says: you are getting
+      the vendor's own tools, read them before you plan around them.
+    */
+    return (
+      `this kernel has no adapter for "${capability}" — the tool your business connected for it is ` +
+      `handed to you as the vendor's own actions, so read what they take before planning a step ` +
+      `around one`
+    );
+  }
   const spec = CAPABILITIES[capability];
   return (
     `this kernel has no adapter for "${capability}" (${spec.title.toLowerCase()}) — a connected provider is handed to ` +
@@ -390,13 +500,41 @@ function looksLike(known: string, given: string): boolean {
  * them together, which is the thing `manifestFaults` learned: a founder who mistyped twice should be
  * told twice.
  */
-export function capabilityFault(given: string): string | undefined {
+export function capabilityFault(given: string, opts: { declarable?: boolean } = {}): string | undefined {
   if (isCapability(given)) return undefined;
+  /**
+   * ═══ A NEAR MISS IS A TYPO; ANYTHING ELSE DEPENDS ON WHO WROTE IT ═══
+   *
+   * `looksLike` tells the two apart, and that half is unconditional. `read_paymnets` is a slip, and
+   * naming the intended capability beats accepting it — the kernel PARSES that one, so a typo would
+   * quietly downgrade a normalised read to a raw vendor call.
+   *
+   * What the caller decides is what happens to a name resembling nothing we ship.
+   *
+   *   · A PACKAGED manifest or blueprint — ours. `fly_to_mars` in our own artifact is a bug, and the
+   *     closed vocabulary is the check that catches it. Default, because the strict answer is the
+   *     safe one to get by accident.
+   *
+   *   · `declarable: true` — a service WRITTEN for a business, or a connection saying what it
+   *     provides. Eleven names against 1,540 connectable toolkits is the ceiling that stops this
+   *     platform covering a trade nobody packaged: a physiotherapy practice cannot say
+   *     `read_appointments`, a law firm cannot say `read_matters`, and being made to pick the
+   *     nearest of eleven is how a brand studio ended up declared as `invoice-chaser`.
+   *
+   * Either way nothing is silently dropped — `runtime.ts` reports a name it cannot resolve in
+   * `missing` rather than skipping it, which is the failure this whole check exists for.
+   */
   const near = ALL_CAPABILITIES.find((c) => looksLike(c, given));
-  return (
-    `"${given}" is not a capability this kernel knows` +
-    (near ? ` — did you mean "${near}"?` : ` (known capabilities: ${ALL_CAPABILITIES.join(", ")})`)
-  );
+  if (near) return `"${given}" is not a capability this kernel knows — did you mean "${near}"?`;
+  if (opts.declarable) {
+    if (isDeclarableCapability(given)) return undefined;
+    return (
+      `"${given}" is not a usable capability name — use snake_case, like "read_appointments". ` +
+      `This kernel implements ${ALL_CAPABILITIES.join(", ")}; anything else is answered by a tool ` +
+      `you connect and mark as providing it.`
+    );
+  }
+  return `"${given}" is not a capability this kernel knows (known capabilities: ${ALL_CAPABILITIES.join(", ")})`;
 }
 
 // ═══════════════════════════ THE PROVIDER TABLE ═══════════════════════════
@@ -809,7 +947,13 @@ export interface BoundProvider {
 }
 
 export interface CapabilityBinding {
-  capability: CapabilityName;
+  /**
+   * `CapabilityName` for one of the eleven the kernel implements, or any `snake_case` name a service
+   * declared and a connection answered. Widened when capabilities stopped being a closed list — see
+   * `declaredProviders`. Callers that need the distinction ask `isCapability`, and the two that did
+   * (`blueprints.ts`, `blueprints.routes.ts`) already guarded on it before reading the spec table.
+   */
+  capability: string;
   /** Connected providers, in table order. Empty when nothing provides it. */
   bound: BoundProvider[];
   /** Everything else the founder could connect for this. What the connect step offers. */
@@ -847,11 +991,52 @@ export interface CapabilityBinding {
  * checklist goes green on a business that cannot do the thing.
  */
 export function resolveCapability(
-  capability: CapabilityName,
+  capability: string,
   connections: readonly Connection[],
   projectId: string,
 ): CapabilityBinding {
   if (!projectId) throw new Error("resolving a capability must be scoped to a project");
+  /**
+   * ═══ A NAME THIS KERNEL DOES NOT KNOW, ANSWERED BY WHAT THE FOUNDER CONNECTED ═══
+   *
+   * Taken FIRST and returned whole, rather than folded into the table below, because the two are not
+   * the same kind of answer. The eleven are capabilities the kernel PARSES and COMPOSES — it knows
+   * what an invoice is, it can normalise the money, it can perform the send. A declared one is
+   * brokered by construction: the agent is handed the vendor's own tools and `capabilityAdapter`
+   * tells it so. Pretending otherwise would be the quiet version of the failure the "connected but
+   * unimplemented" sentence exists to shout about.
+   *
+   * `cardinality` is effectively many: two connections that both say they can do a thing is a
+   * founder's own arrangement, not an ambiguity for this module to refuse. The refusal below exists
+   * for `send_email`, where picking would decide which address a client sees the business as.
+   */
+  if (!isCapability(capability)) {
+    const declared = declaredProviders(capability, connections, projectId);
+    const bound: BoundProvider[] = declared.map((d) => ({
+      provider: {
+        toolkit: String((d.connection.config as Record<string, unknown>)?.toolkit ?? d.connection.kind),
+        label: d.connection.name,
+        via: d.connection.kind === "composio" ? "composio" : "email",
+        reads: [],
+        actions: [],
+      } as CapabilityProvider,
+      connection: d.connection,
+      // Never "unreadable"/"unactionable": those report that the KERNEL has no parser or composer,
+      // which is true of every declared capability and is the point rather than a defect.
+      unreadable: false,
+      unactionable: false,
+    }));
+    return bound.length
+      ? { capability, bound, candidates: [], ok: true, ambiguous: false, detail: "" }
+      : {
+          capability,
+          bound,
+          candidates: [],
+          ok: false,
+          ambiguous: false,
+          detail: whyNoProvider(capability),
+        };
+  }
   const spec = CAPABILITIES[capability];
   const providers = capabilityProviders(capability);
 

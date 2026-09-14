@@ -281,6 +281,55 @@ async function main(): Promise<void> {
     ids[c.key] = row.id;
   }
 
+  /**
+   * ═══ THE DEMO'S OWNER HAS CONFIRMED THEIR ADDRESS ═══
+   *
+   * Without this, every screen in the demo opens under an amber banner: *"Confirm
+   * founder@sightlineresearch.example — delivery and outbound stay off until this address is
+   * confirmed."* Correct behaviour, and the first frame of every recorded clip that starts on Home,
+   * the first thing in every screenshot, and the first thing a visitor to the live demo reads.
+   *
+   * A demo business is a business that finished setting up. `verify/request` hands the token back to
+   * the caller — the product is what delivers it (`cloud/lib/mail.ts`), and here there is no inbox —
+   * so the seed does both halves the way a founder clicking the link in their email would.
+   */
+  const verify = await post<{ status: string; token?: string }>("auth/verify/request", {}).catch(() => undefined);
+  if (verify?.token) await post("auth/verify/confirm", { token: verify.token }).catch(() => undefined);
+
+  /**
+   * ═══ HOW THIS BUSINESS GETS PAID, BEFORE ANY INVOICE EXISTS ═══
+   *
+   * Without it every seeded invoice renders a red block: *"This invoice is missing the registered
+   * address and company number an accounts department needs"*, and under How to pay, *"This business
+   * has not said how it takes payment, so this invoice cannot tell the client where to send the
+   * money."* Both sentences are correct — `payments.rails.ts` refuses to invent a sort code, and the
+   * document says so rather than looking complete — and both are the first thing anybody sees on the
+   * demo's invoice screen, in the clips on the landing page, and in every screenshot anybody takes.
+   *
+   * A demo that opens on an error the product is right to show is still a demo that opens on an
+   * error. Seeding the rails is the honest fix: it is a thing every real business does once, in
+   * Settings, before it bills anybody.
+   *
+   * Bank transfer and card, because those are the two a client actually uses, and a seller identity
+   * complete enough that the document has nothing to complain about.
+   */
+  await put("payments/rails", {
+    currency: "USD",
+    seller: {
+      address: ["Sightline Research LLC", "1100 Congress Ave, Suite 400", "Austin, TX 78701"],
+      company_number: "EIN 88-4102993",
+    },
+    rails: [
+      {
+        kind: "bank_transfer",
+        enabled: true,
+        lines: ["Sightline Research LLC", "Routing 021000021", "Account 4471 0098 2210", "Reference: the invoice number"],
+      },
+      { kind: "stripe", enabled: true, lines: ["Card or bank debit, through the link on this invoice."] },
+      { kind: "cash_or_cheque", enabled: false, lines: [] },
+    ],
+  }).catch(() => undefined);
+
   // ── Money ──────────────────────────────────────────────────────────────────────────────────────
   //
   // Five invoices spanning the whole of `effectiveStatus`: badly overdue, mildly overdue, due soon,

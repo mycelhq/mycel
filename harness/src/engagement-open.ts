@@ -80,7 +80,27 @@ export async function deliveryWedge(projectId: string, exclude: string, store: S
    * statement of their trade, made before any of this, and it is the first thing asked here.
    */
   const shape = await readBusinessShape(store, projectId).catch(() => ({}) as BusinessShape);
-  const declared = shape.wedge?.trim();
+  /**
+   * ═══ `direct` ONLY, AND `adjacent` IS NOT A NEAR MISS ═══
+   *
+   * This accepted either, and the two mean opposite things. `direct` is the trade the firm SELLS;
+   * `adjacent` is a trade we ship that helps the firm's own back office. The shaper is explicit
+   * about which it means — read from production on 13 September:
+   *
+   *     Northlight Studio (brand identity + Webflow) → invoice-chaser, fit=adjacent,
+   *     covers "Chases YOUR overdue invoices by email and escalates on a schedule."
+   *
+   * This function picks the service a CLIENT's engagement opens on. Taking that `adjacent` answer
+   * would open an engagement in a design client's name on invoice chasing and send that client
+   * intake questions about it. Four of the fifteen real businesses shaped so far are design studios
+   * sitting on exactly that answer, and the engagement sweep now asks this question on a clock — so
+   * a wrong answer here is no longer one founder's confusing afternoon, it is outbound mail.
+   *
+   * An `adjacent` firm therefore falls through to the authored-service path below, which is correct:
+   * a brand studio's client work is not in the catalogue, and that is precisely the case a service
+   * gets written for.
+   */
+  const declared = shape.fit === "direct" ? shape.wedge?.trim() : undefined;
   if (declared && declared !== exclude && (await productionTaskType(projectId, declared))) {
     return declared;
   }
@@ -274,7 +294,7 @@ export async function openEngagementFromSignature(env: Envelope, store: Store): 
  * hand, and throwing would fail the SIGNATURE route — telling a client their signature did not go
  * through when it did, which is the worst available lie.
  */
-async function startWork(kase: Case): Promise<void> {
+export async function startWork(kase: Case): Promise<void> {
   const domain = getDomainStore();
 
   /**
@@ -334,4 +354,95 @@ async function startWork(kase: Case): Promise<void> {
       console.error(`[mycel] could not arm the clock for engagement ${kase.id}:`, e),
     );
   }
+}
+
+/**
+ * ═══════════════════════════════════════════════════════════════════════════════════════════════
+ * A CLIENT ARRIVING IS ITSELF A GO-SIGNAL
+ * ═══════════════════════════════════════════════════════════════════════════════════════════════
+ *
+ * Everything above opens an engagement when paper is SIGNED. That is the right trigger for a firm
+ * that sells through proposals, and it is the only trigger the product had — which left the
+ * commonest case in the market with nothing at all: a founder who already has the client, adds them,
+ * and expects the desk to start.
+ *
+ * ═══ THE PRODUCTION SEQUENCE THAT MADE THIS NECESSARY ═══
+ *
+ * A four-person brand studio finished onboarding on 14 August 2026. The shaper wrote them a service
+ * they agreed to — four jobs, a four-stage case machine, three intake questions good enough to send
+ * a client verbatim. They put it on the clock. It ran `shape_brand_strategy` six times across five
+ * days, succeeded five times, and produced zero deliverables, because the project had zero clients
+ * and therefore zero engagements. Then they stopped opening the product.
+ *
+ * `delivery-precondition.ts` is the defensive half of that finding: stop burning a model call every
+ * morning on work with no recipient. THIS is the offensive half, and it is the one that matters —
+ * the moment a client exists, the desk should open the engagement, ask that client the questions the
+ * service says it needs, and start the work when the answers land. Nothing above needed to be built
+ * for it: `runKickoffPlaybook` already sends the intake asks and the connection invites,
+ * `fulfillment-ignite` already starts production once they are answered, and `waits.ts` already
+ * parks and resumes. The link from "a client exists" to "the engagement is open" was the only
+ * missing piece, and it is thirty lines.
+ *
+ * ═══ WHAT IT REFUSES TO GUESS ═══
+ *
+ * Exactly what `deliveryWedge` refuses to guess, because it is the same function. One live producing
+ * service is unambiguous and gets opened. Two is a decision about whose letterhead the work goes out
+ * under, and a founder makes that — `convertProspect` is one click and it is theirs.
+ *
+ * A client who already has an open case is left alone: a second engagement opened behind somebody's
+ * back is the failure mode this whole file's idempotency is written against.
+ */
+export async function openEngagementForNewClient(
+  projectId: string,
+  client: { id: string; display_name?: string },
+  store: Store,
+): Promise<string | undefined> {
+  if (!projectId || !client?.id) return undefined;
+  const domain = getDomainStore();
+
+  // Already engaged. Adding a second client to the same business must not reopen the first one's
+  // work, and a re-run of this (a retried request, a replayed event) must be a no-op.
+  const existing = await domain
+    .listCases({ project_id: projectId, client_id: client.id })
+    .catch(() => []);
+  if (existing.length) return undefined;
+
+  // `exclude` is empty: there is no source case to avoid here, unlike the signature path where the
+  // prospect's own gtm case must not be mistaken for a desk.
+  const wedge = await deliveryWedge(projectId, "", store).catch(() => undefined);
+  if (!wedge) return undefined;
+
+  const loaded = await loadProjectWedge(projectId, wedge).catch(() => null);
+  const stages = loaded?.manifest.cases?.stages ?? [];
+  const stage = loaded?.manifest.cases?.initial ?? stages[0] ?? "open";
+  const now = new Date().toISOString();
+
+  const opened = await domain.createCase({
+    project_id: projectId,
+    wedge,
+    // The client's name, not the service's: this is the engagement with THEM, and it is what the
+    // founder scans a list of engagements looking for.
+    title: client.display_name?.trim() || "New engagement",
+    client_id: client.id,
+    stage,
+    status: "open",
+    data: {},
+    history: [
+      {
+        at: now,
+        kind: "created",
+        note: `opened when ${client.display_name?.trim() || "this client"} was added — ${loaded?.manifest.title ?? wedge} is the only service live here`,
+        actor: "system",
+      },
+    ],
+  });
+
+  /*
+    The same `startWork` the signature path runs: a mailbox to ask through, the kickoff playbook that
+    sends the intake questions and the connection invites, and the clock armed. Failures inside it are
+    logged rather than raised — an engagement that opened and whose kickoff did not is recoverable and
+    visible, and failing the caller would make adding a client look broken.
+  */
+  await startWork(opened);
+  return opened.id;
 }

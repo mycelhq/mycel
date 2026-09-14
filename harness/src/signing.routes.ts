@@ -88,6 +88,30 @@ export interface SigningRouteDeps {
   /** Called once, when the last signature lands. See `on_execute` in signing.ts. */
   onExecuted?: (env: Envelope) => Promise<void>;
   /**
+   * STORE A REVISED DOCUMENT, uploaded by the founder, against the run the previous one belongs to.
+   *
+   * ═══ WHY THIS EXISTS RATHER THAN THE CONSOLE DOING IT IN TWO CALLS ═══
+   *
+   * `revise` takes an `artifact_id`, and an artifact has to hang off a TASK. The console has a file
+   * input and no idea which run owns the paper it is replacing — `GET /v1/artifacts/:id` serves
+   * bytes, not the task behind them — so "upload, then revise" is a flow it cannot complete. That
+   * is why this route sat on the owed-a-surface list with the note "needs a document-upload flow
+   * the console does not have", and why the founder's only move on a change request was to withdraw
+   * the agreement and start again.
+   *
+   * The same run, deliberately: the revision belongs with the work that produced the original, so a
+   * trace of that engagement holds every version of the paper rather than scattering them across
+   * whatever task happened to be handy.
+   *
+   * Injected rather than imported because it needs the task store and the multipart reader, and this
+   * module is written to know about neither — the same reason `readArtifact` is a dependency.
+   */
+  attachRevision?: (
+    c: Context,
+    projectId: string,
+    previousArtifactId: string,
+  ) => Promise<{ artifact_id: string; filename: string; size_bytes: number } | { error: string; status: number }>;
+  /**
    * Tenancy, INJECTED — the same three closures `clients.routes.ts` takes, for the reason its
    * header gives: a second copy of "which projects may this caller see" is how a tenancy check
    * drifts. The two would agree today and disagree the first time one of them learns about a new
@@ -379,20 +403,51 @@ export function mountSigningRoutes(app: Hono, deps: SigningRouteDeps): void {
   app.post("/v1/envelopes/:id/revise", async (c) => {
     const env = await visible(c, c.req.param("id"));
     if (!env) return c.json({ error: "no such envelope" }, 404);
-    const body = (await c.req.json().catch(() => ({}))) as Record<string, any>;
-    const artifactId = String(body.artifact_id ?? "");
-    const bytes = await deps.readArtifact(env.project_id, artifactId);
-    if (!bytes) return c.json({ error: "the document for the revision is missing" }, 409);
+
+    /**
+     * TWO WAYS IN, and the multipart one is what made this route reachable at all.
+     *
+     * A caller that already has an artifact (a run that regenerated the proposal) names it. A
+     * FOUNDER has a PDF on their laptop and no artifact id — and no way to get one, because an
+     * upload has to be attached to a task and nothing tells a browser which task owns the paper it
+     * is replacing. `attachRevision` closes that gap by storing the file against the same run as the
+     * previous document.
+     *
+     * Decided on the content type rather than on which fields are present: a multipart body is not
+     * JSON, so `c.req.json()` on it throws and every field reads as absent — which is how "send a
+     * revision" would have failed with "the document is missing" while holding the document.
+     */
+    const multipart = (c.req.header("content-type") ?? "").toLowerCase().includes("multipart/form-data");
+
+    let artifactId = "";
+    let filename = env.document.filename;
+    let size = 0;
+    let title: string | undefined;
+
+    if (multipart) {
+      if (!deps.attachRevision) {
+        return c.json({ error: "this installation cannot accept an uploaded revision" }, 501);
+      }
+      const stored = await deps.attachRevision(c, env.project_id, env.document.artifact_id);
+      if ("error" in stored) return c.json({ error: stored.error }, stored.status as 400);
+      artifactId = stored.artifact_id;
+      filename = stored.filename;
+      size = stored.size_bytes;
+    } else {
+      const body = (await c.req.json().catch(() => ({}))) as Record<string, any>;
+      artifactId = String(body.artifact_id ?? "");
+      const bytes = await deps.readArtifact(env.project_id, artifactId);
+      if (!bytes) return c.json({ error: "the document for the revision is missing" }, 409);
+      filename = String(body.filename ?? env.document.filename);
+      size = bytes.length;
+      if (body.title) title = String(body.title);
+    }
+
     try {
       const next = await reviseEnvelope({
         previous_id: env.id,
-        document: {
-          artifact_id: artifactId,
-          filename: String(body.filename ?? env.document.filename),
-          sha256: "",
-          size_bytes: bytes.length,
-        },
-        ...(body.title ? { title: String(body.title) } : {}),
+        document: { artifact_id: artifactId, filename, sha256: "", size_bytes: size },
+        ...(title ? { title } : {}),
       });
       return c.json({ envelope: next }, 201);
     } catch (e) {

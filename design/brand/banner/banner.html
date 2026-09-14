@@ -1,0 +1,298 @@
+<!doctype html>
+<!--
+  THE LINKEDIN BANNER — the product's own shader, not a picture of it.
+
+  Rendered in a browser rather than drawn offline, because the texture is `GrainGradient` from
+  @paper-design/shaders-react running on WebGL — the same component `cloud/components/brand/
+  shader-field.tsx` puts behind the sign-in screen. A first attempt reproduced the landing page's
+  Bayer DITHER in Python instead, which is a different texture from a different surface: close
+  enough to be recognised, wrong enough to look like a copy of the brand rather than the brand.
+
+  Fonts are Geist and Instrument Serif, which is what both apps actually load. Colours are the dark
+  theme's own tokens.
+-->
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link href="https://fonts.googleapis.com/css2?family=Geist:wght@400;500;600;800;900&family=Instrument+Serif:ital@0;1&family=Archivo+Narrow:wght@600;700&display=swap" rel="stylesheet" />
+<style>
+  /* The dark theme's own tokens, from globals.css. */
+  :root {
+    --background: oklch(0.148 0.004 228.8);
+    --foreground: oklch(0.987 0.002 197.1);
+    --muted-foreground: oklch(0.723 0.014 214.4);
+    --primary: oklch(0.925 0.005 214.3);
+    --glow: oklch(0.5 0.15 154);
+    /* Brighter than `--glow`, which is a light source rather than an ink — a wordmark set in the
+       glow colour on this background reads as dim rather than as a brand. */
+    --banner-green: oklch(0.78 0.21 146);
+  }
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  html, body { background: var(--background); }
+  /*
+    THE LAYOUT: EMPTY LEFT, TYPE ON THE RIGHT.
+
+    LinkedIn overlays the avatar on the bottom-left of every cover, so the left third of the frame
+    is not ours — it only looks like it is. Setting the type there and letting the platform cover it
+    is the single most common way a banner ends up looking careless.
+
+    So the composition sits right, right-aligned, ending on a consistent margin: the words, then the
+    domain under them at a fraction of the size. One statement and one place to go.
+  */
+  #stage {
+    position: relative; overflow: hidden;
+    background: var(--background);
+    display: flex; align-items: center; justify-content: flex-end;
+  }
+  #shader { position: absolute; inset: 0; }
+  #shader canvas { width: 100% !important; height: 100% !important; display: block; }
+
+  /*
+    THE AVATAR'S FOOTPRINT.
+
+    LinkedIn lays the logo over the bottom-left of the cover. A banner that ignores it ends up with
+    its own mark half-covered by its own mark, so the composition starts where the avatar ends and
+    a scrim keeps that corner dark enough for a logo to sit on.
+  */
+  #safe {
+    position: absolute; left: 0; top: 0; bottom: 0;
+    /* Wide and eased. A short ramp put a visible dark stripe down the left edge — a band the eye
+       reads as a seam rather than as the frame going quiet. */
+    background: linear-gradient(to right, var(--background) 0%, var(--background) 30%,
+      color-mix(in srgb, var(--background) 72%, transparent) 62%, transparent 100%);
+  }
+
+  #copy { position: relative; text-align: right; }
+
+  /*
+    ═══ GITHUB MODE — A DIFFERENT SURFACE, SO A DIFFERENT COMPOSITION ═══
+
+    The LinkedIn frame is right-aligned because the platform lays an avatar over the bottom-left and
+    type placed there gets covered. GitHub lays nothing over anything: the banner is the first thing
+    above the fold on the repo page, at whatever width the reader's window is, and it is competing
+    with every other repo they opened in a tab.
+
+    So it is left-aligned and reads as one object — a wordmark at the size of a sign, and under its
+    baseline a single line of condensed caps that says what the thing does in three words. That is
+    the phospho shape, and it works for the same reason the one-line rule works on LinkedIn: a
+    reader gives this a second, and a banner that says two things says neither.
+
+    The three words are the loop, not adjectives. DRAFT is what the machine does, APPROVE is the
+    human gate that is the whole differentiator, INVOICE is the only evidence any of it worked.
+  */
+  #stage.github { justify-content: flex-start; align-items: center; }
+  #stage.github #copy { text-align: left; }
+  #stage.github h1 { letter-spacing: -0.055em; font-weight: 800; line-height: 0.86; }
+  /* The mark, in the product's own green. Phospho sets the logotype in the brand colour and the
+     strapline in off-white; the contrast is what makes the second line read as a caption rather
+     than as a second headline. */
+  #stage.github h1 .mark { color: var(--banner-green); }
+  #stage.github .does {
+    font-family: "Archivo Narrow", "Geist", system-ui, sans-serif;
+    font-weight: 700;
+    color: var(--foreground);
+    text-transform: uppercase;
+    letter-spacing: 0.005em;
+    line-height: 1;
+    white-space: nowrap;
+  }
+  /*
+    ONE LINE. The first version carried a headline, a rule and a three-part subline, which is three
+    claims on a surface that gets a second and a half of attention. A banner that says three things
+    says none.
+  */
+  h1 {
+    font-family: "Geist", system-ui, sans-serif;
+    font-weight: 500;
+    color: var(--foreground);
+    letter-spacing: -0.035em;
+    line-height: 0.95;
+  }
+  /* The one word that carries the meaning, in the serif — the same pairing the product uses for
+     emphasis. Not a colour change: the green underline that was here read as a link. */
+  h1 em {
+    font-family: "Instrument Serif", Georgia, serif;
+    font-style: italic;
+    font-weight: 400;
+    letter-spacing: -0.01em;
+  }
+</style>
+</head>
+<body>
+<div id="stage"><div id="shader"></div><div id="safe"></div><div id="copy"><h1></h1><div class="does"></div></div></div>
+<script>
+  // A classic script, before the module: a module whose IMPORT fails never executes at all, so a
+  // try/catch inside it can never report the one error most likely to happen. These listeners are
+  // the only thing that sees it.
+  window.__err = "";
+  addEventListener("error", (e) => { window.__err = "error: " + (e.message || e.type) + " @ " + (e.filename || ""); document.title = window.__err; }, true);
+  addEventListener("unhandledrejection", (e) => { window.__err = "reject: " + (e.reason && e.reason.message || e.reason); document.title = window.__err; });
+</script>
+<script type="module">
+  /**
+   * `ShaderMount` and the raw fragment shader — the vanilla package's real API.
+   *
+   * The first attempt imported `GrainGradient` from `@paper-design/shaders`, which does not export
+   * it: that name lives in `@paper-design/shaders-react`, and the vanilla package ships the shader
+   * source plus a mount. The import failed, nothing threw into the console, and the page rendered a
+   * flat background that looked like a design decision. Found by asking the DOM whether a canvas
+   * existed, not by reading the error — there wasn't one.
+   */
+  import {
+    ShaderMount,
+    grainGradientFragmentShader,
+    grainGradientMeta,
+    getShaderColorFromString,
+  } from "https://esm.sh/@paper-design/shaders@0.0.80";
+
+  const p = new URLSearchParams(location.search);
+  const W = +(p.get("w") || 1584), H = +(p.get("h") || 396);
+  const AVATAR = +(p.get("avatar") || 152);
+  const TEXT = p.get("text") || "Say <em>yes</em> to the work.";
+
+  const stage = document.getElementById("stage");
+  stage.style.width = W + "px";
+  stage.style.height = H + "px";
+  document.getElementById("safe").style.width = Math.round(AVATAR * 2.6) + "px";
+
+  /**
+   * ═══ GROUND MODE: THE AVATAR'S BACKGROUND, FROM THE SAME SHADER ═══
+   *
+   * The avatar's ground was a FLAT colour sampled from the banner — mean-matched to two units per
+   * channel, and still plainly visible as a rounded rectangle once laid on the cover. The mismatch
+   * was never the colour. The banner is GRAIN and a flat patch beside grain reads as an edge at
+   * identical mean, because the eye is far better at texture discontinuity than at hue.
+   *
+   * So the ground is the same shader, and the CSS size matters as much as the pixels: rendered at
+   * the avatar's own display size and the same device pixel ratio as the cover, so the grain lands
+   * at the same density after both are downsampled. A 1024px ground scaled down to 150 would be a
+   * different, finer noise — correct in colour and wrong again in texture.
+   */
+  const MODE = p.get("mode") || "";
+  const ground = MODE === "ground";
+  const github = MODE === "github";
+  if (ground || github) document.getElementById("safe").remove();
+  if (github) stage.classList.add("github");
+
+  const copy = document.getElementById("copy");
+  // The right margin the whole composition ends on. Proportional to the frame so the two sizes
+  // read as the same design rather than as one design and a squeezed copy of it.
+  if (!ground && !github) copy.style.paddingRight = Math.round(W * 0.055) + "px";
+  if (ground) copy.remove();
+  const h1 = ground ? null : copy.querySelector("h1");
+  const does = ground ? null : copy.querySelector(".does");
+
+  if (github) {
+    /*
+      Sized off the HEIGHT, not the width, so the same design holds at any aspect a reader's window
+      produces. The left margin matches the optical inset of the wordmark rather than a round number
+      — type set flush to a computed edge looks further in than it is.
+    */
+    copy.style.paddingLeft = Math.round(H * 0.17) + "px";
+    h1.innerHTML = `<span class="mark">${p.get("mark") || "mycel"}</span>`;
+    /*
+      Sized so the LOCKUP fills the frame, not so the type is legible — legibility is free at this
+      size. The first render set the wordmark at half the height and left the right 60% of the banner
+      empty, which reads as a logo placed on a background rather than as a designed object. A
+      five-letter mark needs more of the height than a seven-letter one to hold the same width.
+    */
+    h1.style.fontSize = Math.round(H * 0.74) + "px";
+    does.textContent = p.get("does") || "Draft. Approve. Invoice.";
+    does.style.fontSize = Math.round(H * 0.245) + "px";
+    does.style.marginTop = Math.round(H * 0.03) + "px";
+  } else if (h1) {
+    h1.innerHTML = TEXT;
+    h1.style.fontSize = Math.round(H * 0.26) + "px";
+    if (does) does.remove();
+  }
+
+  const css = getComputedStyle(document.documentElement);
+  // Resolve the oklch tokens through the browser's own pipeline — the shader cannot parse `oklch()`
+  // and silently falls back, which looks deliberate and is not the brand.
+  const hex = (name, fallback) => {
+    const raw = css.getPropertyValue(name).trim();
+    const c = document.createElement("canvas");
+    c.width = c.height = 1;
+    const ctx = c.getContext("2d", { willReadFrequently: true });
+    ctx.clearRect(0, 0, 1, 1);
+    ctx.fillStyle = raw || fallback;
+    ctx.fillRect(0, 0, 1, 1);
+    const d = ctx.getImageData(0, 0, 1, 1).data;
+    return d[3] ? `#${[d[0], d[1], d[2]].map((v) => v.toString(16).padStart(2, "0")).join("")}` : fallback;
+  };
+
+  const bg = hex("--background", "#0c0e0d");
+  const glow = hex("--glow", "#2f9e5f");
+  const col = (c) => getShaderColorFromString(c);
+
+  const host = document.getElementById("shader");
+  const mount = new ShaderMount(
+    host,
+    grainGradientFragmentShader,
+    {
+      ...(grainGradientMeta?.uniforms ?? {}),
+      // Background twice before the green, so the field reads as light falling on the surface
+      // rather than a coloured shape laid over it — the same reasoning as `paletteFor`.
+      u_colors: [col(bg), col(glow), col("#1c3a2a"), col(glow)],
+      u_colorsCount: 4,
+      u_colorBack: col(bg),
+      // `blob` (2) as the auth panel uses: it drifts and crops well, where a wave reads as a
+      // banner template.
+      u_shape: 2,
+      u_softness: 0.95,
+      /**
+       * DARK DOMINANT, GREEN AS A BLOOM.
+       *
+       * At 0.42 the field filled the whole frame — a wall of green with the headline sitting on the
+       * busiest part of it. That is a texture, not light, and it is not what the product looks like:
+       * the auth panel spends most of its ramp in the surface's own colour so the green arrives as a
+       * bloom rather than a coloured rectangle laid over the screen.
+       */
+      /**
+       * SCALED TO THE FRAME, not fixed.
+       *
+       * A 1584×396 cover is 4:1 and a 1128×191 company banner is 5.9:1. The same intensity that
+       * reads as a bloom on the taller frame fills the shorter one, because the blob's size is
+       * relative to the SHORTER edge — half the height means the same form covers twice the
+       * proportion of the image. Tuning one and shipping both is how a set of assets ends up
+       * looking like two different brands.
+       */
+      u_intensity: 0.26 * Math.min(1, 4.0 / (W / H)),
+      // Grain is the whole point — it is what stops a gradient reading as a stock mesh background.
+      u_noise: 0.3,
+      /**
+       * ONE FORM, NOT THREE. At 1.25 the blob tiled about three times across a 4:1 frame, which the
+       * eye reads as a repeating pattern — the exact tell of a stock background. Scaled up so a
+       * single mass crosses the banner and the composition has somewhere to be quiet.
+       */
+      u_scale: 2.6 * Math.max(1, (W / H) / 4.0),
+      /**
+       * THE BLOOM SITS TO THE RIGHT OF THE SENTENCE, not under it.
+       *
+       * Centred, the brightest part of the field landed directly behind the headline — the busiest
+       * ground in the frame under the one thing that has to be read at thumbnail size. Moving it
+       * right gives the composition three zones that each do one job: dark left for the avatar,
+       * quiet middle for the words, light right for the brand.
+       */
+      // Far right, so the frame reads dark-to-light across its width and the type sits in the
+      // brightest part of it — which white handles, and which is what gives the banner its glow.
+      u_offsetX: 0.95,
+      u_offsetY: 0.08,
+      u_rotation: 12,
+    },
+    // A still frame, not a running animation — this is a PNG. A fixed time gives a deterministic
+    // composition rather than whatever frame the screenshot happened to catch.
+    false,
+    0,
+    2.4,
+  );
+  window.__m = mount;
+  mount.setMaxPixelCount?.(W * H * 9);
+
+  await document.fonts.ready;
+  document.title = "ready";
+</script>
+</body>
+</html>

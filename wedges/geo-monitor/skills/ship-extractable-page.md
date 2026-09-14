@@ -130,7 +130,7 @@ Both. If either is no, the page is not done.
 
 The Small in most reports is exactly this edit. Illustrative facts; **match the move, never the
 content.** The recommendation said: "rewrite the opening of /services/emergency so the first two
-sentences state the £95 call-out and the response time."
+sentences state the $95 call-out and the response time."
 
 Before — the opening that loses:
 
@@ -141,9 +141,9 @@ Before — the opening that loses:
 
 After — the opening that gets lifted:
 
-> **Emergency plumber call-out: £95, day or night**
-> An emergency call-out costs £95 including the first hour on site, and we reach most of
-> Manchester within 90 minutes, 24/7. No extra charge for nights or weekends — the £95 is the
+> **Emergency plumber call-out: $95, day or night**
+> An emergency call-out costs $95 including the first hour on site, and we reach most of
+> Manchester within 90 minutes, 24/7. No extra charge for nights or weekends — the $95 is the
 > whole call-out fee, and parts are quoted before we fit them.
 >
 > *(then the rest of the page: what counts as an emergency, the areas covered as a table, the
@@ -151,7 +151,7 @@ After — the opening that gets lifted:
 
 Why the after wins: the heading is the question's own words with the answer in it; the first two
 sentences are self-contained and checkable (a price, a radius, a time — three citations in two
-sentences); the constraint a customer fears ("is £95 really the whole fee?") is answered before it
+sentences); the constraint a customer fears ("is $95 really the whole fee?") is answered before it
 is asked. Nothing was deleted — the fifteen years and the founder move below the answer, because
 an assistant quotes the top of the page and a human scrolls. The before is not bad writing; it is
 good writing in the wrong order.

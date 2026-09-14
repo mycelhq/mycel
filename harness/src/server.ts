@@ -6,6 +6,7 @@
 // NOT hold the founder key, so the API-key middleware must not cover it.
 import { randomBytes, randomUUID, createHash } from "node:crypto";
 import { existsSync, readdirSync } from "node:fs";
+import { libraryGaps } from "./library";
 import { join } from "node:path";
 import { Hono } from "hono";
 import { HTTPException } from "hono/http-exception";
@@ -19,6 +20,7 @@ import {
   assertCapabilityTableValid,
   capabilityProviders,
   isCapability,
+  isDeclarableCapability,
   projectWedgeSlugs,
   resolveCapability,
 } from "./capabilities";
@@ -81,6 +83,7 @@ import { mountTeamRoutes } from "./team.routes";
 import { mountRequestRoutes } from "./requests.routes";
 import { mountPortalApprovals } from "./portal-approvals";
 import { mountPortalThreads } from "./portal-threads";
+import { announceRelease } from "./release-announce";
 import { mountDeliverableRoutes } from "./deliverables.routes";
 import { mountProductOpsRoutes } from "./ops.routes";
 import { getDeliverableStore, setDeliverableDeps } from "./deliverables";
@@ -167,6 +170,8 @@ import type { SuppressReason } from "@mycel/deliverability";
 import { renderWorkbook } from "./render/xlsx";
 import { renderDocument } from "./render/docx";
 import { getPublishedPage, isPageToken, PUBLISHED_PAGE_CSP } from "./pages";
+import { REFERRAL_REWARD_MONTHS } from "./referrals";
+import { releaseOrgProxies } from "./proxy-decommission";
 import { subscribe, subscribeAll } from "./bus";
 import { markCancelled, markAbort } from "./cancel";
 import { getBatchStore } from "./batches";
@@ -198,12 +203,13 @@ import type { Plan, PlanStatus, Role } from "./identity";
 import { inferResponsibilities, RESPONSIBILITY_LABEL } from "./team";
 import { fireSchedule, firstRun, scheduleKey } from "./scheduler";
 import { enqueueTask } from "./queue";
+import { serviceNotEnabled, unknownService } from "./service-words";
 import { getGrant } from "./proxygrants";
 import { lintArtifact } from "./design-lint";
 import { readDeliverableShape } from "./deliverable-shape";
 import { projectForBrandKey } from "./scopedkeys";
 import { getSecret, hasSecret, setSecret } from "./secrets";
-import { getGrantStore, grantTtlMs, stripContent as stripArtifactContent } from "./store";
+import { getGrantStore, grantTtlMs, sizeOf, stripContent as stripArtifactContent } from "./store";
 import { clientSendBacks, correctionPairs, learningCurve, learningVerdict, untouchedDrafts } from "./learning";
 import { taskClientId, jobReadiness } from "./runtime";
 import { buildTrace } from "./traces";
@@ -339,7 +345,7 @@ import {
   toChasePolicy,
 } from "./chase-policy";
 import { getPool } from "./pool";
-import { loadProjectWedge } from "./authored";
+import { loadProjectWedge, promotedSlugs } from "./authored";
 import {
   listPlaybooks,
   playbookEnabled,
@@ -363,7 +369,7 @@ import {
 } from "./presubscription";
 import { ensureUpkeep } from "./upkeep";
 import { runWorkflow } from "./workflows";
-import goingQuiet from "../../workflows/going-quiet.mjs";
+import goingQuiet from "../../library/workflows/going-quiet.mjs";
 import { runPack, resolvePack, parsePackRef } from "./packs";
 import { isOurOwnAddress, INTERNAL_CLIENT_METADATA } from "./internal-sender";
 import { deadAskWarning, declaredWaitFor } from "./wait-declaration";
@@ -373,6 +379,17 @@ import { fetchWithDeadline } from "./http";
 import { measureSite } from "./house-style.fetch";
 import { describeMeasured } from "./house-style.measure";
 import { clientReachable, redirectedNote } from "./ask-reachable";
+
+
+/**
+ * How far back "still happening" reaches, for the approvals block in `/v1/analytics`.
+ *
+ * Fourteen days, from the live distribution: 7 approvals in the last week, 16 in the last fortnight.
+ * A seven-day window on this volume is two or three decisions — too few to claim anything from, and
+ * a claim built on three rows is noise wearing evidence's clothes. Thirty days is what this exists
+ * to correct. A fortnight is the shortest window that still carries enough rows to mean something.
+ */
+const APPROVAL_RECENT_DAYS = 14;
 
 const TERMINAL: ReadonlySet<TaskStatus> = new Set<TaskStatus>([
   "succeeded",
@@ -645,7 +662,22 @@ export function createServer(store: Store): Hono {
     });
   };
 
-  app.get("/health", (c) => c.json({ ok: true, service: "mycel-harness", version: "v0.1" }));
+  /**
+   * `library` is here so a missing runtime directory is READABLE FROM OUTSIDE.
+   *
+   * Six of them have gone missing in production and every one was found by somebody with shell
+   * access eventually running the built image. A deployment nobody can exec into had no way to ask.
+   * Empty is the healthy answer, and `ok` stays true: the API genuinely works — that is the whole
+   * problem this reports.
+   */
+  app.get("/health", (c) =>
+    c.json({
+      ok: true,
+      service: "mycel-harness",
+      version: "v0.1",
+      library: libraryGaps((p) => existsSync(p)).map((g) => ({ missing: g.entry, cost: g.cost })),
+    }),
+  );
 
   /**
    * A live page the client opens. PUBLIC, not under `/v1`, unguessable token.
@@ -2179,7 +2211,114 @@ export function createServer(store: Store): Hono {
         cross_org: !!targetOrg && targetOrg !== scope.org_id,
       },
     });
+
+    /**
+     * ═══ THE REFERRAL PAYS HERE, ON A PAID CONVERSION, ONCE ═══
+     *
+     * Not at sign-up. A reward that lands when somebody creates an account is a reward that gets
+     * farmed within a week, and this one is worth a month of somebody's plan.
+     *
+     * `active` and `trialing` both count as started paying: a trial on this product exists only
+     * behind a card (`plan_status: "none"` is the window before one), so reaching either means a
+     * payment method was accepted. `creditReferral` is idempotent and returns the referrer only on
+     * the call that actually credited, so an org that lapses and comes back cannot pay twice.
+     *
+     * Audited into the REFERRER's project, not this one: it is a fact about their account, it is
+     * the evidence behind a credit somebody will ask about, and the referred org has no business
+     * reading it.
+     */
+    /**
+     * ═══ A CANCELLED PLAN GIVES THE DEDICATED IPs BACK ═══
+     *
+     * A LinkedIn connection leases a dedicated ISP address in the member's country, and that address
+     * bills every month whether anybody uses it or not. Nothing gave it back. So the shape of the
+     * bug was: a founder cancels, their work stops the same minute (`INACTIVE_LIMITS`), and we go on
+     * paying a proxy vendor for an address nobody will ever connect through again.
+     *
+     * HERE, on the plan write, because this is the only moment the kernel learns a subscription
+     * ended. It is not a cron: a nightly sweep would leave up to a day of paid-for silence, and a
+     * sweep that reads "which orgs are cancelled" is a query that gets one predicate wrong and
+     * releases a paying customer's address.
+     *
+     * FAIL-SOFT AND LOGGED. The plan write must land whatever the proxy vendor is doing — a founder
+     * cancelling cannot be blocked by Bright Data being unreachable — and an address we failed to
+     * release is money, so it says so rather than disappearing into a catch.
+     *
+     * The connection rows are LEFT ALONE. Nothing here deletes anything; see `workBlockedBy`, which
+     * makes the same promise about tasks and artifacts. Reconnecting after paying again buys a new
+     * address, which is the honest outcome — the old one belongs to somebody else by then.
+     */
+    if (org.plan_status === "cancelled" || org.plan_status === "none") {
+      void releaseOrgProxies(orgId).catch((e) =>
+        console.error("[mycel] releasing dedicated IPs after cancellation failed:", (e as Error)?.message),
+      );
+    }
+
+    if (org.plan_status === "active" || org.plan_status === "trialing") {
+      const referrer = identity.creditReferral(orgId);
+      if (referrer) {
+        await audit({
+          project_id: identity.listProjects(referrer)[0]?.id ?? "",
+          actor: "system",
+          action: "referral.credited",
+          entity: "org",
+          entity_id: referrer,
+          // The referred org's NAME, never its id or its plan. A referrer is owed "who", not a
+          // handle they could use against somebody else's account.
+          detail: { referred: org.name, months: REFERRAL_REWARD_MONTHS },
+        });
+      }
+    }
+
     return c.json({ org, limits: identity.limitsFor(orgId) });
+  });
+
+  /**
+   * ═══════════════════════════════════════════════════════════════════════════════════════════════
+   * GET /v1/referrals — the link a founder shares, and what it has done
+   * ═══════════════════════════════════════════════════════════════════════════════════════════════
+   *
+   * MEMBER-ONLY. A product API key belongs to an integration, not to a person, and a referral link
+   * is a personal credential in the sense that matters: whoever holds it collects. Keys are refused
+   * rather than served a read-only view, because the only reason a key would ask is that somebody
+   * put one in a script that posts the link somewhere.
+   *
+   * The code is minted on first read — see `referralCode` — so this route is also the backfill for
+   * every org that existed before referrals did.
+   *
+   * ── WHAT IT SAYS ABOUT THE PEOPLE WHO JOINED ──
+   *
+   * A name and a state, and nothing else. Not their email, not their plan, not their id. A referrer
+   * is owed enough to recognise who they brought and to know whether it counted; anything past that
+   * is one founder reading another founder's account through a feature they were given as a thank
+   * you.
+   */
+  app.get("/v1/referrals", (c) => {
+    const scope = c.get("scope");
+    if (scope.kind !== "member") {
+      return c.json({ error: "a referral link belongs to a person, not to an API key" }, 403);
+    }
+    const code = identity.referralCode(scope.org_id);
+    if (!code) return c.json({ error: "not found" }, 404);
+
+    const joined = identity.referredBy(scope.org_id).map((o) => ({
+      name: o.name,
+      joined_at: o.created_at,
+      /*
+        Three states, and they are the three a founder asks about: it worked, it is early, or it
+        never converted. Derived rather than stored — a second copy of "did this count" would be one
+        more thing to keep in step with the plan.
+      */
+      credited: !!o.referral_credited_at,
+      ...(o.referral_credited_at ? { credited_at: o.referral_credited_at } : {}),
+    }));
+
+    return c.json({
+      code,
+      reward_months: REFERRAL_REWARD_MONTHS,
+      joined,
+      credited: joined.filter((j) => j.credited).length,
+    });
   });
 
   /**
@@ -2245,14 +2384,14 @@ export function createServer(store: Store): Hono {
               // service exists: "not yours" and "does not exist" get the same sentence, and the one
               // that is actionable — you have not agreed to run it — is named.
               `no service by that name is running for this business — a drafted service has to be agreed to before it can do anything`
-            : `unknown wedge: ${body.wedge}`,
+            : unknownService(body.wedge),
         },
         400,
       );
     }
     const types = wedge.manifest.task_types;
     if (types && Object.keys(types).length && !types[body.task_type]) {
-      return c.json({ error: `unknown task_type "${body.task_type}" for wedge "${body.wedge}"` }, 400);
+      return c.json({ error: `the "${body.wedge}" service does not do "${body.task_type}"` }, 400);
     }
 
     /**
@@ -2396,7 +2535,14 @@ export function createServer(store: Store): Hono {
     const resetsOn = (): string => {
       const now = new Date();
       const next = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth() + 1, 1));
-      return next.toLocaleDateString("en-GB", { day: "numeric", month: "long", timeZone: "UTC" });
+      /*
+        Locale-free. `toLocaleDateString("en-GB", …)` rendered every customer's date the way London
+        writes it, on a product that prices in dollars — and on a server whose locale is whatever the
+        container image happens to carry, so dropping the argument would be unpredictable rather than
+        neutral. Indexed from a table instead.
+      */
+      const MONTHS = ["January","February","March","April","May","June","July","August","September","October","November","December"];
+      return `${next.getUTCDate()} ${MONTHS[next.getUTCMonth()]}`;
     };
 
     const monthly = presub ? null : limits.tasks_per_month;
@@ -2464,7 +2610,7 @@ export function createServer(store: Store): Hono {
     // service is not in it and never will be. Without this, a project with any explicit allowlist
     // would promote a service and then be told it is not enabled for them, with no way to fix it.
     if (!isAuthoredSlug(body.wedge) && !identity.projectAllowsWedge(projectId, body.wedge)) {
-      return c.json({ error: `wedge "${body.wedge}" is not enabled for this project` }, 403);
+      return c.json({ error: serviceNotEnabled(body.wedge) }, 403);
     }
     if (!presub && body.wedge !== (wedgeForRole("outreach") ?? "") && !limits.fulfillment) {
       return c.json(fulfillmentRefusal(), 402);
@@ -2546,6 +2692,8 @@ export function createServer(store: Store): Hono {
     if (body.client_id !== undefined && !(await clientInProject(body.client_id, projectId))) {
       return c.json({ error: "unknown client_id for this project" }, 400);
     }
+
+
 
     const cfg = loadConfig();
     const clamped = clampConstraints(body.constraints, cfg.maxCostCeilingUsd, cfg.maxRuntimeCeilingS, loadWedge(body.wedge), body.task_type);
@@ -3399,6 +3547,38 @@ export function createServer(store: Store): Hono {
         pending: approvals.filter((a) => a.status === "pending").length,
         expired: approvals.filter((a) => a.status === "expired").length,
         median_wait_seconds: median === null ? null : Math.round(median / 1000),
+        /**
+         * ═══ THE SAME COUNTS, BUT ONLY FOR BEHAVIOUR THAT IS STILL HAPPENING ═══
+         *
+         * A window is not enough on its own, and the 30-day one is currently proving it. Counted
+         * on 13 September: 219 approvals, 208 expired — and 197 of them belong to a Composio
+         * integration that was REMOVED ON 25 AUGUST. The founder, told the product was asking too
+         * much: "this is obsolete stuff. You should just ignore it."
+         *
+         * They are right, and the lesson is not about Composio. Anything the product stops doing
+         * keeps arguing for a month afterwards, because a fixed window cannot tell "we do this too
+         * often" from "we used to". A claim the PRODUCT makes about its own behaviour has to be
+         * about behaviour it still has, or it is a confident wrong answer with a big number
+         * attached — and a number that survives its own cause is how every other number on the page
+         * loses its credibility.
+         *
+         * Strip the dead integration and the same window reads 22 raised, 12 expired. Still worth
+         * saying. An order of magnitude smaller, and a different sentence.
+         *
+         * FREE: the rows are already in memory, scoped and windowed. No second query, no second
+         * round trip on the screen a founder opens every morning.
+         */
+        recent: (() => {
+          const cut = Date.now() - APPROVAL_RECENT_DAYS * 86_400_000;
+          const r = approvals.filter((a) => Date.parse(a.created_at) >= cut);
+          return {
+            days: APPROVAL_RECENT_DAYS,
+            total: r.length,
+            auto_approved: r.filter((a) => a.status === "auto_approved").length,
+            pending: r.filter((a) => a.status === "pending").length,
+            expired: r.filter((a) => a.status === "expired").length,
+          };
+        })(),
       },
       clients: { total: clients.length },
       outcomes,
@@ -4649,6 +4829,52 @@ export function createServer(store: Store): Hono {
        * The scope is carried in metadata so retrieval can rank it: an old note about a different
        * task type is not competing on equal terms with this client's correction from last week.
        */
+      /**
+       * ═══════════════════════════════════════════════════════════════════════════════════════════
+       * THE HUMAN DECISION ITSELF, IN THE AUDIT LOG — WHICH IT HAS NEVER BEEN
+       * ═══════════════════════════════════════════════════════════════════════════════════════════
+       *
+       * `approval.auto_approved` has always been audited. `standing.granted` and `standing.revoked`
+       * have always been audited. The one event a person actually performs — a founder reading a
+       * draft and deciding it may go to a customer — was not, anywhere.
+       *
+       * That was survivable only because the console had a screen listing it: "Recently decided", on
+       * the standing-approvals page. That page is deleted (the founder's verdict on it is quoted in
+       * `cloud/app/(app)/work/approvals/page.tsx`), and deleting a screen is only honest if the
+       * record it showed lives somewhere that is built for records. `/audit` is: actor, timestamp,
+       * hash chain, and it already describes itself as holding "approvals granted or refused".
+       * It just never received them.
+       *
+       * THE VOCABULARY WAS ALREADY THERE. `AuditAction` has carried `approval.granted` and
+       * `approval.rejected` since the union was written, and nothing in the product ever emitted
+       * either one — built, typed, never invoked. That is the dominant bug class in this codebase and
+       * this is the cheapest possible instance of it: two string literals that made the log look
+       * complete to anybody reading the type.
+       *
+       * `edited` is on the detail because it is the difference between "this was fine" and "this was
+       * sent only after I rewrote it", and the standing suggester treats those as opposite votes.
+       * The words themselves are NOT here: an audit entry is a record that a decision happened, and
+       * a client's message pasted into a permanent hash-chained log is a disclosure nobody asked for.
+       * The correction is written to knowledge below, where it is the founder's own and deletable.
+       *
+       * Fail-soft like every other write on this path. The human has decided and the action is in
+       * flight; failing their approval because a log line could not be appended would trade the job
+       * for the record of it.
+       */
+      await audit({
+        project_id: at.project_id ?? "",
+        actor: scope.kind === "member" ? "member" : "key",
+        action: decision === "approved" ? "approval.granted" : "approval.rejected",
+        entity: "task",
+        entity_id: a.task_id,
+        detail: {
+          action: a.action,
+          approval_id: id,
+          edited: !!(body.edited && Object.keys(body.edited).length),
+          ...(scope.kind === "member" && scope.member_id ? { by: scope.member_id } : {}),
+        },
+      }).catch((e) => console.error("[mycel] could not audit an approval decision:", e));
+
       let correctionId: string | undefined;
       /**
        * ═══ AND THE RETRIEVABLE HALF OF THE SAME CORRECTION ═══
@@ -5577,6 +5803,59 @@ export function createServer(store: Store): Hono {
     serveArtifact,
     // Same spawn the wait resume uses — regenerate must not invent a second path.
     spawnTask: spawnKernelTask,
+    /**
+     * ═══ TELL THE CLIENT THE WORK IS READY ═══
+     *
+     * Measured in production on 14 September: fifteen of fifteen released deliverables, every
+     * tenant, zero outbound messages to that client within a day of the release. The founder pressed
+     * Release, the row moved to `with_client`, and nothing happened anywhere a customer could see
+     * it. `THE-BAR.md` gate 1 — "0 of 8 accepted" — had been read as a quality problem for weeks.
+     *
+     * Wired HERE because reaching a customer needs the connection planner, the action executor and
+     * the tenant's portal address, and all three live in this file. `release-announce.ts` holds the
+     * decisions; this holds the plumbing.
+     *
+     * It sends without an approval, and that does not break "a human on every send": releasing IS
+     * the send. The founder read the draft and pressed the button that moves it to the client. The
+     * precedent is the invoice mail below, on the same argument and through the same two calls.
+     */
+    announceRelease: (d, version) =>
+      announceRelease(
+        {
+          getClient: (id) => domain.getClient(id),
+          mintLink: (a) => mintPortalLink(a),
+          portalBase: (projectId) => {
+            /*
+              A custom domain beats a slug, and an explicit env beats both — a self-hoster's portal
+              is not under `mycelai.dev` and a link that points there is a link to somebody else's
+              product. `undefined` is a real answer: a tenant can be delivering work before its
+              portal address is live, and `announceRelease` still sends, without a link.
+            */
+            const override = process.env.MYCEL_PORTAL_URL?.trim();
+            if (override) return override;
+            const p = identity.getProject(projectId);
+            if (!p) return undefined;
+            if (p.custom_domain) return `https://${p.custom_domain}`;
+            const site = process.env.MYCEL_APPS_DOMAIN?.trim() || process.env.MYCEL_ROOT_DOMAIN?.trim() || "mycelai.dev";
+            return p.slug ? `https://${p.slug}.${site}` : undefined;
+          },
+          send: async ({ project_id, to, subject, text }) => {
+            const connections = (await domain.listConnections()).filter((cn) => cn.project_id === project_id);
+            const plan = planSendEmail({ project_id, connections, send: { to: [to], subject, text } });
+            // A refusal is the founder's sentence — no mailbox connected, two connected and no rule
+            // for which. Never swallowed into a boolean; see the invoice send.
+            if (!plan.ok) return { ok: false, detail: plan.refusal };
+            const conn = await domain.getConnection(plan.call.connection_id);
+            if (!conn || conn.project_id !== project_id) {
+              return { ok: false, detail: "the mailbox this send resolved to is not connected to this business" };
+            }
+            const res = await executeAction(conn, "send_email", { ...plan.call.arguments, arguments: plan.call.arguments, to });
+            return { ok: res.ok, detail: res.detail };
+          },
+        },
+        d,
+        version,
+      ),
   });
 
   // ── Accounts receivable ── /v1/invoices/* and /v1/portal/invoices/* live in invoices.routes.ts.
@@ -6693,13 +6972,13 @@ export function createServer(store: Store): Hono {
     // Validate the destination up front, exactly like POST /v1/tasks. A subscription that can only
     // ever produce a 404 at 3am is worse than a 400 now.
     const wedge = loadWedge(b.wedge);
-    if (!wedge) return c.json({ error: `unknown wedge: ${b.wedge}` }, 400);
+    if (!wedge) return c.json({ error: unknownService(b.wedge) }, 400);
     const types = wedge.manifest.task_types;
     if (types && Object.keys(types).length && !types[b.task_type]) {
-      return c.json({ error: `unknown task_type "${b.task_type}" for wedge "${b.wedge}"` }, 400);
+      return c.json({ error: `the "${b.wedge}" service does not do "${b.task_type}"` }, 400);
     }
     if (!identity.projectAllowsWedge(conn.project_id ?? "", b.wedge)) {
-      return c.json({ error: `wedge "${b.wedge}" is not enabled for this project` }, 403);
+      return c.json({ error: serviceNotEnabled(b.wedge) }, 403);
     }
     if (!cc.connected_account_id) {
       return c.json({ error: "connect this account before subscribing to its events" }, 400);
@@ -6981,7 +7260,7 @@ export function createServer(store: Store): Hono {
     if (!b.address || !b.wedge || !b.task_type) {
       return c.json({ error: "address, wedge and task_type are required" }, 400);
     }
-    if (!loadWedge(String(b.wedge))) return c.json({ error: `unknown wedge: ${b.wedge}` }, 400);
+    if (!loadWedge(String(b.wedge))) return c.json({ error: unknownService(b.wedge) }, 400);
     const ch = await domain.createChannel({
       project_id: projectId,
       connection_id: conn.id,
@@ -7026,6 +7305,30 @@ export function createServer(store: Store): Hono {
     // Read per request rather than captured: a founder who changes their letterhead should see it on
     // the next certificate they download, not on the next deploy.
     brandKit: (projectId) => getIdentityStore().brandKit(projectId),
+    /**
+     * The founder's uploaded revision, stored against the run that owns the document it replaces.
+     *
+     * Scoped twice on purpose. The previous artifact must belong to a task in THIS project (the same
+     * check `readArtifact` makes below), and the upload then lands on that task — so a caller cannot
+     * name somebody else's artifact to have their file filed under another tenant's run.
+     */
+    attachRevision: async (c, projectId, previousArtifactId) => {
+      const prev = await store.getArtifact(previousArtifactId).catch(() => undefined);
+      const owner = prev ? await store.getTask(prev.task_id).catch(() => undefined) : undefined;
+      if (!owner || owner.project_id !== projectId) {
+        return { error: "the agreement this replaces is no longer on file", status: 409 };
+      }
+      const scope = c.get("scope");
+      const up = await ingestUpload(c, owner.id, { uploadedBy: scope?.member_id ?? "product-key" });
+      if ("error" in up) return up;
+      return {
+        artifact_id: up.artifact.id,
+        filename: up.artifact.name,
+        // The DECODED length, which is what the envelope's `size_bytes` means everywhere else —
+        // `sizeOf` is the one function allowed to answer that, because base64 is a third larger.
+        size_bytes: up.artifact.size_bytes ?? sizeOf(up.artifact),
+      };
+    },
     readArtifact: async (projectId, artifactId) => {
       if (!artifactId) return undefined;
       const a = await store.getArtifact(artifactId).catch(() => undefined);
@@ -7121,15 +7424,48 @@ export function createServer(store: Store): Hono {
     });
     const loaded = await Promise.all(slugs.map((s) => loadProjectWedge(projectId, s).catch(() => null)));
     const enabled = loaded.filter((w): w is NonNullable<typeof w> => !!w);
+    /**
+     * ═════════════════════════════════════════════════════════════════════════════════════════════
+     * AND THE NEEDS A WRITTEN SERVICE DECLARED, WHICH ARE NOT IN `ALL_CAPABILITIES`
+     * ═════════════════════════════════════════════════════════════════════════════════════════════
+     *
+     * This listed the eleven the kernel implements, and nothing else. A service written for a
+     * physiotherapy practice can now say `read_appointments` and have it answered by whatever the
+     * founder connects — but this is the surface where a founder LEARNS a service needs something,
+     * and a need that never appears here is a need nobody is ever asked to meet.
+     *
+     * That is the whole loop, not a cosmetic gap: the service declares, this page asks, the founder
+     * connects, `resolveCapability` binds. Leaving the eleven hardcoded here would have made the
+     * declaration reachable in theory and unreachable in practice.
+     *
+     * Taken from the wedges THIS PROJECT runs — `enabled` already resolves authored slugs through
+     * `loadProjectWedge` — so nobody is shown a question about a trade they do not run, which is the
+     * failure the comment above records in the founder's own words.
+     */
+    const declaredHere = [
+      ...new Set(
+        enabled
+          .flatMap((w) => (w.manifest.capabilities ?? []) as string[])
+          .filter((cap) => typeof cap === "string" && !isCapability(cap) && isDeclarableCapability(cap)),
+      ),
+    ].sort();
     return c.json({
       project_id: projectId,
-      items: ALL_CAPABILITIES.map((name) => {
+      items: [...ALL_CAPABILITIES, ...declaredHere].map((name) => {
         const binding = resolveCapability(name, conns, projectId);
-        const impl = capabilityImplementation(name);
+        const known = isCapability(name);
+        const impl = known ? capabilityImplementation(name) : undefined;
         return {
           capability: name,
-          title: CAPABILITIES[name].title,
-          question: CAPABILITIES[name].question,
+          /*
+            A declared capability has no hand-written title or question, and inventing one would be
+            inventing knowledge of a trade this kernel does not have. Its own name, said plainly, is
+            the honest label — the service that declared it chose those words.
+          */
+          title: known ? CAPABILITIES[name].title : name.replace(/_/g, " "),
+          question: known
+            ? CAPABILITIES[name].question
+            : `Which tool does your business use to ${name.replace(/_/g, " ")}?`,
           /**
            * WHAT THIS KERNEL ACTUALLY DOES WITH THE VERB, next to whether it is connected.
            *
@@ -7140,10 +7476,19 @@ export function createServer(store: Store): Hono {
            * so. `detail` now carries the same sentence in prose; these fields are for a UI that
            * wants to render the difference rather than parse it.
            */
-          implementation: impl.adapter,
-          kernel_reads: impl.reads,
-          kernel_acts: impl.acts,
-          implementation_note: impl.note,
+          /*
+            A DECLARED capability is brokered by construction: the kernel has no reader or composer
+            for a trade it has never heard of, and the agent is handed the vendor's own tools. Saying
+            "brokered" here is the same honesty `brokeredCaveat` gives the agent — a founder reading
+            a green row is entitled to know which kind of green it is.
+          */
+          implementation: impl?.adapter ?? "brokered",
+          kernel_reads: impl?.reads ?? false,
+          kernel_acts: impl?.acts ?? false,
+          implementation_note:
+            impl?.note ??
+            `This kernel has no reader of its own for "${name}" — whatever you connect is handed ` +
+              `to the service as that tool's own actions.`,
           needed_by: enabled.filter((w) => (w.manifest.capabilities ?? []).includes(name)).map((w) => w.manifest.title),
           /**
            * THE SAME SERVICES, BY SLUG — because a title is for reading and a slug is for joining.
@@ -7290,7 +7635,7 @@ export function createServer(store: Store): Hono {
       (typeof b.wedge === "string" && b.wedge.trim()) ||
       (await domain.listSchedules()).find((s) => s.project_id === projectId)?.wedge ||
       "";
-    if (!wedge) return c.json({ error: "no wedge running in this business yet" }, 404);
+    if (!wedge) return c.json({ error: "no service is running in this business yet" }, 404);
     const [clients, cases] = await Promise.all([
       domain.listClients(),
       domain.listCases({ project_id: projectId, wedge }),
@@ -8120,9 +8465,9 @@ export function createServer(store: Store): Hono {
     if (!b.wedge || !b.collection || !b.key) {
       return { error: "wedge, collection and key are required", status: 400 };
     }
-    if (!loadWedge(String(b.wedge))) return { error: `unknown wedge: ${b.wedge}`, status: 400 };
+    if (!loadWedge(String(b.wedge))) return { error: unknownService(b.wedge), status: 400 };
     if (!identity.projectAllowsWedge(projectId, String(b.wedge))) {
-      return { error: `wedge "${b.wedge}" is not enabled for this project`, status: 403 };
+      return { error: serviceNotEnabled(b.wedge), status: 403 };
     }
     return null;
   }
@@ -8176,9 +8521,9 @@ export function createServer(store: Store): Hono {
     const b = (await c.req.json().catch(() => ({}))) as Record<string, unknown>;
     if (!b.wedge || !b.title) return c.json({ error: "wedge and title are required" }, 400);
     const w = loadWedge(String(b.wedge));
-    if (!w) return c.json({ error: `unknown wedge: ${b.wedge}` }, 400);
+    if (!w) return c.json({ error: unknownService(b.wedge) }, 400);
     if (!identity.projectAllowsWedge(projectId, String(b.wedge))) {
-      return c.json({ error: `wedge "${b.wedge}" is not enabled for this project` }, 403);
+      return c.json({ error: serviceNotEnabled(b.wedge) }, 403);
     }
     if (String(b.wedge) !== (wedgeForRole("outreach") ?? "")) {
       const limits = identity.limitsFor(c.get("scope").org_id);
@@ -8187,7 +8532,7 @@ export function createServer(store: Store): Hono {
     const stages = caseStages(String(b.wedge));
     const stage = String(b.stage ?? w.manifest.cases?.initial ?? stages[0] ?? "open");
     if (stages.length && !stages.includes(stage)) {
-      return c.json({ error: `unknown stage "${stage}" — wedge declares: ${stages.join(", ")}` }, 400);
+      return c.json({ error: `there is no "${stage}" stage — this service has: ${stages.join(", ")}` }, 400);
     }
     const actor = (c.get("scope").member_id ?? "system") as string;
     const kase = await domain.createCase({
@@ -8284,6 +8629,29 @@ export function createServer(store: Store): Hono {
           kind: l.kind as "deposit" | "milestone" | "retainer" | "period",
           status: l.status as "planned" | "invoiced" | "paid" | "waived" | undefined,
           deliverable_id: typeof l.deliverable_id === "string" ? l.deliverable_id : undefined,
+          /**
+           * THE FIELD THIS ROUTE DROPPED, AND DROPPING IT MEANT NO FOUNDER COULD SELL A RETAINER.
+           *
+           * `money-plan.ts` has had the whole engine for a while: `RetainerRecurrence`, pro-rata
+           * first periods, pause that does not back-bill, a unique index that makes double-billing
+           * impossible. `applyMoneyPlanEdit` reads and validates `recurrence` on the way in, and
+           * preserves it when omitted. This mapping listed five fields and not that one, so a
+           * `recurrence` sent by any caller was discarded here, silently, before validation — and
+           * `MoneyPlanLine` says in as many words that a retainer line WITHOUT a recurrence "bills
+           * like a one-off".
+           *
+           * So the only retainers that recurred in this product were ones a wedge's kickoff or a
+           * proposal's cadence happened to stamp (`kickoff.ts`, `proposal-envelope.ts`). A founder
+           * who won a one-time job and then agreed a monthly could set the line's KIND to retainer,
+           * see the word on the screen, and never be told that nothing would bill twice. "We do the
+           * fulfilment and retainers" was half true in the half that pays every month.
+           *
+           * Unvalidated on purpose: `readRetainerRecurrence` is the validator and it refuses
+           * anything without a `YYYY-MM-DD` anchor, clamps the interval to 1..24, and ignores a
+           * first period that ends before it starts. Parsing here would be a second opinion about
+           * the same bytes.
+           */
+          recurrence: l.recurrence,
         })),
       });
       const actor = (c.get("scope").member_id ?? "system") as string;
@@ -8323,7 +8691,7 @@ export function createServer(store: Store): Hono {
     const w = loadWedge(kase.wedge);
     const types = w?.manifest.task_types;
     if (types && Object.keys(types).length && !types[String(b.task_type)]) {
-      return c.json({ error: `unknown task_type "${b.task_type}" for wedge "${kase.wedge}"` }, 400);
+      return c.json({ error: `the "${kase.wedge}" service does not do "${b.task_type}"` }, 400);
     }
     const cfg = loadConfig();
     const iso = new Date().toISOString();
@@ -8405,7 +8773,7 @@ export function createServer(store: Store): Hono {
     const taskType = String(resume.task_type ?? "");
     const types = loadWedge(kase.wedge)?.manifest.task_types;
     if (types && Object.keys(types).length && !types[taskType]) {
-      return c.json({ error: `unknown task_type "${taskType}" for wedge "${kase.wedge}"` }, 400);
+      return c.json({ error: `the "${kase.wedge}" service does not do "${taskType}"` }, 400);
     }
     const armed = await armWait(domain, {
       // The tenant comes from the CASE, never from the body. A wait armed under the wrong project is
@@ -8556,7 +8924,7 @@ export function createServer(store: Store): Hono {
     const taskType = String(resume.task_type ?? "");
     const types = loadWedge(kase.wedge)?.manifest.task_types;
     if (types && Object.keys(types).length && !types[taskType]) {
-      return c.json({ ok: false, error: `unknown task_type "${taskType}" for wedge "${kase.wedge}"` }, 400);
+      return c.json({ ok: false, error: `the "${kase.wedge}" service does not do "${taskType}"` }, 400);
     }
     const armed = await armWait(domain, {
       project_id: kase.project_id ?? "",
@@ -8616,7 +8984,7 @@ export function createServer(store: Store): Hono {
     if (typeof b.stage === "string" && b.stage !== kase.stage) {
       const stages = caseStages(kase.wedge);
       if (stages.length && !stages.includes(b.stage)) {
-        return { error: `unknown stage "${b.stage}" — wedge declares: ${stages.join(", ")}` };
+        return { error: `there is no "${b.stage}" stage — this service has: ${stages.join(", ")}` };
       }
       patch.stage = b.stage;
       event = { at: iso, kind: "stage_changed", from: kase.stage, to: b.stage, note: typeof b.note === "string" ? b.note : undefined, actor };
@@ -8732,13 +9100,13 @@ export function createServer(store: Store): Hono {
       return c.json({ error: "name, wedge, task_type and cadence are required" }, 400);
     }
     const wedge = loadWedge(String(b.wedge));
-    if (!wedge) return c.json({ error: `unknown wedge: ${b.wedge}` }, 400);
+    if (!wedge) return c.json({ error: unknownService(b.wedge) }, 400);
     const types = wedge.manifest.task_types;
     if (types && Object.keys(types).length && !types[String(b.task_type)]) {
-      return c.json({ error: `unknown task_type "${b.task_type}" for wedge "${b.wedge}"` }, 400);
+      return c.json({ error: `the "${b.wedge}" service does not do "${b.task_type}"` }, 400);
     }
     if (!identity.projectAllowsWedge(projectId, String(b.wedge))) {
-      return c.json({ error: `wedge "${b.wedge}" is not enabled for this project` }, 403);
+      return c.json({ error: serviceNotEnabled(b.wedge) }, 403);
     }
     const cadence = b.cadence as Cadence;
     if (!validCadence(cadence)) return c.json({ error: "invalid cadence" }, 400);
@@ -8816,6 +9184,48 @@ export function createServer(store: Store): Hono {
     } catch {
       /* no wedges dir — an empty catalogue is a real answer, not a 500 */
     }
+    /**
+     * ═══════════════════════════════════════════════════════════════════════════════════════════
+     * AND THE SERVICES THIS BUSINESS HAD WRITTEN FOR IT
+     * ═══════════════════════════════════════════════════════════════════════════════════════════
+     *
+     * This read the wedges DIRECTORY and nothing else, so a written service was invisible to every
+     * surface that asks "what can you run" — including the shaping agent, whose whole job is to
+     * answer that question against a founder's own words.
+     *
+     * `brand-and-website-projects` was authored for a real brand studio on 14 August and promoted.
+     * It is live. Every brand studio shaped since has been offered the same eight directory trades,
+     * none of which is brand or web design, and has settled on the nearest miss — four of them on
+     * `invoice-chaser`. The service that fits them existed the whole time and nothing could see it.
+     *
+     * A written service is the mechanism by which this product covers a trade nobody packaged. If
+     * it is not in the catalogue, the mechanism runs once per business and never compounds.
+     *
+     * ═══ SCOPED TO THE CALLER, AND THAT IS A LIMIT WORTH NAMING ═══
+     *
+     * The header above says this route is "deliberately NOT project-scoped ... it describes the
+     * kernel's capabilities, not a tenant's data". That stays true of the directory half. A written
+     * service is the other thing — it belongs to the business it was written for, and publishing
+     * one tenant's service definition to another is a decision about their work, not a cache
+     * question. So a caller sees the directory plus THEIR OWN promoted services.
+     *
+     * Which means this fixes the founder whose service was written and then ignored, and does NOT
+     * yet make the catalogue compound across businesses. That second step — a trade learned once
+     * and offered to everyone in it afterwards — is the growth mechanism, and it is somebody's
+     * decision rather than a refactor.
+     */
+    const set = accessible(c);
+    const named = c.req.header("x-mycel-project");
+    const projectId = named && set.has(named) ? named : set.size === 1 ? [...set][0] : undefined;
+    // `LoadedWedge` carries the manifest and not the slug it was asked for, so the slug rides along.
+    const written = projectId
+      ? await Promise.all(
+          (await promotedSlugs(projectId).catch(() => [] as string[])).map(async (slug: string) => ({
+            slug,
+            loaded: await loadProjectWedge(projectId, slug).catch(() => null),
+          })),
+        ).catch(() => [])
+      : [];
     const blueprints = listBlueprints();
     const out = slugs.flatMap((slug) => {
       const w = loadWedge(slug);
@@ -8840,13 +9250,35 @@ export function createServer(store: Store): Hono {
         },
       ];
     });
+    /*
+      Appended, not merged: a written service has its own slug and cannot collide with a directory
+      one (`authored.ts` prefixes them). Same shape as the directory entries, so every consumer —
+      the shaper's catalogue, the services list, onboarding — reads one list and does not care which
+      half a trade came from. `blueprint` is absent because a written service is provisioned with
+      the business it was written for, not from a packaged blueprint.
+    */
+    for (const { slug, loaded } of written) {
+      if (!loaded) continue;
+      const m = loaded.manifest;
+      out.push({
+        wedge: slug,
+        title: m.title ?? slug,
+        jobs: Object.entries(m.task_types ?? {}).map(([name, t]) => ({
+          task_type: name,
+          description: (t as { description?: string }).description ?? "",
+        })),
+        connections: m.connections ?? [],
+        internal: m.internal === true,
+        blueprint: undefined,
+      });
+    }
     return c.json(out);
   });
 
   app.get("/v1/wedges/:wedge", async (c) => {
     const slug = c.req.param("wedge");
     const w = loadWedge(slug);
-    if (!w) return c.json({ error: "unknown wedge" }, 404);
+    if (!w) return c.json({ error: unknownService(slug) }, 404);
     const set = accessible(c);
     // Query per accessible project rather than reading every tenant's rows and filtering after.
     // The post-filter was correct, but reading globally to discard most of it is the pattern that
@@ -8888,7 +9320,7 @@ export function createServer(store: Store): Hono {
     const projectId = writeProjectId(c);
     if (!projectId) return c.json({ error: "specify a project (X-Mycel-Project header)" }, 400);
     const wedge = await loadedForProject(projectId, wedgeSlug);
-    if (!wedge) return c.json({ error: `unknown wedge: ${wedgeSlug}` }, 404);
+    if (!wedge) return c.json({ error: unknownService(wedgeSlug) }, 404);
     const [gaps, knowledge] = await Promise.all([
       domain.listGaps(projectId, wedgeSlug),
       domain.listKnowledge(wedgeSlug, projectId),
@@ -8927,7 +9359,7 @@ export function createServer(store: Store): Hono {
     const projectId = writeProjectId(c);
     if (!projectId) return c.json({ error: "specify a project (X-Mycel-Project header)" }, 400);
     const wedge = await loadedForProject(projectId, wedgeSlug);
-    if (!wedge) return c.json({ error: `unknown wedge: ${wedgeSlug}` }, 404);
+    if (!wedge) return c.json({ error: unknownService(wedgeSlug) }, 404);
 
     const budgetParam = Number(c.req.query("budget"));
     const drafted = await readDraftedQuestions(projectId);
@@ -9002,7 +9434,7 @@ export function createServer(store: Store): Hono {
     const projectId = writeProjectId(c);
     if (!projectId) return c.json({ error: "specify a project (X-Mycel-Project header)" }, 400);
     const wedge = await loadedForProject(projectId, wedgeSlug);
-    if (!wedge) return c.json({ error: `unknown wedge: ${wedgeSlug}` }, 404);
+    if (!wedge) return c.json({ error: unknownService(wedgeSlug) }, 404);
 
     const b = (await c.req.json().catch(() => ({}))) as {
       answer?: string;
@@ -9543,7 +9975,7 @@ export function createServer(store: Store): Hono {
     // Authored services are not on disk — `loadWedge` refuses them by construction. A written
     // service that cannot receive knowledge is a service that cannot learn, which is the whole
     // product. Scope through the project so another tenant's slug is 404, not a write.
-    if (!(await loadedForProject(projectId, wedge))) return c.json({ error: "unknown wedge" }, 404);
+    if (!(await loadedForProject(projectId, wedge))) return c.json({ error: unknownService(wedge) }, 404);
     const b = (await c.req.json().catch(() => ({}))) as Record<string, unknown>;
     if (!b.name || typeof b.content !== "string") return c.json({ error: "name and content are required" }, 400);
     const item = await domain.createKnowledge({
@@ -10347,9 +10779,9 @@ export function createServer(store: Store): Hono {
     if (typeof b.wedge !== "string" || typeof b.task_type !== "string") {
       return c.json({ error: "wedge and task_type are required — an inbox nothing runs on is a mailbox that swallows replies" }, 400);
     }
-    if (!loadWedge(b.wedge)) return c.json({ error: `unknown wedge: ${b.wedge}` }, 400);
+    if (!loadWedge(b.wedge)) return c.json({ error: unknownService(b.wedge) }, 400);
     if (!identity.projectAllowsWedge(projectId, b.wedge)) {
-      return c.json({ error: `wedge "${b.wedge}" is not enabled for this project` }, 403);
+      return c.json({ error: serviceNotEnabled(b.wedge) }, 403);
     }
 
     /**
@@ -10743,9 +11175,9 @@ export function createServer(store: Store): Hono {
       }
       wedge = body.wedge;
       taskType = body.task_type;
-      if (!loadWedge(wedge)) return c.json({ error: `unknown wedge: ${wedge}` }, 400);
+      if (!loadWedge(wedge)) return c.json({ error: unknownService(wedge) }, 400);
       if (!identity.projectAllowsWedge(projectId, wedge)) {
-        return c.json({ error: `wedge "${wedge}" is not enabled for this project` }, 403);
+        return c.json({ error: serviceNotEnabled(wedge) }, 403);
       }
     }
     if (!projectId) return c.json({ error: "channel has no project scope" }, 400);
@@ -11063,7 +11495,7 @@ export function createServer(store: Store): Hono {
     const wedgeSlug = parent.wedge;
     const loaded =
       (await loadProjectWedge(parent.project_id, wedgeSlug).catch(() => null)) ?? loadWedge(wedgeSlug);
-    if (!loaded) return c.json({ ok: false, error: `unknown wedge: ${wedgeSlug}` }, 400);
+    if (!loaded) return c.json({ ok: false, error: unknownService(wedgeSlug) }, 400);
 
     type ChildSpec = { task_type: string; input: Record<string, unknown>; wedge?: string };
     const specs: ChildSpec[] = [];
@@ -11081,7 +11513,7 @@ export function createServer(store: Store): Hono {
         return c.json({ ok: false, error: "children must use the parent wedge (cross-wedge batches are not supported yet)" }, 400);
       }
       if (!loaded.manifest.task_types?.[task_type]) {
-        return c.json({ ok: false, error: `wedge "${wedgeSlug}" does not declare task_type "${task_type}"` }, 400);
+        return c.json({ ok: false, error: `the "${wedgeSlug}" service does not do "${task_type}"` }, 400);
       }
       specs.push({
         task_type,

@@ -210,8 +210,40 @@ export const SERVICE_AUTHORING_RULES: readonly AuthoringRule[] = [
   {
     id: "capabilities-known",
     section: "capabilities",
-    guidance: "Only name capabilities from the known set (e.g. `send_email`, `read_payments`, `read_invoices`, `read_calendar`). Do not invent one.",
-    why: "A capability is a promise the kernel can keep by connecting a real account; an unknown name is a promise nothing can fulfil.",
+    guidance:
+      "Prefer a capability from the known set (`send_email`, `read_payments`, `read_invoices`, " +
+      "`read_bank_transactions`, `read_calendar`, `book_calendar`, `read_crm`, `write_crm`, " +
+      "`publish_content`, `read_ads`, `write_ads`) whenever one genuinely fits.",
+    why:
+      "Those eleven are the ones the kernel reads and composes ITSELF — normalised amounts, a real " +
+      "send — which is worth more than being handed a vendor's raw tools. A bookkeeping service " +
+      "that needs the ledger should say `read_bank_transactions`, not invent `read_ledger`.",
+  },
+  {
+    id: "capabilities-declared",
+    section: "capabilities",
+    guidance:
+      "When none of them is the thing this trade runs on, NAME THE NEED ANYWAY, in the same " +
+      "`snake_case` form: `read_appointments`, `read_matters`, `read_jobs`, `read_shifts`. Say what " +
+      "the WORK needs, not what a product is called — `read_cliniko` is a vendor with an underscore " +
+      "in it.\n\n" +
+      "  A TRADE'S SYSTEM OF RECORD IS NOT A CALENDAR OR A CRM JUST BECAUSE IT HOLDS DATES AND " +
+      "CONTACTS. If you find yourself asking the founder \"which system do you use?\" as an intake " +
+      "QUESTION, the answer belongs in `capabilities` as a need, not in prose — a typed answer " +
+      "connects to nothing.",
+    why:
+      "This rule used to read 'do not invent one', on the ground that 'an unknown name is a promise " +
+      "nothing can fulfil'. That was true: an unknown name resolved to no connections and the " +
+      "runtime skipped it in silence. It stopped being true when a connection gained the ability to " +
+      "declare what it PROVIDES.\n\n" +
+      "  Measured: given a physiotherapy clinic whose appointments and patient records live in a " +
+      "practice-management system, the author chose `read_calendar` and `book_calendar` and then " +
+      "asked, as intake, \"Which practice management system do you use?\". Both halves are the same " +
+      "mistake. `read_calendar` resolves to a connected calendar — which is not that system, and " +
+      "reading it as one loses the patient records, the recall rules and the claim status that the " +
+      "service exists to work on. And the intake question has nowhere to go: the founder types " +
+      "\"Cliniko\" and nothing connects to Cliniko. `read_appointments` is the need; the founder " +
+      "connects their system and marks it as providing that.",
   },
   {
     id: "capabilities-not-connections",

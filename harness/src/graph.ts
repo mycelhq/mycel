@@ -504,9 +504,29 @@ async function expand(
         excluded.n++;
         return out;
       }
-      const threads = (await stores.domain.listThreadsForClient(node.client_id ?? "")).filter(
-        (t) => t.project_id === auth.project_id && t.case_id === node.id,
-      );
+      /**
+       * ═══ A CASE WITHOUT A CLIENT IS LEGAL, AND `?? ""` TURNED IT INTO A 500 ═══
+       *
+       * `cases.client_id` is a NULLABLE uuid — an internal engagement has no client and the schema
+       * says so. This read was `listThreadsForClient(node.client_id ?? "")`, and an empty string is
+       * not "no client" to Postgres, it is a malformed uuid: `invalid input syntax for type uuid: ""`,
+       * thrown inside `POST /v1/chat`. A founder asking "what's going on with this?" about a clientless
+       * case got a 500, and Sentry got it on 12 September.
+       *
+       * In-memory it passed, every time. `InMemoryStore.listThreadsForClient` filters an array, so ""
+       * matches nothing and returns `[]` — the answer the caller wanted, from the store that is not in
+       * production. The whole suite is green on the backend that cannot see this class of bug, which is
+       * the argument `pg-casts.test.ts` already makes about uuid casts.
+       *
+       * No client means no threads, so the read is skipped rather than coerced. `listThreadsForClient`
+       * now refuses an empty id too — both layers, because this call site is not the only one that can
+       * be handed an optional id.
+       */
+      const threads = node.client_id
+        ? (await stores.domain.listThreadsForClient(node.client_id)).filter(
+            (t) => t.project_id === auth.project_id && t.case_id === node.id,
+          )
+        : [];
       take(byRecency(keep(threads, (t) => t.client_id).map(threadNode)), "case.threads");
 
       const invoices = await stores.billing.listInvoices({ project_id: auth.project_id, case_id: node.id });

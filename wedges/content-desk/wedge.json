@@ -20,7 +20,7 @@
       "harness": {
         "shape": "decide"
       },
-      "description": "Find where this business's market is ALREADY talking, and what it is asking. Search real threads; return the questions in the words people used, each with the link you found it at. Never invent a forum, a subreddit or a thread \u2014 an angle without a URL is a guess dressed as research, and a founder who posts into an invented community loses an afternoon and their trust in this.",
+      "description": "Find where this business's market is ALREADY talking, and what it is asking. Search real threads; return the questions in the words people used, each with the link you found it at. Never invent a forum, a subreddit or a thread — an angle without a URL is a guess dressed as research, and a founder who posts into an invented community loses an afternoon and their trust in this.",
       "input_schema": {
         "type": "object",
         "required": [
@@ -61,7 +61,7 @@
         "properties": {
           "client_summary": {
             "type": "string",
-            "description": "What their market is actually asking about, in three or four sentences. If you found little, say that \u2014 a thin market is a finding and pretending otherwise wastes their month."
+            "description": "What their market is actually asking about, in three or four sentences. If you found little, say that — a thin market is a finding and pretending otherwise wastes their month."
           },
           "angles": {
             "type": "array",
@@ -75,7 +75,7 @@
               "properties": {
                 "question": {
                   "type": "string",
-                  "description": "The question people are actually asking, in THEIR words \u2014 copied from the thread, not paraphrased into marketing language. \"why is my sourdough gummy\" is an angle; \"optimising bakery operations\" is not."
+                  "description": "The question people are actually asking, in THEIR words — copied from the thread, not paraphrased into marketing language. \"why is my sourdough gummy\" is an angle; \"optimising bakery operations\" is not."
                 },
                 "evidence_url": {
                   "type": "string",
@@ -83,7 +83,7 @@
                 },
                 "where": {
                   "type": "string",
-                  "description": "Where the conversation is happening \u2014 a subreddit, a forum, a LinkedIn hashtag, a comment section."
+                  "description": "Where the conversation is happening — a subreddit, a forum, a LinkedIn hashtag, a comment section."
                 },
                 "asked_by": {
                   "type": "string",
@@ -100,7 +100,7 @@
                     "asked often",
                     "asked constantly"
                   ],
-                  "description": "How often you saw it. Honest counts only \u2014 'asked constantly' from one thread is the claim that ends trust in this whole tool."
+                  "description": "How often you saw it. Honest counts only — 'asked constantly' from one thread is the claim that ends trust in this whole tool."
                 }
               }
             }
@@ -121,7 +121,6 @@
         }
       },
       "ship_requires": [
-        "client_summary",
         "angles"
       ],
       "ship_checks": [
@@ -154,14 +153,17 @@
           "kind": "no_tells",
           "field": "client_summary"
         }
-      ]
+      ],
+      "client_facing": false,
+      "_comment_client_facing": "Research for the writer. The angles are ours, the post is theirs.",
+      "_comment_ship_requires_client": "Research for the writer: the angles are ours, the post is theirs. Its own reason for client_facing: false says so, and a client_summary contradicted it."
     },
     "plan_content": {
       "harness": {
         "shape": "deliver"
       },
       "deliverable_kind": "document",
-      "description": "Turn angles and what this business has actually WON into a short plan: what to publish, where, and in what order. Grounded in their own evidence \u2014 a plan that could have been written for any business in this trade is a plan nobody follows.",
+      "description": "Turn angles and what this business has actually WON into a short plan: what to publish, where, and in what order. Grounded in their own evidence — a plan that could have been written for any business in this trade is a plan nobody follows.",
       "input_schema": {
         "type": "object",
         "required": [
@@ -185,11 +187,11 @@
           },
           "weeks": {
             "type": "integer",
-            "description": "How far ahead to plan. Short is better \u2014 a twelve-week calendar written before a single post has landed is fiction."
+            "description": "How far ahead to plan. Short is better — a twelve-week calendar written before a single post has landed is fiction."
           },
           "start": {
             "type": "string",
-            "description": "YYYY-MM-DD, the first day to schedule from. Passed in so the plan is replayable \u2014 never read from a clock."
+            "description": "YYYY-MM-DD, the first day to schedule from. Passed in so the plan is replayable — never read from a clock."
           },
           "per_week": {
             "type": "integer",
@@ -292,7 +294,11 @@
           },
           "schedule": {
             "type": "object",
-            "description": "What `content_calendar` returned, quoted verbatim. Never write dates yourself and never re-sort this \u2014 a founder who reads Monday's list again on Wednesday has to see the same thing."
+            "description": "What `content_calendar` returned, quoted verbatim. Never write dates yourself and never re-sort this — a founder who reads Monday's list again on Wednesday has to see the same thing."
+          },
+          "cannot_plan": {
+            "type": "boolean",
+            "description": "True when there is not enough about this business — no audience, no offer, no angles — to plan content that is theirs rather than generic. Then leave `plan` absent."
           }
         }
       },
@@ -340,9 +346,21 @@
         {
           "kind": "no_tells",
           "field": "client_summary"
+        },
+        {
+          "kind": "not_when",
+          "field": "plan",
+          "unknown_when": "cannot_plan",
+          "_why": "A content plan written without knowing the audience is the most convincing slop this product can produce: it reads like a plan, it is on-topic, and every item would fit any business in the trade."
+        },
+        {
+          "kind": "distinct_prose",
+          "items": "plan",
+          "field": "why",
+          "_why": "A content plan whose every item has the same rationale is one idea with four dates on it."
         }
       ],
-      "_comment_calendar": "THE MODEL PICKS WHAT AND WHERE; THE WORKFLOW PICKS WHEN. Asking the same run to assign dates is asking a language model to do calendar arithmetic \u2014 the same plan run twice would produce two different calendars, 'next Tuesday' would be wrong half the time, and nothing could be checked. `content_calendar` takes the ordered plan and a start date and returns it dated: weekdays only, never twice to one channel in a day, spaced to the cadence the founder can actually keep, and big pieces given the room they need. It PUBLISHES NOTHING and has no network access at all \u2014 posting under a founder's own name is public and permanent, and what they need is not a robot with their password, it is to stop opening a blank box on a Sunday night.",
+      "_comment_calendar": "THE MODEL PICKS WHAT AND WHERE; THE WORKFLOW PICKS WHEN. Asking the same run to assign dates is asking a language model to do calendar arithmetic — the same plan run twice would produce two different calendars, 'next Tuesday' would be wrong half the time, and nothing could be checked. `content_calendar` takes the ordered plan and a start date and returns it dated: weekdays only, never twice to one channel in a day, spaced to the cadence the founder can actually keep, and big pieces given the room they need. It PUBLISHES NOTHING and has no network access at all — posting under a founder's own name is public and permanent, and what they need is not a robot with their password, it is to stop opening a blank box on a Sunday night.",
       "deliverable_shape": {
         "format": "document",
         "sections": [
@@ -353,7 +371,7 @@
           },
           {
             "heading": "The plan",
-            "must": "Each piece with its channel and its order. Sequence is the deliverable \u2014 a list with no order is a brainstorm.",
+            "must": "Each piece with its channel and its order. Sequence is the deliverable — a list with no order is a brainstorm.",
             "depth": "a table"
           },
           {
@@ -374,7 +392,7 @@
         "shape": "deliver"
       },
       "deliverable_kind": "document",
-      "description": "Write ONE piece, ready to publish. Grounded in something this business actually did \u2014 never a generic post about the trade. It goes to the founder for approval; nothing is ever published from here.",
+      "description": "Write ONE piece, ready to publish. Grounded in something this business actually did — never a generic post about the trade. It goes to the founder for approval; nothing is ever published from here.",
       "input_schema": {
         "type": "object",
         "required": [
@@ -392,7 +410,7 @@
           },
           "answers_url": {
             "type": "string",
-            "description": "The thread this replies to, when there is one. Read it before writing \u2014 a reply that does not engage with what was actually said is the thing communities ban people for."
+            "description": "The thread this replies to, when there is one. Read it before writing — a reply that does not engage with what was actually said is the thing communities ban people for."
           },
           "facts": {
             "type": "array",
@@ -419,11 +437,11 @@
         "properties": {
           "client_summary": {
             "type": "string",
-            "description": "The covering note the founder reads before deciding to post: what this says, who it is for, and what you expect it to do. Not a summary of the post \u2014 they can read the post."
+            "description": "The covering note the founder reads before deciding to post: what this says, who it is for, and what you expect it to do. Not a summary of the post — they can read the post."
           },
           "channel": {
             "type": "string",
-            "description": "Where this is meant to go. The same words do not work on LinkedIn and Reddit and it is not a formatting difference \u2014 see what-good-content-looks-like.md."
+            "description": "Where this is meant to go. The same words do not work on LinkedIn and Reddit and it is not a formatting difference — see what-good-content-looks-like.md."
           },
           "body": {
             "type": "string",
@@ -438,7 +456,7 @@
             "items": {
               "type": "string"
             },
-            "description": "Facts from THIS business that the post relies on \u2014 a win, a number, a thing they actually did. Empty means the post is generic, and generic is the failure mode of every content tool ever built."
+            "description": "Facts from THIS business that the post relies on — a win, a number, a thing they actually did. Empty means the post is generic, and generic is the failure mode of every content tool ever built."
           },
           "questions": {
             "type": "array",
@@ -457,7 +475,7 @@
                 }
               }
             },
-            "description": "What you could not decide alone \u2014 a claim you cannot verify, a customer name you may not have permission to use."
+            "description": "What you could not decide alone — a claim you cannot verify, a customer name you may not have permission to use."
           },
           "needs": {
             "type": "array",
@@ -490,6 +508,10 @@
               }
             },
             "description": "The post as a file in ./output/, plus anything that goes with it."
+          },
+          "cannot_write": {
+            "type": "boolean",
+            "description": "True when the angle has no source to write from, or the business facts needed are absent. Then leave `body` absent."
           }
         }
       },
@@ -547,6 +569,12 @@
         {
           "kind": "no_tells",
           "field": "client_summary"
+        },
+        {
+          "kind": "not_when",
+          "field": "body",
+          "unknown_when": "cannot_write",
+          "_why": "A post written from nothing is indistinguishable from a post written from research until the client's own audience reads it and recognises neither the voice nor the claim."
         }
       ],
       "deliverable_shape": {
@@ -592,6 +620,33 @@
   "skills": [
     "what-good-content-looks-like.md",
     "finding-the-angle.md"
+  ],
+  "_comment_intake": "A content desk that asks nothing at intake cannot know the audience, and a post written for 'a business audience' is written for nobody. `deliverable-grade` called this out as `needs-nothing`: the service asks for nothing and then produces work that could be about any firm in the trade.",
+  "intake": [
+    {
+      "id": "audience",
+      "ask": "Who is your client's content for, and what do they already believe?",
+      "why": "This is the one input that decides whether a post lands. Without it every piece is written for 'a business audience', which is nobody.",
+      "example": "Operations leads at UK logistics firms, 50-500 staff. They already know they need better tracking and have been burned by a failed TMS rollout. Sceptical of anything that sounds like a platform.",
+      "kind": "fact",
+      "weight": 10
+    },
+    {
+      "id": "where-they-read",
+      "ask": "Where does that audience actually read, and in what form?",
+      "why": "A LinkedIn post, a trade newsletter and a long guide are three different jobs. Getting this wrong wastes the whole piece however good the writing is.",
+      "example": "LinkedIn for the operations leads, and the Logistics Manager newsletter for the buyers above them. Nobody reads our blog directly; it exists to be linked to.",
+      "kind": "fact",
+      "weight": 9
+    },
+    {
+      "id": "voice-and-proof",
+      "ask": "What does your client sound like, and what can they claim?",
+      "why": "So a post reads as theirs and never asserts a result they cannot stand behind. A claim the client has to walk back costs more than a piece that never ran.",
+      "example": "Plain, slightly dry, no exclamation marks. They can cite the Halston migration (38% fewer failed deliveries, published with permission) and nothing else by name.",
+      "kind": "fact",
+      "weight": 9
+    }
   ],
   "workflows": [
     {

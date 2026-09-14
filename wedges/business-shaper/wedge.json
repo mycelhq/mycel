@@ -80,7 +80,8 @@
                   "direct",
                   "adjacent",
                   "none"
-                ]
+                ],
+                "description": "HOW WELL THE CATALOGUE COVERS THE WORK THIS BUSINESS SELLS TO ITS CLIENTS. Judge the client-facing service, not the back office.\n\n`direct` — a catalogue trade IS the service they sell. Take this whenever it is true; it is the best outcome for the founder, because the work starts immediately instead of waiting for a service to be written. A bookkeeper and `books-keeper`. An SEO/AI-visibility agency and `geo-monitor`. A recruiter and `recruiting-desk`. Match on WHAT THE JOB IS, not on whether every detail lines up — a bookkeeper who also does VAT returns and a little payroll is still a bookkeeper, and `direct` is still right.\n\n`adjacent` — a catalogue trade is a recognisable variant of what they sell: same job, different inputs or a different report.\n\n`none` — nothing in the catalogue is the work they sell. Correct and expected for any trade nobody has written yet, and far better than a near miss: `none` routes the business to having a service WRITTEN for it (`to_author`), while a wrong match hands their clients the wrong work.\n\nTHE ONE TRAP, measured in production: this field shipped as a bare enum with no description, and five of fifteen real businesses came back `adjacent` pointing at a trade that serves the FOUNDER'S OWN back office — a brand studio matched to `invoice-chaser` (\"chases YOUR overdue invoices\"), a web-app shop to `security-questionnaire` (\"answers questionnaires from YOUR knowledge\"). The product then opened engagements in those studios' CLIENTS' names on invoice chasing. A trade that only helps their back office is never `direct` or `adjacent`: it belongs in `also_runs` with `for: their_own_business`. If the only matches are back-office helpers, answer `none`."
               },
               "wedge": {
                 "type": "string",
@@ -125,7 +126,7 @@
               },
               "to_author": {
                 "type": "array",
-                "description": "THE FULFILMENT NOBODY HAS WRITTEN YET — the services this business needs that the catalogue does not contain, to be authored for them.\n\n`wedge` and `also_runs` above can only name trades that already exist. That is right for the OPS SPINE — chasing an invoice, running outreach, answering a questionnaire — because those are the same job in every trade and are already proven. It is wrong for the work the business actually sells, which is different in every trade and is why a dental practice, a planning consultancy and a freight broker are not the same product.\n\nWithout this the choice was binary: a trade we happen to ship, or `fit: none` and one service written from a founder's paragraph. Neither describes a real business. A dental practice reuses invoice chasing and outreach, and needs claims-and-denials written for it.\n\nNAME THE WORK, NOT THE BUSINESS. One entry per distinct piece of delivery that has its own artefacts and its own way of going wrong: \"insurance claims and denials\" and \"patient recalls\" are two, because a denied claim and a missed recall are handled by different people on different clocks. \"Dental practice admin\" is not an entry, it is the whole business.\n\nAT MOST THREE, and fewer is usually right. Each one becomes a service somebody has to read and approve, and three good ones beat six that overlap. Leave the array out entirely when the catalogue genuinely covers the delivery.",
+                "description": "THE FULFILMENT NOBODY HAS WRITTEN YET — the services this business needs that the catalogue does not contain, to be authored for them.\n\n`wedge` and `also_runs` above can only name trades that already exist. That is right for the OPS SPINE — chasing an invoice, running outreach, answering a questionnaire — because those are the same job in every trade and are already proven. It is wrong for the work the business actually sells, which is different in every trade and is why a dental practice, a planning consultancy and a freight broker are not the same product.\n\nWithout this the choice was binary: a trade we happen to ship, or `fit: none` and one service written from a founder's paragraph. Neither describes a real business. A dental practice reuses invoice chasing and outreach, and needs claims-and-denials written for it.\n\nNAME THE WORK, NOT THE BUSINESS. One entry per distinct piece of delivery that has its own artefacts and its own way of going wrong: \"insurance claims and denials\" and \"patient recalls\" are two, because a denied claim and a missed recall are handled by different people on different clocks. \"Dental practice admin\" is not an entry, it is the whole business.\n\nREQUIRED WHENEVER `fit` IS `none`, and that is not a formality — it is the whole point of the field. `none` means nothing we already run is the work this business sells; if that is true then ALL of their delivery is work to write, so an empty array here is a contradiction. Measured in production: twelve shapes answered `none` and NINE proposed nothing, which told those founders \"we cannot run your business\" and gave the product nothing to do about it. One firm was shaped three separate times and proposed nothing on all three. A run that answers `none` with an empty `to_author` is now rejected and asked again.\n\nAT MOST THREE, and fewer is usually right. Each one becomes a service somebody has to read and approve, and three good ones beat six that overlap. Leave the array out entirely ONLY when `fit` is `direct` or `adjacent` and the catalogue genuinely covers the delivery.",
                 "items": {
                   "type": "object",
                   "required": [
@@ -151,7 +152,30 @@
             },
             "required": [
               "fit"
-            ]
+            ],
+            "if": {
+              "properties": {
+                "fit": {
+                  "enum": [
+                    "none"
+                  ]
+                }
+              },
+              "required": [
+                "fit"
+              ]
+            },
+            "then": {
+              "required": [
+                "to_author"
+              ],
+              "properties": {
+                "to_author": {
+                  "type": "array",
+                  "minItems": 1
+                }
+              }
+            }
           },
           "first_job": {
             "type": "object",
@@ -500,7 +524,8 @@
           "field": "source"
         }
       ],
-      "internal": true
+      "internal": true,
+      "_comment_internal": "Reads up on a trade so the product can shape a service. Input to onboarding, not client work."
     },
     "draft_service": {
       "description": "Write the service itself, for a business nothing installed covers. Runs only after draft_shape has honestly answered `fit: none` — the alternative for that founder is the sentence 'we can't run this yet', which is the end of their visit. The output is a DRAFT: nothing runs until the founder reads what it would do and agrees to it.",

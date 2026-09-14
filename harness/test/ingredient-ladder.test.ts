@@ -65,11 +65,26 @@ test("the thread is created before BOTH loops, not between them", () => {
 test("the portal offers the second path, and only when a file can actually land", { skip: inMonorepo() ? false : ONLY_IN_MONOREPO }, () => {
   const conn = BLOCKED.slice(BLOCKED.indexOf("function ConnectionAsk"), BLOCKED.indexOf("function TypedAsk"));
   assert.match(conn, /Or send it to us instead/, "the fallback path is gone from the connection row");
-  assert.match(
-    conn,
-    /request\.thread_id &&/,
-    "the fallback is offered unconditionally — with no thread the upload has nowhere to go and fails",
+  /**
+   * ═══ THIS ASSERTION USED TO REQUIRE THE OPPOSITE, AND ITS REASON EXPIRED ═══
+   *
+   * It read `/request\.thread_id &&/` — "with no thread the upload has nowhere to go and fails" —
+   * which was true when `onFiles` posted only to `[thread]/attachments`. It stopped being true when
+   * `portal/requests/[request]/attachments` was added, a door keyed on the REQUEST, which always
+   * exists. That route's own header says why it was built: "thread_id is null on every ask the
+   * product has ever written ... a client saw the question, a textarea and a Send button, and no way
+   * to attach the one thing being asked for."
+   *
+   * So the gate stopped protecting anything and started removing the only second move a client had.
+   * Live case, not hypothetical: AgentMail caps this account at three inboxes, all three are taken,
+   * and every engagement opened since raises its asks with `thread_id` null. A client who cannot
+   * complete the OAuth had one button that could not work for them and nothing else.
+   */
+  assert.ok(
+    !/\{request\.thread_id && !waiting && \(/.test(conn),
+    "the fallback is gated on a thread again, so a client with no mailbox behind them has one dead button",
   );
+  assert.match(conn, /\{!waiting && \(/, "the fallback lost its waiting guard");
   assert.match(conn, /<TypedAsk request=\{request\} now=\{now\} bare \/>/, "it no longer reuses the real responder");
 });
 

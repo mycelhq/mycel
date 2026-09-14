@@ -14,12 +14,35 @@ import { sharedCraft } from "../src/craft";
 
 const dockerfile = () => readFileSync(new URL("../../Dockerfile", import.meta.url), "utf8");
 
-test("every runtime-data directory the kernel reads at <cwd> is copied into the image", () => {
-  // The list is the point. Adding a directory that `<cwd>`-resolves without adding it here — and to
-  // the Dockerfile — reproduces the bug for the fifth time.
+test("the runtime data is carried in two lines, not seven", () => {
+  /**
+   * ═══ THIS TEST USED TO BE THE LIST, AND THE LIST IS HOW IT WAS BEATEN ═══
+   *
+   * It read: *"The list is the point. Adding a directory that `<cwd>`-resolves without adding it
+   * here — and to the Dockerfile — reproduces the bug for the fifth time."* Seven names, hardcoded,
+   * asserting seven `COPY` lines.
+   *
+   * `packs` was the eighth. It resolved `<cwd>/packs`, it was never on this list, it was never in
+   * the Dockerfile, and this guard passed the whole time. Production had **4,442 `workflow:*` calls
+   * and zero `pack:*`, ever**, while books-keeper, gtm-operator, geo-monitor and invoice-chaser all
+   * declared packs in their manifests. A guard whose population is maintained by hand fails the same
+   * way as the thing it guards, and for the same reason.
+   *
+   * So the general property moved to `the-image-carries-what-the-kernel-reads.test.ts`, which reads
+   * the resolvers out of the source instead of being told them. What is left here is the LAYOUT that
+   * makes the general property cheap to satisfy: one line for the headline concept, one for the
+   * runtime library. Two lines cannot be forgotten six times.
+   */
   const df = dockerfile();
-  for (const dir of ["wedges", "blueprints", "workflows", "service-skills", "design-systems", "craft", "templates"]) {
-    assert.match(df, new RegExp(`^COPY ${dir} \\./${dir}$`, "m"), `${dir}/ is read at runtime but never copied into the image`);
+  assert.match(df, /^COPY wedges \.\/wedges$/m, "wedges/ is read at runtime and not copied into the image");
+  assert.match(df, /^COPY library \.\/library$/m, "library/ is read at runtime and not copied into the image");
+  // And the seven-line shape must not come back: it is the shape that lost packs.
+  for (const gone of ["blueprints", "workflows", "service-skills", "design-systems", "craft", "templates", "packs"]) {
+    assert.doesNotMatch(
+      df,
+      new RegExp(`^COPY ${gone} `, "m"),
+      `${gone}/ is copied on its own line again — that is the shape that dropped packs`,
+    );
   }
 });
 
@@ -45,7 +68,7 @@ test("presentation craft names the mounted brand contract, or it cannot be follo
 test("craft files are markdown and nothing else", () => {
   // `sharedCraft` skips non-.md, so a stray asset would be silently ignored rather than mounted —
   // and someone would eventually wonder why the template they added never arrived.
-  for (const f of readdirSync(new URL("../../craft/", import.meta.url))) {
+  for (const f of readdirSync(new URL("../../library/craft/", import.meta.url))) {
     assert.match(f, /\.md$/, `craft/${f} will never be mounted; sharedCraft only reads .md`);
   }
 });

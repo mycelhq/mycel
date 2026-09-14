@@ -4,6 +4,20 @@ import assert from "node:assert/strict";
 import { deflateSync } from "node:zlib";
 import { DELIVERABLE_CRITERIA } from "../src/deliverable-criteria";
 import { ONLY_IN_MONOREPO, inMonorepo } from "./_monorepo";
+
+/**
+ * A verdict `parseReview` accepts. Built from `DELIVERABLE_CRITERIA` rather than hand-written,
+ * because the parser demands EVERY criterion with a score AND a non-empty `toGainAPoint` — "every
+ * criterion or none" — and a fixture that hardcodes today's list silently stops testing the moment
+ * a criterion is added.
+ */
+function validVerdict(score = 4): string {
+  return JSON.stringify({
+    scores: DELIVERABLE_CRITERIA.map((c) => ({ id: c.id, score, toGainAPoint: "tighten it" })),
+    note: "ok",
+  });
+}
+
 import {
   MAX_REVIEW_CHARS,
   MIN_REVIEWABLE_CHARS,
@@ -486,4 +500,64 @@ test("the console renders that sentence rather than rebuilding it", { skip: inMo
     [],
     "these compose their own verdict again instead of rendering the kernel's",
   );
+});
+
+test("an unreadable verdict is asked once more, carrying the shape back", async () => {
+  /**
+   * ═══ MEASURED: THE GRADER ANSWERED UNREADABLY IN TWO OF THREE REAL RUNS ═══
+   *
+   * Not a crash and not a timeout — a well-formed answer in the wrong shape, which is the ordinary
+   * failure mode of asking a model for JSON.
+   *
+   * What it costs is larger than it looks, because everything downstream is fail-closed on
+   * `reviewed`: nothing auto-releases, so a founder's standing permission is silently worthless; the
+   * repair round never fires, so a run that could have fixed its own fault never hears about it; and
+   * the founder opens a job whose only note is that we could not check it.
+   */
+  let asked = 0;
+  const seen: string[] = [];
+  const r = await reviewDeliverable({
+    text: "x".repeat(600),
+    kind: "report",
+    complete: async ({ user }) => {
+      asked++;
+      seen.push(user);
+      return asked === 1 ? "Sure! Here's my review: the work looks fine." : validVerdict();
+    },
+  });
+  assert.equal(asked, 2, "an unreadable answer was not asked again");
+  assert.equal(r.reviewed, true, "the retry's valid verdict was thrown away");
+  assert.match(seen[1]!, /could not be read as JSON/, "the retry does not tell the grader what was wrong");
+  assert.match(seen[1]!, /no prose before or after it/, "the retry does not carry the shape back");
+});
+
+test("one round only, and a grader that throws on the retry is not a crash", async () => {
+  /*
+    A grader that answers in the wrong shape twice will not be argued into the right one, and a
+    second retry buys a longer wait for the same hold. A throw on the retry has to land as the same
+    honest "could not be trusted" — the work is already written and must not be lost to a grader
+    having a bad minute.
+  */
+  let asked = 0;
+  const twice = await reviewDeliverable({
+    text: "x".repeat(600),
+    complete: async () => {
+      asked++;
+      return "not json at all";
+    },
+  });
+  assert.equal(asked, 2, "the retry loops");
+  assert.equal(twice.reviewed, false);
+
+  let calls = 0;
+  const throws = await reviewDeliverable({
+    text: "x".repeat(600),
+    complete: async () => {
+      calls++;
+      if (calls === 1) return "nonsense";
+      throw new Error("grader exploded");
+    },
+  });
+  assert.equal(throws.reviewed, false, "a throw on the retry was not handled");
+  assert.match(String(throws.because), /in a form that could be trusted/);
 });

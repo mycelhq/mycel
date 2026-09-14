@@ -35,8 +35,30 @@ export interface BusinessShape {
    * Only when `fit` is `direct` or `adjacent`. `none` means the catalogue does not cover this trade,
    * which is exactly when a service gets WRITTEN for them, and a wedge slug read out of a `none`
    * answer would name something that is not running.
+   *
+   * READ `fit` BEFORE USING THIS FOR CLIENT WORK. See the field below.
    */
   wedge?: string;
+  /**
+   * How the shaping run judged the match, and the distinction is not a nuance.
+   *
+   * `direct` — this wedge IS what the firm sells. `adjacent` — it is a trade we ship that helps the
+   * firm's OWN back office, which is a completely different thing and the shaper says so in its own
+   * words. Read from production on 13 September:
+   *
+   *     Northlight Studio  (brand identity + Webflow)  → invoice-chaser  fit=adjacent
+   *         covers: "Chases YOUR overdue invoices by email and escalates on a schedule."
+   *     Harbourline Studio (brand + web design)        → invoice-chaser  fit=adjacent
+   *         covers: "Chases YOUR overdue project deposits by email."
+   *     Web app development for food businesses        → security-questionnaire  fit=adjacent
+   *         covers: "Answers client questionnaires from YOUR mounted knowledge."
+   *
+   * Every one of those is about the founder's own business. Four of fifteen real signups are design
+   * studios that landed on `invoice-chaser` this way. Treating that as the DELIVERY service would
+   * open an engagement in a design client's name on invoice chasing and send them intake questions
+   * about it — and since the engagement sweep now does this on a clock, at scale, quietly.
+   */
+  fit?: "direct" | "adjacent";
 }
 
 /**
@@ -78,6 +100,7 @@ export async function readBusinessShape(store: Store, projectId: string): Promis
       sells_to: str(parsed.sells_to),
       name: str(parsed.name),
       wedge: fit === "direct" || fit === "adjacent" ? str(runs.wedge) : undefined,
+      fit: fit === "direct" || fit === "adjacent" ? fit : undefined,
     };
   } catch {
     return {};

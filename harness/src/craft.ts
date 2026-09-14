@@ -23,6 +23,7 @@
 import { readdirSync, readFileSync, existsSync } from "node:fs";
 import { join } from "node:path";
 import type { MountedSkill } from "./compile";
+import { libraryPath } from "./library";
 
 /**
  * Beside `wedges/`, not inside it.
@@ -32,7 +33,7 @@ import type { MountedSkill } from "./compile";
  * naming a wedge directory as a string literal in kernel source. Both were right. This is not a
  * trade, so it does not belong in the folder of trades.
  */
-const CRAFT_DIR = process.env.MYCEL_CRAFT_DIR ?? join(process.cwd(), "craft");
+const CRAFT_DIR = libraryPath("craft", process.env.MYCEL_CRAFT_DIR);
 
 /**
  * Every shared craft file, as mounted skills.
